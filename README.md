@@ -22,6 +22,7 @@ platform.
 - Python 3.9+
 - Playwright (with Chromium browser)
 - SQLAlchemy
+- Flask
 
 Install:
 
@@ -31,6 +32,15 @@ playwright install chromium
 ```
 
 ## Usage
+
+### Web App
+
+```bash
+python app.py
+# Opens at http://127.0.0.1:5000/meetings
+```
+
+Browse meetings in a Bootstrap 5 table with sync status badges (green = complete, red = failed, etc).
 
 ### Database
 

@@ -26,8 +26,11 @@ from pathlib import Path
 
 # Ensure scripts/ is on the path so we can import db
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from db import get_session, Meeting, AgendaItem, SupportingDocument
-from sqlalchemy import or_, select, func
+from db import (
+    get_session, Meeting, AgendaItem, SupportingDocument,
+    Supervisor, MeetingSupervisor, AgendaItemVote, SupervisorVote,
+)
+from sqlalchemy import or_, select, func, and_
 
 
 def cmd_meetings(args):
@@ -440,6 +443,192 @@ def cmd_meeting(args):
         print(f"  Error:    {error}")
 
 
+def cmd_supervisors(args):
+    """List all known supervisors."""
+    session = get_session()
+    rows = session.execute(
+        select(Supervisor).order_by(Supervisor.name)
+    ).scalars().all()
+    session.close()
+
+    if not rows:
+        print("No supervisors in database.")
+        return
+
+    print(f"{'ID':>4}  {'Name':<30}  {'District':<10}  {'Active From':<14}  {'Active To':<14}")
+    print(f"{'─' * 4}  {'─' * 30}  {'─' * 10}  {'─' * 14}  {'─' * 14}")
+    for s in rows:
+        active_from = s.active_from.isoformat() if s.active_from else ""
+        active_to = s.active_to.isoformat() if s.active_to else ""
+        print(f"{s.id:>4}  {s.name:<30}  {s.district or '':<10}  {active_from:<14}  {active_to:<14}")
+    print(f"\n{len(rows)} supervisor(s)")
+
+
+def cmd_votes_summary(args):
+    """Show vote summary for all items in a meeting."""
+    session = get_session()
+    rows = session.execute(
+        select(AgendaItemVote)
+        .where(AgendaItemVote.meeting_id == args.meeting_id)
+        .order_by(AgendaItemVote.agenda_item_number)
+    ).scalars().all()
+    session.close()
+
+    if not rows:
+        print(f"No vote records for meeting {args.meeting_id}.")
+        return
+
+    print(f"Vote summary for meeting {args.meeting_id}")
+    print(f"{'─' * 70}")
+    print(f"{'#':>4}  {'C-number':<25}  {'Result':<16}")
+    print(f"{'─' * 4}  {'─' * 25}  {'─' * 16}")
+    for r in rows:
+        c = r.c_number or ""
+        print(f"{r.agenda_item_number:>4}  {c:<25}  {r.motion_result or '':<16}")
+    print(f"\n{len(rows)} item(s) with votes")
+
+
+def cmd_vote_detail(args):
+    """Show detail for one item's vote."""
+    session = get_session()
+    aiv = session.execute(
+        select(AgendaItemVote).where(
+            AgendaItemVote.meeting_id == args.meeting_id,
+            AgendaItemVote.agenda_item_number == args.agenda_item_number,
+        )
+    ).scalar_one_or_none()
+
+    if not aiv:
+        print(f"No vote record for {args.meeting_id} item #{args.agenda_item_number}.")
+        session.close()
+        return
+
+    # Get supervisor votes
+    sv_rows = session.execute(
+        select(SupervisorVote, Supervisor.name)
+        .join(Supervisor, Supervisor.id == SupervisorVote.supervisor_id)
+        .where(SupervisorVote.agenda_item_vote_id == aiv.id)
+        .order_by(SupervisorVote.id)
+    ).all()
+    session.close()
+
+    print(f"{'=' * 70}")
+    print(f"  Meeting:   {aiv.meeting_id}")
+    print(f"  Item #:    {aiv.agenda_item_number}")
+    print(f"  C-number:  {aiv.c_number or '(none)'}")
+    print(f"  Result:    {aiv.motion_result or '(unknown)'}")
+    print(f"{'=' * 70}")
+    if sv_rows:
+        print()
+        print(f"  {'Supervisor':<35}  {'Vote':<10}")
+        print(f"  {'─' * 35}  {'─' * 10}")
+        for sv, name in sv_rows:
+            print(f"  {name:<35}  {sv.vote:<10}")
+    print()
+    if aiv.vote_text:
+        print(f"  Vote text (excerpt):")
+        print(f"  {aiv.vote_text[:600]}")
+
+
+def cmd_votes_by_supervisor(args):
+    """Show votes cast by a supervisor."""
+    session = get_session()
+    name_query = args.name
+
+    # Find supervisor by name - prefer shortest name match
+    matches = session.execute(
+        select(Supervisor).where(
+            or_(
+                Supervisor.name.ilike(f"%{name_query}%"),
+                Supervisor.normalized_name.ilike(f"%{name_query}%"),
+            )
+        )
+        .order_by(func.length(Supervisor.name))
+    ).scalars().all()
+
+    # Pick the best match - shortest name is likely the real name (no noise)
+    sup = None
+    for candidate in matches:
+        # Only consider names that aren't obviously noise
+        if len(candidate.name) < 40 and not re.search(r"\d", candidate.name):
+            sup = candidate
+            break
+
+    if not sup:
+        print(f"Supervisor '{name_query}' not found.")
+        session.close()
+        return
+
+    rows = session.execute(
+        select(
+            SupervisorVote.vote,
+            SupervisorVote.raw_vote_text,
+            AgendaItemVote.meeting_id,
+            AgendaItemVote.agenda_item_number,
+            AgendaItemVote.c_number,
+            AgendaItemVote.motion_result,
+        )
+        .join(AgendaItemVote, AgendaItemVote.id == SupervisorVote.agenda_item_vote_id)
+        .where(SupervisorVote.supervisor_id == sup.id)
+        .order_by(AgendaItemVote.meeting_id, AgendaItemVote.agenda_item_number)
+    ).all()
+    session.close()
+
+    if not rows:
+        print(f"No votes found for {sup.name}.")
+        return
+
+    print(f"Votes by {sup.name} (District {sup.district or '?'}): {len(rows)} vote(s)")
+    print(f"{'─' * 70}")
+    for r in rows:
+        c = r.c_number or ""
+        print(f"  {r.meeting_id}  #{r.agenda_item_number:>4}  {c:<25}  {r.vote:<8}  ({r.motion_result or '?'})")
+
+
+def cmd_votes_search(args):
+    """Search voted items by query in C-number or title."""
+    session = get_session()
+    query = args.query
+    like = f"%{query}%"
+
+    rows = session.execute(
+        select(
+            AgendaItemVote.meeting_id,
+            AgendaItemVote.agenda_item_number,
+            AgendaItemVote.c_number,
+            AgendaItemVote.motion_result,
+            AgendaItem.agenda_item_title,
+        )
+        .outerjoin(AgendaItem, and_(
+            AgendaItem.meeting_id == AgendaItemVote.meeting_id,
+            AgendaItem.agenda_item_number == AgendaItemVote.agenda_item_number,
+        ))
+        .where(
+            or_(
+                AgendaItemVote.c_number.ilike(like),
+                AgendaItemVote.motion_result.ilike(like),
+                AgendaItem.agenda_item_title.ilike(like),
+            )
+        )
+        .order_by(AgendaItemVote.meeting_id, AgendaItemVote.agenda_item_number)
+        .limit(args.limit)
+    ).all()
+    session.close()
+
+    if not rows:
+        print(f"No results for '{query}'.")
+        return
+
+    print(f"Vote search results for '{query}' ({len(rows)} rows):")
+    print()
+    for r in rows:
+        c = r.c_number or ""
+        title_preview = (r.agenda_item_title or "")[:50]
+        print(f"  {r.meeting_id:>6}  #{r.agenda_item_number:>4}  {c:<25}  {r.motion_result or '':<12}  {title_preview}")
+    if len(rows) >= args.limit:
+        print(f"\n[Reached limit of {args.limit}]")
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Inspect Maricopa agenda database")
     sub = p.add_subparsers(dest="command", required=True)
@@ -487,6 +676,27 @@ def parse_args(argv=None):
     # failed
     sub.add_parser("failed", help="List failed/partial meetings with errors")
 
+    # supervisors
+    sub.add_parser("supervisors", help="List all known supervisors")
+
+    # votes <meeting_id>
+    ap_votes = sub.add_parser("votes", help="Show vote summary for all items in a meeting")
+    ap_votes.add_argument("meeting_id", help="Meeting ID")
+
+    # vote <meeting_id> <item_number>
+    ap_vote = sub.add_parser("vote", help="Show vote detail for one item")
+    ap_vote.add_argument("meeting_id", help="Meeting ID")
+    ap_vote.add_argument("agenda_item_number", type=int, help="Item number")
+
+    # votes-by-supervisor <name>
+    ap_vbs = sub.add_parser("votes-by-supervisor", help="Show votes cast by a supervisor")
+    ap_vbs.add_argument("name", help="Supervisor name (partial match)")
+
+    # votes-search <query>
+    ap_vs = sub.add_parser("votes-search", help="Search voted items")
+    ap_vs.add_argument("query", help="Search term (C-number, result, or title)")
+    ap_vs.add_argument("--limit", type=int, default=50, help="Max results (default 50)")
+
     return p.parse_args(argv)
 
 
@@ -505,6 +715,11 @@ def main(argv=None):
         "status": cmd_status,
         "failed": cmd_insp_failed,
         "meeting": cmd_meeting,
+        "supervisors": cmd_supervisors,
+        "votes": cmd_votes_summary,
+        "vote": cmd_vote_detail,
+        "votes-by-supervisor": cmd_votes_by_supervisor,
+        "votes-search": cmd_votes_search,
     }
 
     handler = dispatch.get(args.command)

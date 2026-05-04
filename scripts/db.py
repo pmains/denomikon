@@ -6,12 +6,13 @@ Defaults to SQLite; set DATABASE_URL to switch to Postgres.
 """
 
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from sqlalchemy import (
     Boolean,
     Column,
+    Date,
     DateTime,
     Integer,
     String,
@@ -54,6 +55,94 @@ def get_session() -> Session:
 
 class Base(DeclarativeBase):
     pass
+
+
+class Supervisor(Base):
+    __tablename__ = "supervisors"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(128), nullable=False, index=True)
+    normalized_name = Column(String(128), nullable=False, index=True)
+    district = Column(String(16), nullable=True, default=None)
+    active_from = Column(Date, nullable=True, default=None)
+    active_to = Column(Date, nullable=True, default=None)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class MeetingSupervisor(Base):
+    __tablename__ = "meeting_supervisors"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    meeting_id = Column(String(32), nullable=False, index=True)
+    supervisor_id = Column(Integer, nullable=False, index=True)
+    role = Column(String(64), nullable=True, default=None)
+    present = Column(Boolean, nullable=True, default=None)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("meeting_id", "supervisor_id", name="uq_meeting_supervisor"),
+    )
+
+
+class AgendaItemVote(Base):
+    __tablename__ = "agenda_item_votes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agenda_item_id = Column(Integer, nullable=False, index=True, unique=True)
+    meeting_id = Column(String(32), nullable=False, index=True)
+    agenda_item_number = Column(Integer, nullable=False, index=True)
+    c_number = Column(String(32), nullable=True, default=None, index=True)
+    c_number_base = Column(String(48), nullable=True, default=None, index=True)
+    motion_result = Column(String(64), nullable=True, default=None)
+    vote_text = Column(Text, nullable=True, default=None)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class SupervisorVote(Base):
+    __tablename__ = "supervisor_votes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agenda_item_vote_id = Column(Integer, nullable=False, index=True)
+    supervisor_id = Column(Integer, nullable=False, index=True)
+    vote = Column(String(32), nullable=False, default="unknown", index=True)
+    raw_vote_text = Column(String(64), nullable=True, default=None)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("agenda_item_vote_id", "supervisor_id", name="uq_supervisor_vote"),
+    )
 
 
 class Meeting(Base):
@@ -154,6 +243,11 @@ def init_db():
     _migrate_col(engine, "agenda_items", "c_number", "VARCHAR(32) NOT NULL DEFAULT ''")
     _migrate_col(engine, "agenda_items", "c_number_base", "VARCHAR(48) NOT NULL DEFAULT ''")
     _migrate_col(engine, "agenda_items", "c_number_revision", "VARCHAR(16) DEFAULT NULL")
+
+    _migrate_table("supervisors")
+    _migrate_table("meeting_supervisors")
+    _migrate_table("agenda_item_votes")
+    _migrate_table("supervisor_votes")
 
     # Resumable sync columns
     _migrate_col(engine, "meetings", "sync_status", "VARCHAR(32) NOT NULL DEFAULT 'pending'")
@@ -259,6 +353,21 @@ def update_sync_status(
         meeting.supporting_docs_extracted = supporting_docs_extracted
 
     return meeting
+
+
+def get_meetings_by_date_range(
+    session: Session,
+    start_date_iso: str,
+    end_date_iso: str,
+) -> list[Meeting]:
+    """Get all meetings with meeting_date in the given ISO date range (inclusive)."""
+    q = (
+        select(Meeting)
+        .where(Meeting.meeting_date >= start_date_iso)
+        .where(Meeting.meeting_date <= end_date_iso)
+        .order_by(Meeting.meeting_date, Meeting.meeting_id)
+    )
+    return list(session.execute(q).scalars().all())
 
 
 def get_meetings_by_status(
@@ -441,6 +550,17 @@ def replace_meeting_data_safe(
         # Ensure meeting row exists (creates if new)
         meeting = create_or_get_meeting(session, meeting_dict)
 
+        # Update meeting metadata from meeting_dict (preserves existing
+        # values when meeting_dict has empty fields, e.g. --meeting-id path)
+        if meeting_dict.get("meeting_date"):
+            meeting.meeting_date = meeting_dict["meeting_date"]
+        if meeting_dict.get("meeting_type"):
+            meeting.meeting_type = meeting_dict["meeting_type"]
+        if meeting_dict.get("meeting_title"):
+            meeting.meeting_title = meeting_dict["meeting_title"]
+        if meeting_dict.get("source_url"):
+            meeting.source_url = meeting_dict["source_url"]
+
         persisted = persist_meeting(
             session,
             meeting_id,
@@ -467,3 +587,140 @@ def replace_meeting_data_safe(
     except Exception:
         session.rollback()
         raise
+
+
+def persist_votes(
+    session: Session,
+    meeting_id: str,
+    supervisors: list[dict],
+    votes: list[dict],
+) -> int:
+    """Persist supervisor info and vote results for a meeting.
+
+    1. Upsert supervisor records (by normalized_name).
+    2. Delete existing meeting_supervisors, agenda_item_votes, supervisor_votes
+       for this meeting_id.
+    3. Insert new records.
+    4. Commit transactionally.
+
+    Returns the number of vote records persisted.
+    """
+    # 1. Upsert supervisors
+    supervisor_map: dict[str, int] = {}
+    for sup in supervisors:
+        norm = sup.get("normalized_name", sup.get("name", "").lower().strip())
+        if not norm:
+            continue
+        existing = session.execute(
+            select(Supervisor).where(Supervisor.normalized_name == norm)
+        ).scalar_one_or_none()
+        if existing:
+            existing.name = sup.get("name", existing.name)
+            existing.district = sup.get("district", existing.district)
+            existing.updated_at = datetime.now(timezone.utc)
+            supervisor_map[norm] = existing.id
+        else:
+            new = Supervisor(
+                name=sup.get("name", ""),
+                normalized_name=norm,
+                district=sup.get("district"),
+                active_from=sup.get("active_from"),
+                active_to=sup.get("active_to"),
+            )
+            session.add(new)
+            session.flush()
+            supervisor_map[norm] = new.id
+
+    # 2. Delete existing records for this meeting
+    session.execute(
+        MeetingSupervisor.__table__.delete().where(
+            MeetingSupervisor.meeting_id == meeting_id
+        )
+    )
+    existing_aiv_rows = session.execute(
+        select(AgendaItemVote).where(AgendaItemVote.meeting_id == meeting_id)
+    ).scalars().all()
+    existing_aiv_ids = [r.id for r in existing_aiv_rows]
+    if existing_aiv_ids:
+        session.execute(
+            SupervisorVote.__table__.delete().where(
+                SupervisorVote.agenda_item_vote_id.in_(existing_aiv_ids)
+            )
+        )
+    session.execute(
+        AgendaItemVote.__table__.delete().where(
+            AgendaItemVote.meeting_id == meeting_id
+        )
+    )
+    session.flush()
+    # Clear identity map to avoid stale identity warnings when re-inserting
+    session.expire_all()
+
+    vote_count = 0
+
+    # 3. Insert meeting_supervisor records
+    for sup in supervisors:
+        norm = sup.get("normalized_name", sup.get("name", "").lower().strip())
+        sup_id = supervisor_map.get(norm)
+        if sup_id is None:
+            continue
+        ms = MeetingSupervisor(
+            meeting_id=meeting_id,
+            supervisor_id=sup_id,
+            role=sup.get("role"),
+            present=sup.get("present", True),
+        )
+        session.add(ms)
+
+    # 4. Insert vote records
+    for vote in votes:
+        item_number = int(vote.get("agenda_item_number", 0))
+        aiv = AgendaItemVote(
+            agenda_item_id=vote.get("agenda_item_id", 0),
+            meeting_id=meeting_id,
+            agenda_item_number=item_number,
+            c_number=vote.get("c_number"),
+            c_number_base=vote.get("c_number_base"),
+            motion_result=vote.get("motion_result"),
+            vote_text=vote.get("vote_text"),
+        )
+        session.add(aiv)
+        session.flush()
+
+        # Insert individual supervisor votes
+        for sv in vote.get("supervisor_votes", []):
+            name = sv.get("name", "")
+            norm_name = name.lower().strip()
+            sup_id = supervisor_map.get(norm_name)
+            if sup_id is None:
+                # Try to find in DB without upserting
+                existing_sup = session.execute(
+                    select(Supervisor).where(Supervisor.normalized_name == norm_name)
+                ).scalar_one_or_none()
+                if existing_sup:
+                    sup_id = existing_sup.id
+                    supervisor_map[norm_name] = sup_id
+                else:
+                    # Create a new supervisor record for this name
+                    new = Supervisor(
+                        name=name,
+                        normalized_name=norm_name,
+                    )
+                    session.add(new)
+                    session.flush()
+                    sup_id = new.id
+                    supervisor_map[norm_name] = sup_id
+
+            sv_rec = SupervisorVote(
+                agenda_item_vote_id=aiv.id,
+                supervisor_id=sup_id,
+                vote=sv.get("vote", "unknown"),
+                raw_vote_text=sv.get("raw_vote_text"),
+            )
+            session.add(sv_rec)
+
+        vote_count += 1
+
+    # 5. Commit
+    session.commit()
+    return vote_count
