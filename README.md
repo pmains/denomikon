@@ -1,4 +1,4 @@
-# Maricopa County Public Records Scraper
+# Maricopa County Board of Supervisors Agenda Tracker
 
 Extract, organize, and persist Maricopa County Board of Supervisors meeting
 agendas, supporting materials, and governance records from the Agenda Online
