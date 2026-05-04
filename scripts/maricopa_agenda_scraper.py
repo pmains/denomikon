@@ -1,0 +1,2479 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import asyncio
+import csv
+import datetime as dt
+import html
+import io
+import random
+import re
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+from html.parser import HTMLParser
+from pathlib import Path
+from typing import Iterable, Optional
+
+SOURCE_PAGE = "https://www.maricopa.gov/324/Board-of-Supervisors-Meeting-Information"
+SEARCH_BASE = "https://mccobagenda.databankcloud.com/AgendaOnline/Meetings/Search"
+REQUIRED_BODY = re.compile(r"Board of Supervisors", re.I)
+REQUIRED_TYPES = re.compile(r"(Formal|Informal)", re.I)
+
+ROOT = Path.cwd()
+AGENDAS_ROOT = ROOT / "data" / "agendas"
+SUPPORT_ROOT = ROOT / "data" / "supporting-materials"
+AGENDA_ITEMS_ROOT = ROOT / "data" / "agenda-items"
+AGENDA_ITEMS_CSV = AGENDA_ITEMS_ROOT / "agenda_items.csv"
+RAW_AGENDA_ITEMS_CSV = AGENDA_ITEMS_ROOT / "raw_agenda_items.csv"
+REJECTED_RAW_BLOCKS_CSV = AGENDA_ITEMS_ROOT / "rejected_raw_blocks.csv"
+DISCOVERY_CSV = ROOT / "data" / "discovery_metadata.csv"
+LOGS_ROOT = ROOT / "logs"
+
+
+def get_async_playwright():
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError as exc:
+        raise RuntimeError(
+            "Playwright is required for browser-backed scraping commands. "
+            "Install the project scraping dependencies before running those commands."
+        ) from exc
+    return async_playwright
+
+
+async def retry_with_backoff(
+    coro_factory,
+    max_attempts: int = 3,
+    backoff_seconds: list[int] | None = None,
+    label: str = "",
+):
+    """Execute an async call with retry and exponential backoff.
+
+    coro_factory: a no-arg callable that returns a coroutine
+    max_attempts: max retries (default 3)
+    backoff_seconds: delays between attempts (default [1, 3, 10])
+    """
+    if backoff_seconds is None:
+        backoff_seconds = [1, 3, 10]
+    last_exc = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await coro_factory()
+        except Exception as e:
+            last_exc = e
+            if attempt < max_attempts:
+                delay = backoff_seconds[min(attempt - 1, len(backoff_seconds) - 1)]
+                jitter = random.uniform(0, 0.5 * delay)
+                total_delay = delay + jitter
+                label_text = f" [{label}]" if label else ""
+                print(f"  Retry {attempt}/{max_attempts}{label_text}: {e} (waiting {total_delay:.1f}s)")
+                await asyncio.sleep(total_delay)
+    raise last_exc
+
+
+@dataclass
+class Meeting:
+    meeting_date: str
+    meeting_time: str
+    meeting_title: str
+    meeting_type: str
+    row_text: str
+    detail_url: str
+    agenda_url: str
+    summary_url: str = ""
+    minutes_url: str = ""
+    video_url: str = ""
+
+    @property
+    def meeting_id(self) -> str:
+        for url in (self.detail_url, self.agenda_url):
+            m = re.search(r"[?&]ID=(\d+)", url or "", re.I)
+            if m:
+                return m.group(1)
+        return "meeting"
+
+
+class _HtmlNode:
+    def __init__(self, tag: str = "", attrs: Optional[dict[str, str]] = None, parent: Optional['_HtmlNode'] = None) -> None:
+        self.tag = tag.lower()
+        self.attrs = attrs or {}
+        self.parent = parent
+        self.children: list[_HtmlNode | str] = []
+
+
+class _TreeBuilder(HTMLParser):
+    _VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.root = _HtmlNode("document")
+        self._stack = [self.root]
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        parent_node = self._stack[-1] if self._stack else None
+        node = _HtmlNode(tag, {k.lower(): v or "" for k, v in attrs}, parent=parent_node)
+        if parent_node:
+            parent_node.children.append(node)
+        if tag.lower() not in self._VOID_TAGS:
+            self._stack.append(node)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        self.handle_starttag(tag, attrs)
+        if tag.lower() not in self._VOID_TAGS:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        for idx in range(len(self._stack) - 1, 0, -1):
+            if self._stack[idx].tag == tag:
+                del self._stack[idx:]
+                break
+
+    def handle_data(self, data: str) -> None:
+        if data:
+            self._stack[-1].children.append(data)
+
+
+def _parse_html(html: str) -> _HtmlNode:
+    parser = _TreeBuilder()
+    parser.feed(html or "")
+    parser.close()
+    return parser.root
+
+
+def _node_text(node: _HtmlNode | str) -> str:
+    if isinstance(node, str):
+        return node
+    return " ".join(_node_text(child) for child in node.children)
+
+
+def _clean_html_text(value: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(value or "")).strip()
+
+
+def _closest_parent(node: _HtmlNode, tag: str) -> Optional[_HtmlNode]:
+    """Walk up the parent chain to find the nearest ancestor with the given tag."""
+    current = node.parent
+    while current:
+        if current.tag == tag:
+            return current
+        current = current.parent
+    return None
+
+
+def _find_all(node: _HtmlNode, tag: Optional[str] = None) -> list[_HtmlNode]:
+    found: list[_HtmlNode] = []
+    wanted = tag.lower() if tag else None
+    for child in node.children:
+        if not isinstance(child, _HtmlNode):
+            continue
+        if wanted is None or child.tag == wanted:
+            found.append(child)
+        found.extend(_find_all(child, wanted))
+    return found
+
+
+def _has_class(node: _HtmlNode, class_name: str) -> bool:
+    return class_name in (node.attrs.get("class") or "").split()
+
+
+def _search_results_table_present(html: str) -> bool:
+    root = _parse_html(html)
+    for table in _find_all(root, "table"):
+        table_text = _clean_html_text(_node_text(table)).lower()
+        if all(token in table_text for token in ["meeting name", "meeting type", "meeting date", "links"]):
+            return True
+    return False
+
+
+def parse_search_results_html(html: str, base_url: str) -> list[Meeting]:
+    root = _parse_html(html)
+    tables = _find_all(root, "table")
+    table = None
+    for candidate in tables:
+        table_text = _clean_html_text(_node_text(candidate)).lower()
+        if all(token in table_text for token in ["meeting name", "meeting type", "meeting date", "links"]):
+            table = candidate
+            break
+
+    row_candidates = _find_all(table, "tr") if table else _find_all(root, "tr")
+    meetings: list[Meeting] = []
+
+    for row in row_candidates:
+        row_text = _clean_html_text(_node_text(row))
+        meeting_date_match = re.search(r"(\d{1,2}/\d{1,2}/\d{4}(?:\s+\d{1,2}:\d{2}:\d{2}\s?[AP]M)?)", row_text, re.I)
+        if not meeting_date_match:
+            continue
+
+        anchors = []
+        seen: set[str] = set()
+        for anchor in _find_all(row, "a"):
+            href = anchor.attrs.get("href", "").strip()
+            text = _clean_html_text(_node_text(anchor))
+            abs_url = urllib.parse.urljoin(base_url, href) if href else ""
+            key = abs_url or text
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            anchors.append({"text": text, "href": abs_url})
+
+        def by_text(*wanted: str) -> Optional[dict[str, str]]:
+            wanted_lower = {w.lower() for w in wanted}
+            return next((a for a in anchors if (a["text"] or "").lower() in wanted_lower), None)
+
+        def by_doctype(value: int) -> Optional[dict[str, str]]:
+            for anchor in anchors:
+                try:
+                    parsed = urllib.parse.urlparse(anchor["href"])
+                    params = urllib.parse.parse_qs(parsed.query)
+                except Exception:
+                    continue
+                if (params.get("doctype") or [""])[0] == str(value):
+                    return anchor
+            return None
+
+        agenda = by_text("agenda") or by_doctype(1)
+        summary = by_text("summary") or by_doctype(3)
+        minutes = by_text("minutes") or by_doctype(2)
+        video = by_text("view media", "media", "video")
+        if not agenda:
+            continue
+
+        cells = [
+            _clean_html_text(_node_text(cell))
+            for cell in _find_all(row, None)
+            if cell.tag in {"th", "td"} and _clean_html_text(_node_text(cell))
+        ]
+        meeting_title = cells[0] if cells else row_text.split("Agenda", 1)[0].strip()
+        meeting_type = cells[1] if len(cells) > 1 else meeting_title
+        meeting_date = normalize_meeting_date(meeting_date_match.group(1))
+        if not meeting_date:
+            continue
+
+        meetings.append(
+            Meeting(
+                meeting_date=meeting_date,
+                meeting_time="",
+                meeting_title=meeting_title,
+                meeting_type=meeting_type,
+                row_text=row_text,
+                detail_url="",
+                agenda_url=agenda["href"],
+                summary_url=summary["href"] if summary else "",
+                minutes_url=minutes["href"] if minutes else "",
+                video_url=video["href"] if video else "",
+            )
+        )
+
+    return meetings
+
+
+def parse_raw_agenda_blocks_html(html: str, meeting: dict[str, str]) -> list[dict[str, str]]:
+    source_url = (meeting.get("document_url") or meeting.get("agenda_url") or "").strip()
+    if not source_url:
+        return []
+
+    root = _parse_html(html)
+    container = next(
+        (
+            node
+            for node in _find_all(root, "div")
+            if node.attrs.get("id") == "agenda-table" and _has_class(node, "container-fluid")
+        ),
+        None,
+    )
+    if container is None:
+        return []
+
+    normalized_meeting = {
+        "meeting_id": (meeting.get("record_id") or meeting.get("meeting_id") or "meeting").strip() or "meeting",
+        "meeting_date": (meeting.get("record_date") or meeting.get("meeting_date") or "").strip(),
+        "meeting_type": (meeting.get("meeting_type") or "").strip(),
+    }
+
+    blocks: list[dict[str, str]] = []
+    for index, table in enumerate(_find_all(container, "table"), start=1):
+        raw_text = _clean_html_text(_node_text(table))
+        if not re.search(r"(?<!\d)\d+\.\s+", raw_text):
+            continue
+        if not any((anchor.attrs.get("id") or "").lower().startswith("lnkagendaitem_") for anchor in _find_all(table, "a")):
+            continue
+        blocks.append({
+            "source_body": "Board of Supervisors",
+            "meeting_id": normalized_meeting["meeting_id"],
+            "meeting_date": normalized_meeting["meeting_date"],
+            "meeting_type": normalized_meeting["meeting_type"],
+            "raw_block_index": str(index),
+            "raw_text": raw_text,
+            "source_url": source_url,
+        })
+
+    return blocks
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Scrape Maricopa BOS agenda materials")
+    p.add_argument("--start-date", help="Start date in YYYY-MM-DD")
+    p.add_argument("--end-date", help="End date in YYYY-MM-DD")
+    p.add_argument("--date", help="Single date in YYYY-MM-DD (shorthand for --start-date=DATE --end-date=DATE)")
+    p.add_argument("--download", action="store_true", help="Download agenda/supporting files")
+    p.add_argument("--extract-agenda-items", action="store_true", help="Extract agenda items from stored HTML agenda pages")
+    p.add_argument("--extract-raw-agenda-blocks", action="store_true", help="Extract raw agenda-item blocks from stored HTML agenda pages")
+    p.add_argument("--split-raw-agenda-blocks", action="store_true", help="Split raw agenda blocks into structured agenda items")
+    p.add_argument("--self-test-splitter", action="store_true", help="Run splitter self-tests and exit")
+    p.add_argument("--debug-agenda-html", action="store_true", help="Write diagnostics for the first agenda HTML page selected for item extraction")
+    p.add_argument("--headed", action="store_true", help="Run Playwright headed")
+    p.add_argument("--limit", type=int, default=None, help="Optional meeting limit")
+    p.add_argument("--count-agenda-items", action="store_true", help="Visit agenda pages, count items, and print a summary table")
+    p.add_argument("--list-agenda-items", action="store_true", help="Visit agenda pages and list numbered items with titles")
+    p.add_argument("--init-db", action="store_true", help="Create database tables")
+    p.add_argument("--persist", action="store_true", help="Persist extracted agenda items from CSV to database")
+    p.add_argument("--sync", action="store_true", help="Search online, extract agenda items, and persist directly to database (bypasses CSVs)")
+    p.add_argument("--meeting-id", help="Single meeting ID to sync (e.g. 4449). Used with --sync to skip date search.")
+    p.add_argument("--offline", action="store_true", help="Sync from a locally saved HTML file instead of the live server. Use with --sync --meeting-id.")
+    p.add_argument("--from-file", help="Path to a local agenda HTML file to parse offline. Used with --sync.")
+    p.add_argument("--retry-failed", action="store_true", help="Sync only meetings with status failed, partial, or pending")
+    p.add_argument("--retry-count", type=int, default=3, help="Max retry attempts for network/page operations (default 3)")
+    p.add_argument("--status", action="store_true", help="Print summary counts of meetings by sync_status")
+    p.add_argument("--failed", action="store_true", help="List failed/partial meetings with errors")
+    p.add_argument("--force", action="store_true", help="Re-sync meetings even if sync_status = complete")
+    p.add_argument("--skip-complete", action="store_true", help="Skip meetings with sync_status=complete when using --meeting-id")
+    p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
+    args = p.parse_args()
+    # Normalize --date into --start-date/--end-date
+    if args.date:
+        if args.start_date or args.end_date:
+            p.error("--date cannot be combined with --start-date or --end-date")
+        args.start_date = args.date
+        args.end_date = args.date
+    return args
+
+
+def parse_date(value: str) -> dt.date:
+    return dt.date.fromisoformat(value)
+
+
+def build_search_url(start_date: dt.date, end_date: dt.date) -> str:
+    params = {
+        "dropid": "11",
+        "dropsv": f"{start_date:%m/%d/%Y} 00:00:00",
+        "dropev": f"{end_date:%m/%d/%Y} 23:59:59",
+    }
+    query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+    return f"{SEARCH_BASE}?{query}"
+
+
+def slugify(value: str) -> str:
+    value = re.sub(r"[\u0300-\u036f]", "", value or "")
+    value = re.sub(r"[^a-zA-Z0-9]+", "-", value).strip("-")
+    value = re.sub(r"-{2,}", "-", value)
+    return value.lower() or "meeting"
+
+
+def normalize_meeting_date(raw: str) -> str:
+    m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", raw or "")
+    if not m:
+        return ""
+    return f"{m.group(3)}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+
+
+def month_dir_for_date(date_iso: str, base: Path) -> Path:
+    year, month, _ = date_iso.split("-")
+    return base / year / month
+
+
+def month_metadata_path(date_iso: str) -> Path:
+    return month_dir_for_date(date_iso, AGENDAS_ROOT) / "metadata.csv"
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def csv_row(fieldnames: list[str], row: dict[str, str]) -> str:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore", lineterminator="\n")
+    writer.writerow(row)
+    return buf.getvalue()
+
+
+def read_existing_rows() -> dict[str, dict[str, str]]:
+    existing: dict[str, dict[str, str]] = {}
+    for csv_path in AGENDAS_ROOT.rglob("metadata.csv"):
+        try:
+            with csv_path.open(newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    agenda_url = (row.get("agenda_url") or row.get("document_url") or "").strip()
+                    if agenda_url:
+                        existing[agenda_url] = row
+        except FileNotFoundError:
+            continue
+    return existing
+
+
+def write_download_row(row: dict[str, str]) -> None:
+    fieldnames = [
+        "source_body",
+        "document_category",
+        "record_id",
+        "record_date",
+        "record_time",
+        "record_title",
+        "meeting_type",
+        "source_page_url",
+        "document_url",
+        "local_path",
+        "download_status",
+        "downloaded_at",
+        "source_search_url",
+        "notes",
+    ]
+    csv_path = month_metadata_path(row["record_date"])
+    ensure_dir(csv_path.parent)
+    new_file = not csv_path.exists()
+    with csv_path.open("a", newline="", encoding="utf-8") as f:
+        if new_file:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator="\n")
+            writer.writeheader()
+        f.write(csv_row(fieldnames, row))
+
+
+def write_discovery_row(row: dict[str, str]) -> None:
+    fieldnames = [
+        "source_body",
+        "document_category",
+        "record_id",
+        "record_date",
+        "record_time",
+        "record_title",
+        "meeting_type",
+        "source_page_url",
+        "document_url",
+        "local_path",
+        "download_status",
+        "downloaded_at",
+        "source_search_url",
+        "notes",
+    ]
+    ensure_dir(DISCOVERY_CSV.parent)
+    new_file = not DISCOVERY_CSV.exists()
+    with DISCOVERY_CSV.open("a", newline="", encoding="utf-8") as f:
+        if new_file:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator="\n")
+            writer.writeheader()
+        f.write(csv_row(fieldnames, row))
+
+
+def write_agenda_item_row(row: dict[str, str]) -> None:
+    fieldnames = [
+        "source_body",
+        "meeting_id",
+        "meeting_date",
+        "meeting_type",
+        "agenda_item_section",
+        "agenda_item_id",
+        "agenda_item_number",
+        "agenda_item_title",
+        "agenda_item_text",
+        "agenda_item_url",
+        "vote_or_action",
+        "source_url",
+    ]
+    ensure_dir(AGENDA_ITEMS_CSV.parent)
+    new_file = not AGENDA_ITEMS_CSV.exists()
+    with AGENDA_ITEMS_CSV.open("a", newline="", encoding="utf-8") as f:
+        if new_file:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator="\n")
+            writer.writeheader()
+        f.write(csv_row(fieldnames, row))
+
+
+def write_structured_agenda_item_row(row: dict[str, str]) -> None:
+    fieldnames = [
+        "source_body",
+        "meeting_id",
+        "meeting_date",
+        "meeting_type",
+        "agenda_item_number",
+        "agenda_item_title",
+        "agenda_item_text",
+        "source_url",
+    ]
+    ensure_dir(AGENDA_ITEMS_CSV.parent)
+    new_file = not AGENDA_ITEMS_CSV.exists()
+    with AGENDA_ITEMS_CSV.open("a", newline="", encoding="utf-8") as f:
+        if new_file:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator="\n")
+            writer.writeheader()
+        f.write(csv_row(fieldnames, row))
+
+
+def write_raw_agenda_item_row(row: dict[str, str]) -> None:
+    fieldnames = [
+        "source_body",
+        "meeting_id",
+        "meeting_date",
+        "meeting_type",
+        "raw_block_index",
+        "raw_text",
+        "source_url",
+    ]
+    ensure_dir(RAW_AGENDA_ITEMS_CSV.parent)
+    new_file = not RAW_AGENDA_ITEMS_CSV.exists()
+    with RAW_AGENDA_ITEMS_CSV.open("a", newline="", encoding="utf-8") as f:
+        if new_file:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator="\n")
+            writer.writeheader()
+        f.write(csv_row(fieldnames, row))
+
+
+def write_rejected_raw_block_row(row: dict[str, str]) -> None:
+    fieldnames = [
+        "source_body",
+        "meeting_id",
+        "meeting_date",
+        "meeting_type",
+        "raw_block_index",
+        "raw_text",
+        "source_url",
+        "rejection_reason",
+    ]
+    ensure_dir(REJECTED_RAW_BLOCKS_CSV.parent)
+    new_file = not REJECTED_RAW_BLOCKS_CSV.exists()
+    with REJECTED_RAW_BLOCKS_CSV.open("a", newline="", encoding="utf-8") as f:
+        if new_file:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator="\n")
+            writer.writeheader()
+        f.write(csv_row(fieldnames, row))
+
+
+def debug_agenda_html_path(meeting_id: str, suffix: str) -> Path:
+    return LOGS_ROOT / f"agenda_debug_{meeting_id}{suffix}"
+
+
+async def write_agenda_debug_files(page, meeting: dict[str, str]) -> None:
+    ensure_dir(LOGS_ROOT)
+    meeting_id = (meeting.get("record_id") or meeting.get("meeting_id") or "meeting").strip() or "meeting"
+    html_path = debug_agenda_html_path(meeting_id, ".html")
+    txt_path = debug_agenda_html_path(meeting_id, ".txt")
+    selectors_path = debug_agenda_html_path(meeting_id, "_selectors.txt")
+
+    html_path.write_text(await page.content(), encoding="utf-8")
+    body_text = await page.locator("body").inner_text(timeout=60000)
+    txt_path.write_text(body_text, encoding="utf-8")
+
+    selector_report = await page.evaluate(
+        """
+        () => {
+          const clean = s => (s || '').replace(/\s+/g, ' ').trim();
+          const describe = el => {
+            if (!el) return 'unknown';
+            const tag = el.tagName ? el.tagName.toLowerCase() : 'element';
+            const id = el.id ? `#${el.id}` : '';
+            const cls = el.className && typeof el.className === 'string'
+              ? '.' + el.className.trim().split(/\s+/).filter(Boolean).slice(0, 4).join('.')
+              : '';
+            return `${tag}${id}${cls}`;
+          };
+          const text = el => clean(el?.innerText || el?.textContent || '');
+          const candidates = Array.from(document.querySelectorAll('main, section, article, table, tbody, thead, tr, div, ul, ol, body'))
+            .filter(el => text(el).length > 0)
+            .slice(0, 50);
+          return candidates.map((el, idx) => {
+            const t = text(el);
+            const rows = el.querySelectorAll('tr, li, p').length;
+            const links = el.querySelectorAll('a[href]').length;
+            const numbered = t.includes('1.') || t.includes('2.') || t.includes('3.');
+            return {
+              index: idx + 1,
+              selector: describe(el),
+              rows,
+              links,
+              numbered,
+              text: t.slice(0, 500),
+            };
+          });
+        }
+        """
+    )
+
+    with selectors_path.open("w", encoding="utf-8") as f:
+        for row in selector_report:
+            f.write(
+                f"Selector: {row['selector']}\n"
+                f"Child rows/items: {row['rows']}\n"
+                f"Link count: {row['links']}\n"
+                f"Contains numbered items: {row['numbered']}\n"
+                f"Text (first 500 chars): {row['text']}\n"
+                f"---\n"
+            )
+
+
+def url_ext(url: str) -> str:
+    path = urllib.parse.urlparse(url).path
+    ext = Path(path).suffix
+    return ext if ext else ""
+
+
+def infer_extension(url: str, content_type: str, fallback: str = ".bin") -> str:
+    ct = (content_type or "").lower()
+    if "pdf" in ct:
+        return ".pdf"
+    if "html" in ct:
+        return ".html"
+    ext = url_ext(url)
+    if ext:
+        return ext
+    return fallback
+
+
+def download_url(url: str, destination: Path) -> tuple[Path, str]:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "Accept": "*/*",
+        },
+    )
+    with urllib.request.urlopen(req) as resp:  # nosec - public county documents
+        data = resp.read()
+        content_type = resp.headers.get_content_type() if resp.headers else ""
+    actual_destination = destination
+    if destination.suffix == ".bin":
+        actual_destination = destination.with_suffix(infer_extension(url, content_type, ".bin"))
+    ensure_dir(actual_destination.parent)
+    actual_destination.write_bytes(data)
+    return actual_destination, content_type
+
+
+def existing_paths_present(paths: str) -> bool:
+    parts = [p for p in (paths or "").split(";") if p]
+    if not parts:
+        return False
+    return all((ROOT / p).exists() for p in parts)
+
+
+def row_paths_present(row: dict[str, str]) -> bool:
+    return existing_paths_present(row.get("local_file_paths", "") or row.get("local_path", ""))
+
+
+def read_existing_agenda_urls(csv_paths: Iterable[Path]) -> set[str]:
+    existing: set[str] = set()
+    for csv_path in csv_paths:
+        if not csv_path.exists():
+            continue
+        try:
+            with csv_path.open(newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    agenda_url = (row.get("agenda_url") or row.get("document_url") or "").strip()
+                    if agenda_url:
+                        existing.add(agenda_url)
+        except FileNotFoundError:
+            continue
+    return existing
+
+
+def read_existing_discovery_keys(csv_path: Path) -> set[tuple[str, str]]:
+    existing: set[tuple[str, str]] = set()
+    if not csv_path.exists():
+        return existing
+    try:
+        with csv_path.open(newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                category = (row.get("document_category") or "").strip()
+                url = (row.get("document_url") or "").strip()
+                if category and url:
+                    existing.add((category, url))
+    except FileNotFoundError:
+        pass
+    return existing
+
+
+def read_agenda_metadata_rows() -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for csv_path in AGENDAS_ROOT.rglob("metadata.csv"):
+        try:
+            with csv_path.open(newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    category = (row.get("document_category") or row.get("documentCategory") or "").strip().lower()
+                    agenda_url = (row.get("document_url") or row.get("agenda_url") or "").strip()
+                    if category != "agenda" or not agenda_url:
+                        continue
+                    rows.append(row)
+        except FileNotFoundError:
+            continue
+    return rows
+
+
+def filter_agenda_metadata_rows(
+    rows: list[dict[str, str]],
+    start_date: Optional[dt.date] = None,
+    end_date: Optional[dt.date] = None,
+    limit: Optional[int] = None,
+) -> list[dict[str, str]]:
+    filtered: list[dict[str, str]] = []
+    for row in rows:
+        record_date = (row.get("record_date") or row.get("meeting_date") or "").strip()
+        try:
+            parsed = dt.date.fromisoformat(record_date)
+        except Exception:
+            continue
+        if start_date and parsed < start_date:
+            continue
+        if end_date and parsed > end_date:
+            continue
+        filtered.append(row)
+        if limit is not None and len(filtered) >= limit:
+            break
+    return filtered
+
+
+def read_existing_agenda_item_keys(csv_path: Path) -> set[tuple[str, str]]:
+    existing: set[tuple[str, str]] = set()
+    if not csv_path.exists():
+        return existing
+    try:
+        with csv_path.open(newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                meeting_id = (row.get("meeting_id") or "").strip()
+                agenda_item_id = (row.get("agenda_item_id") or "").strip()
+                agenda_item_url = (row.get("agenda_item_url") or "").strip()
+                key = (meeting_id, agenda_item_id or agenda_item_url)
+                if key[0] and key[1]:
+                    existing.add(key)
+    except FileNotFoundError:
+        pass
+    return existing
+
+
+def read_existing_raw_block_keys(csv_path: Path) -> set[tuple[str, str]]:
+    existing: set[tuple[str, str]] = set()
+    if not csv_path.exists():
+        return existing
+    try:
+        with csv_path.open(newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                meeting_id = (row.get("meeting_id") or "").strip()
+                raw_block_index = (row.get("raw_block_index") or "").strip()
+                if meeting_id and raw_block_index:
+                    existing.add((meeting_id, raw_block_index))
+    except FileNotFoundError:
+        pass
+    return existing
+
+
+def read_existing_rejected_block_keys(csv_path: Path) -> set[tuple[str, str]]:
+    existing: set[tuple[str, str]] = set()
+    if not csv_path.exists():
+        return existing
+    try:
+        with csv_path.open(newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                meeting_id = (row.get("meeting_id") or "").strip()
+                raw_block_index = (row.get("raw_block_index") or "").strip()
+                if meeting_id and raw_block_index:
+                    existing.add((meeting_id, raw_block_index))
+    except FileNotFoundError:
+        pass
+    return existing
+
+
+def read_existing_structured_item_keys(csv_path: Path) -> set[tuple[str, str, str]]:
+    existing: set[tuple[str, str, str]] = set()
+    if not csv_path.exists():
+        return existing
+    try:
+        with csv_path.open(newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                meeting_id = (row.get("meeting_id") or "").strip()
+                agenda_item_number = (row.get("agenda_item_number") or "").strip()
+                agenda_item_title = (row.get("agenda_item_title") or "").strip()
+                if meeting_id and agenda_item_number:
+                    existing.add((meeting_id, agenda_item_number, agenda_item_title))
+    except FileNotFoundError:
+        pass
+    return existing
+
+
+def split_bilingual_title(title: str) -> str:
+    title = _clean_line(title)
+    if " - " in title:
+        return title.split(" - ", 1)[0].strip()
+    if " / " in title:
+        return title.split(" / ", 1)[0].strip()
+    return title
+
+
+def _raw_block_boilerplate_reason(line: str) -> str:
+    if _looks_like_boilerplate(line):
+        return "boilerplate first line"
+    if re.search(r"\baudio access code\b", line, re.I):
+        return "contains Audio Access code boilerplate"
+    return ""
+
+
+def validate_raw_block(raw_text: str) -> tuple[bool, str]:
+    text = (raw_text or "").strip()
+    if not text:
+        return False, "empty raw text"
+    first_line = _clean_line(text.splitlines()[0] if text.splitlines() else text)
+    if not first_line:
+        return False, "missing first line"
+    if re.match(r"^\d{1,2}:\d{2}\s?[AP]M\b", first_line, re.I):
+        return False, "begins with time"
+    if re.match(r"^\d+\s+[A-Za-z]", first_line):
+        return False, "begins with address"
+    boilerplate_reason = _raw_block_boilerplate_reason(first_line)
+    if boilerplate_reason:
+        return False, boilerplate_reason
+    if not re.match(r"^\d+\.\s+.+", first_line):
+        return False, "does not begin with numbered agenda item"
+
+    spam_terms = [
+        "meeting location",
+        "board members",
+        "mission",
+        "webinar",
+        "public notice",
+        "live video feeds",
+        "the public is invited",
+        "accommodations for individuals",
+    ]
+    lowered = text.lower()
+    if any(term in lowered for term in spam_terms):
+        return False, "contains non-agenda notice text"
+
+    return True, ""
+
+
+def split_raw_block_into_items(raw_text: str) -> list[dict[str, str]]:
+    text = re.sub(r"\s+", " ", raw_text or "").strip()
+    if not text:
+        return []
+
+    matches = list(re.finditer(r"(?<!\d)(\d+)\.\s+", text))
+    if not matches:
+        return []
+
+    items: list[dict[str, str]] = []
+
+    for idx, match in enumerate(matches):
+        number = int(match.group(1))
+        if idx == 0:
+            if number != 1 and len(matches) > 1:
+                # still accept the first visible top-level item if it is the first number we see
+                pass
+        else:
+            prev_number = int(matches[idx - 1].group(1))
+            if number != prev_number + 1:
+                continue
+
+        start = match.start()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        block = text[start:end].strip()
+        if not re.match(r"^\d+\.\s+", block):
+            continue
+
+        header = re.match(r"^(\d+)\.\s*(.*)$", block)
+        if not header:
+            continue
+
+        agenda_number = header.group(1)
+        body = header.group(2).strip()
+        title = split_bilingual_title(body)
+        if not title:
+            title = body[:200]
+
+        items.append({
+            "agenda_item_number": agenda_number,
+            "agenda_item_title": title,
+            "agenda_item_text": block,
+        })
+
+    return items
+
+
+def splitter_self_test(verbose: bool = False) -> bool:
+    cases = [
+        (
+            "3. TREASURER ... 4. RECORDER ...",
+            2,
+            ["3", "4"],
+        ),
+        (
+            "6. DOMRES 90 Case #: MCP250001 a. Development shall ... b. Site plan shall ...",
+            1,
+            ["6"],
+        ),
+        (
+            "1. ROLL CALL 2. INVOCATION 3. PLEDGE OF ALLEGIANCE",
+            3,
+            ["1", "2", "3"],
+        ),
+        (
+            "This item includes 24 hours advance notice for public comment.",
+            0,
+            [],
+        ),
+        (
+            "Audio Access code 154-419-871 is provided for attendees.",
+            0,
+            [],
+        ),
+        (
+            "1. TITLE ... (C-06-25-252-X-00) 2. TITLE ...",
+            2,
+            ["1", "2"],
+        ),
+    ]
+
+    passed = True
+    for idx, (sample, expected_count, expected_numbers) in enumerate(cases, start=1):
+        items = split_raw_block_into_items(sample)
+        numbers = [item["agenda_item_number"] for item in items]
+        ok = len(items) == expected_count and numbers == expected_numbers
+        passed = passed and ok
+        if verbose:
+            print(f"splitter_self_test case {idx}: {'PASS' if ok else 'FAIL'} (got {len(items)} items: {numbers})")
+
+    if verbose:
+        print(f"splitter_self_test overall: {'PASS' if passed else 'FAIL'}")
+    return passed
+
+
+def split_raw_agenda_blocks_to_structured() -> int:
+    if not RAW_AGENDA_ITEMS_CSV.exists():
+        print("No raw_agenda_items.csv found.")
+        return 0
+
+    ensure_dir(AGENDA_ITEMS_CSV.parent)
+    if not AGENDA_ITEMS_CSV.exists():
+        AGENDA_ITEMS_CSV.write_text(
+            "source_body,meeting_id,meeting_date,meeting_type,agenda_item_number,agenda_item_title,agenda_item_text,source_url\n",
+            encoding="utf-8",
+        )
+    existing_keys = read_existing_structured_item_keys(AGENDA_ITEMS_CSV)
+    rejected_keys = read_existing_rejected_block_keys(REJECTED_RAW_BLOCKS_CSV)
+    wrote = 0
+
+    with RAW_AGENDA_ITEMS_CSV.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for raw_row in reader:
+            meeting_id = (raw_row.get("meeting_id") or "").strip()
+            meeting_date = (raw_row.get("meeting_date") or "").strip()
+            meeting_type = (raw_row.get("meeting_type") or "").strip()
+            source_url = (raw_row.get("source_url") or "").strip()
+            raw_text = raw_row.get("raw_text") or ""
+            raw_block_index = (raw_row.get("raw_block_index") or "").strip()
+            is_valid, reason = validate_raw_block(raw_text)
+            if not is_valid:
+                key = (meeting_id, raw_block_index)
+                if key not in rejected_keys:
+                    write_rejected_raw_block_row({
+                        "source_body": "Board of Supervisors",
+                        "meeting_id": meeting_id,
+                        "meeting_date": meeting_date,
+                        "meeting_type": meeting_type,
+                        "raw_block_index": raw_block_index,
+                        "raw_text": raw_text,
+                        "source_url": source_url,
+                        "rejection_reason": reason,
+                    })
+                    rejected_keys.add(key)
+                continue
+
+            for item in split_raw_block_into_items(raw_text):
+                key = (meeting_id, item["agenda_item_number"], item["agenda_item_title"])
+                if key in existing_keys:
+                    continue
+                write_structured_agenda_item_row({
+                    "source_body": "Board of Supervisors",
+                    "meeting_id": meeting_id,
+                    "meeting_date": meeting_date,
+                    "meeting_type": meeting_type,
+                    "agenda_item_number": item["agenda_item_number"],
+                    "agenda_item_title": item["agenda_item_title"],
+                    "agenda_item_text": item["agenda_item_text"],
+                    "source_url": source_url,
+                })
+                existing_keys.add(key)
+                wrote += 1
+
+    return wrote
+
+
+def _clean_line(line: str) -> str:
+    return re.sub(r"\s+", " ", line or "").strip()
+
+
+def _looks_like_boilerplate(line: str) -> bool:
+    return bool(re.match(r"^(?:page\s+\d+.*|copyright.*|hyland software.*|view meeting.*|agenda online.*)$", line, re.I))
+
+
+def _looks_like_item_heading(line: str) -> Optional[re.Match[str]]:
+    line = _clean_line(line)
+    if not line or _looks_like_boilerplate(line):
+        return None
+    return re.match(r"^(?P<number>\d+(?:\.\d+)*)\.?\s*(?P<title>.*)$", line)
+
+
+def _looks_like_section_heading(line: str) -> bool:
+    line = _clean_line(line)
+    if not line or _looks_like_boilerplate(line):
+        return False
+    if re.match(r"^\d", line):
+        return False
+    if len(line) > 180:
+        return False
+    if any(ch.isdigit() for ch in line):
+        return False
+    if any(token in line for token in [":", "/", "AM", "PM"]):
+        return False
+    letters = re.sub(r"[^A-Za-zÀ-ÿ]", "", line)
+    if not letters:
+        return False
+    upper_ratio = sum(1 for ch in letters if ch.isupper()) / max(len(letters), 1)
+    return upper_ratio >= 0.65 and bool(re.search(r"[A-Za-zÀ-ÿ]", line))
+
+
+def _detect_vote_or_action(text: str) -> str:
+    t = text.lower()
+    action_patterns = [
+        (r"\bno action\b", "no action"),
+        (r"\breceived and filed\b", "received and filed"),
+        (r"\bapproved\b", "approved"),
+        (r"\badopted\b", "adopted"),
+        (r"\bpassed\b", "passed"),
+        (r"\bfailed\b", "failed"),
+        (r"\bdenied\b", "denied"),
+        (r"\bcontinued\b", "continued"),
+        (r"\bheld\b", "held"),
+        (r"\bpostponed\b", "postponed"),
+    ]
+    for pattern, label in action_patterns:
+        if re.search(pattern, t, re.I):
+            return label
+    return ""
+
+
+def _build_item_url(source_url: str, agenda_item_id: str) -> str:
+    return f"{source_url}#{urllib.parse.quote(agenda_item_id, safe='')}"
+
+
+C_NUMBER_PATTERN = re.compile(
+    r"\(?(C-\d{2}-\d{2}-\d{3}(?:-[A-Z0-9]{1,3}){1,3})\)?"
+)
+
+
+def _extract_c_number(text: str) -> str:
+    """Extract the first C-number from item text.
+
+    Pattern: (C-XX-XX-XXX-XXX-XX) or C-XX-XX-XXX-XXX-XX
+    Returns the number without parentheses, or empty string.
+    """
+    if not text:
+        return ""
+    m = C_NUMBER_PATTERN.search(text)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def parse_c_number_parts(c_number: str) -> dict[str, str]:
+    """Split a C-number into base and revision parts.
+
+    C-86-25-040-X-00 => base=C-86-25-040-X, revision=00
+    C-06-25-199-02   => base=C-06-25-199,   revision=02
+    """
+    if not c_number:
+        return {"c_number": "", "c_number_base": "", "c_number_revision": ""}
+    # The revision is the last dash-separated segment
+    last_dash = c_number.rfind("-")
+    if last_dash < 0:
+        return {"c_number": c_number, "c_number_base": c_number, "c_number_revision": ""}
+    revision = c_number[last_dash + 1:]
+    base = c_number[:last_dash]
+    # Verify revision looks like a revision code (alphanumeric, 1-3 chars)
+    if len(revision) <= 4:
+        return {"c_number": c_number, "c_number_base": base, "c_number_revision": revision}
+    # If the last segment is too long to be a revision, treat the whole thing as base
+    return {"c_number": c_number, "c_number_base": c_number, "c_number_revision": ""}
+
+
+def parse_agenda_items_from_html(html: str, source_url: str, meeting: dict[str, str]) -> list[dict[str, str]]:
+    """Extract agenda items from HTML by identifying true top-level numbered items.
+
+    Real agenda items are marked in the HTML with a bold <span> containing
+    the item number followed by a period:
+        <span style="font-weight:bold">1.</span>
+
+    This avoids promoting nested numbered paragraphs (a., b., c.), warrant
+    numbers, dollar amounts, parcel numbers, and boilerplate into agenda rows.
+    Item titles use the first lnkAgendaItem anchor after the bold span.
+    Subsequent links in the same table are section headings for upcoming items.
+    Items without any anchor fall back to the most recent section heading.
+    """
+    meeting_id = meeting["meeting_id"]
+    bold_item_pattern = re.compile(
+        r'<span[^>]*font-weight:bold[^>]*>(\d+)\.</span>'
+    )
+
+    item_spans: list[tuple[int, int]] = []
+    for m in bold_item_pattern.finditer(html):
+        num = int(m.group(1))
+        pos = m.start()
+        item_spans.append((num, pos))
+
+    if not item_spans:
+        return []
+
+    item_spans.sort(key=lambda x: x[1])
+
+    seen_positions: set[int] = set()
+    deduped: list[tuple[int, int]] = []
+    for num, pos in item_spans:
+        if pos in seen_positions:
+            continue
+        seen_positions.add(pos)
+        deduped.append((num, pos))
+
+    items: list[dict[str, str]] = []
+    pending_section = ""
+
+    for item_num, pos in deduped:
+        number_str = str(item_num)
+
+        before = html[:pos]
+        tstart = before.rfind("<table")
+        tend = html.find("</table>", pos)
+        if tstart < 0 or tend < 0:
+            continue
+        table_html = html[tstart : tend + 8]
+
+        # Find ALL lnkAgendaItem anchors in this table (after the bold span)
+        bold_offset = pos - tstart
+        lnk_titles: list[str] = []
+        for lm in re.finditer(
+            r'id="lnkAgendaItem_\d+"[^>]*>(.*?)</a>', table_html, re.DOTALL
+        ):
+            if lm.start() <= bold_offset:
+                continue
+            raw = re.sub(r"<[^>]+>", " ", lm.group(1)).strip()
+            raw = _clean_html_text(raw)
+            if raw:
+                lnk_titles.append(raw)
+
+        if lnk_titles:
+            title = split_bilingual_title(lnk_titles[0])
+            for extra_title in lnk_titles[1:]:
+                pending_section = split_bilingual_title(extra_title)
+        else:
+            if pending_section:
+                title = pending_section
+            else:
+                # No title in table and no pending section — scan backward in
+                # the full HTML for the nearest preceding lnkAgendaItem.
+                # Handles items like "CALL TO THE PUBLIC" whose section heading
+                # lives in the gap between item tables.
+                title = f"Item {number_str}"
+                before_html = html[:pos]
+                for prev_m in reversed(
+                    list(
+                        re.finditer(
+                            r'id="lnkAgendaItem_\d+"[^>]*>(.*?)</a>',
+                            before_html,
+                            re.DOTALL,
+                        )
+                    )
+                ):
+                    raw = re.sub(r"<[^>]+>", " ", prev_m.group(1)).strip()
+                    raw = _clean_html_text(raw)
+                    if raw:
+                        title = split_bilingual_title(raw)
+                        break
+
+        item_id = f"{meeting_id}-{number_str}-item"
+        full_text = _clean_html_text(
+            re.sub(r"<[^>]+>", " ", table_html)
+        )
+
+        items.append({
+            "source_body": "Board of Supervisors",
+            "meeting_id": meeting_id,
+            "meeting_date": meeting["meeting_date"],
+            "meeting_type": meeting["meeting_type"],
+            "agenda_item_section": "",
+            "agenda_item_id": item_id,
+            "agenda_item_number": number_str,
+            "agenda_item_title": title[:500],
+            "agenda_item_text": full_text[:10000],
+            "agenda_item_url": _build_item_url(source_url, item_id),
+            "vote_or_action": _detect_vote_or_action(full_text),
+            "c_number": _extract_c_number(full_text),
+            "c_number_base": "",
+            "c_number_revision": "",
+            "source_url": source_url,
+        })
+
+        # Populate base/revision after the item dict is in items
+        c_num = items[-1]["c_number"]
+        if c_num:
+            parts = parse_c_number_parts(c_num)
+            items[-1]["c_number_base"] = parts["c_number_base"]
+            items[-1]["c_number_revision"] = parts["c_number_revision"]
+
+    return items
+
+
+def _extract_supporting_docs_from_table(table_html: str, agenda_item_dict: dict, base_url: str) -> list[dict]:
+    """Extract supporting document links from an agenda item's table HTML.
+
+    Looks for anchor tags pointing to external documents (PDF, DOC,
+    URLs containing /Document/, /File/, etc.).
+    """
+    docs: list[dict] = []
+    seen_urls: set[str] = set()
+
+    doc_pattern = re.compile(
+        r'href="(?!\#)([^"]*(?:Document|File|Attachment|download|\\.pdf|\\.doc)"[^"]*)"[^>]*>(.*?)</a>',
+        re.DOTALL | re.I,
+    )
+    for m in doc_pattern.finditer(table_html):
+        url = m.group(1).strip()
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        title = re.sub(r"<[^>]+>", " ", m.group(2)).strip()
+        title = _clean_html_text(title)
+        abs_url = urllib.parse.urljoin(base_url, url) if not url.startswith("http") else url
+
+        if abs_url in seen_urls:
+            continue
+        seen_urls.add(abs_url)
+
+        parsed = urllib.parse.urlparse(abs_url)
+        path = Path(parsed.path) if parsed.path else Path(title)
+        file_name = path.name or None
+        ext = path.suffix.lstrip(".") or None
+
+        docs.append({
+            "agenda_item_id": 0,
+            "meeting_id": agenda_item_dict.get("meeting_id", ""),
+            "agenda_item_number": int(agenda_item_dict.get("agenda_item_number", 0)),
+            "c_number": agenda_item_dict.get("c_number", "") or None,
+            "c_number_base": agenda_item_dict.get("c_number_base", "") or None,
+            "c_number_revision": agenda_item_dict.get("c_number_revision"),
+            "document_title": title or file_name or "",
+            "document_url": abs_url,
+            "document_type": ext.upper() if ext else None,
+            "file_name": file_name,
+            "file_extension": ext,
+        })
+
+    return docs
+
+
+def extract_supporting_documents_from_items(
+    html: str,
+    agenda_items: list[dict],
+    source_url: str,
+) -> list[dict]:
+    """Extract supporting documents from the full agenda HTML.
+
+    Finds each item's table, then searches for document links within it.
+    Returns a flat list of supporting document dicts.
+    """
+    all_docs: list[dict] = []
+    seen_urls: set[str] = set()
+
+    for item_dict in agenda_items:
+        item_num = int(item_dict.get("agenda_item_number", 0))
+        if not item_num:
+            continue
+
+        # Find the item's bold span in the HTML
+        bold_pattern = re.compile(
+            r'<span[^>]*font-weight:bold[^>]*>'
+            + re.escape(str(item_num))
+            + r'\.</span>'
+        )
+        m = bold_pattern.search(html)
+        if not m:
+            continue
+
+        pos = m.start()
+        tstart = html.rfind("<table", 0, pos)
+        tend = html.find("</table>", pos)
+        if tstart < 0 or tend < 0:
+            continue
+        table_html = html[tstart : tend + 8]
+
+        docs = _extract_supporting_docs_from_table(table_html, item_dict, source_url)
+        for doc in docs:
+            url = doc["document_url"]
+            if url not in seen_urls:
+                seen_urls.add(url)
+                all_docs.append(doc)
+
+    return all_docs
+
+
+async def extract_supporting_documents_dynamic(
+    page,
+    agenda_items: list[dict],
+    base_url: str,
+) -> list[dict]:
+    """Extract supporting documents by clicking each agenda item link.
+
+    On Agenda Online, supporting documents are revealed by clicking each
+    agenda item link, which populates a #itemView div via AJAX. The
+    interactive links are those where the page's JavaScript has bound a
+    click handler that calls loadAgendaItem(). These links have href="#"
+    and live inside #agendaView.
+
+    For each interactive link:
+    1. Click the link
+    2. Wait for #itemView to update
+    3. Extract the C-number from .item-view-title-text
+    4. Extract supporting document links from lnkAttachment_* anchors
+    5. Look up the corresponding agenda item by C-number
+    6. Build supporting document dicts with meeting_id and agenda_item_number
+
+    Returns a flat list of supporting document dicts ready for persist_meeting().
+    """
+    all_docs: list[dict] = []
+    seen_urls: set[str] = set()
+
+    # Build a lookup: C-number → agenda_item_dict
+    # Also build a text-based fallback lookup
+    items_by_c_number: dict[str, dict] = {}
+    items_by_text: dict[str, dict] = {}
+    items_ordered: list[dict] = list(agenda_items)
+    for item_dict in agenda_items:
+        c_num = (item_dict.get("c_number") or "").strip()
+        if c_num:
+            items_by_c_number[c_num] = item_dict
+        title = (item_dict.get("agenda_item_title") or "").strip().lower()
+        if title:
+            items_by_text[title] = item_dict
+
+    # Find interactive links (href="#") in #agendaView
+    interactive_links = await page.evaluate(
+        """() => {
+            const container = document.getElementById('agendaView');
+            if (!container) return [];
+            const links = container.querySelectorAll('a[href="#"]');
+            return Array.from(links).map(l => ({
+                id: l.id,
+                text: (l.textContent || '').trim()
+            }));
+        }"""
+    )
+
+    if not interactive_links:
+        return all_docs
+
+    # Local reference to avoid repeated re-import
+    join = urllib.parse.urljoin
+
+    for link_info in interactive_links:
+        link_id = link_info["id"]
+        link_text = link_info["text"]
+
+        try:
+            # Click and extract in one evaluate call with timeout
+            result = await asyncio.wait_for(
+                _click_and_extract_item(page, link_id),
+                timeout=12,
+            )
+
+            if result is None:
+                continue
+
+            c_number = result.get("c_number", "")
+            attachments = result.get("attachments", [])
+
+            if not attachments:
+                continue
+
+            # Look up the agenda item by C-number or link text
+            item_dict = None
+            if c_number and c_number in items_by_c_number:
+                item_dict = items_by_c_number[c_number]
+            elif link_text.lower() in items_by_text:
+                item_dict = items_by_text[link_text.lower()]
+
+            meeting_id = (item_dict or {}).get("meeting_id", "")
+            base_item_num = int((item_dict or {}).get("agenda_item_number", 0))
+            c_number_parts = parse_c_number_parts(c_number) if c_number else {}
+
+            for att in attachments:
+                url = att.get("href", "")
+                if not url or url in seen_urls:
+                    continue
+                abs_url = join(base_url, url) if not url.startswith("http") else url
+                if abs_url in seen_urls:
+                    continue
+                seen_urls.add(abs_url)
+
+                title = att.get("text", "")
+                parsed = urllib.parse.urlparse(abs_url)
+                path = Path(parsed.path) if parsed.path else Path(title)
+                file_name = path.name or None
+                ext = path.suffix.lstrip(".") or None
+                ext = ext or url_ext(abs_url).lstrip(".") or None
+
+                doc = {
+                    "agenda_item_id": base_item_num,
+                    "meeting_id": meeting_id,
+                    "agenda_item_number": base_item_num,
+                    "c_number": c_number if c_number else None,
+                    "c_number_base": c_number_parts.get("c_number_base", "") or None,
+                    "c_number_revision": c_number_parts.get("c_number_revision"),
+                    "document_title": title or file_name or "",
+                    "document_url": abs_url,
+                    "document_type": ext.upper() if ext else None,
+                    "file_name": file_name,
+                    "file_extension": ext,
+                }
+                all_docs.append(doc)
+
+        except asyncio.TimeoutError:
+            continue
+        except Exception:
+            continue
+
+    return all_docs
+
+
+async def _click_and_extract_item(page, link_id: str) -> dict | None:
+    """Click an interactive agenda item link and extract item view data.
+
+    Returns a dict with 'c_number' and 'attachments' keys, or None if
+    the click failed or timed out.
+    """
+    # Click the link
+    clicked = await page.evaluate(
+        f"""(id) => {{
+            const el = document.getElementById(id);
+            if (!el) return false;
+            el.click();
+            return true;
+        }}""",
+        link_id,
+    )
+    if not clicked:
+        return None
+
+    # Wait for #itemView to be populated (may already be populated
+    # from a previous click — check for content change)
+    try:
+        await page.wait_for_function(
+            """() => {
+                const iv = document.getElementById('itemView');
+                return iv && iv.children.length > 0;
+            }""",
+            timeout=8000,
+        )
+    except Exception:
+        pass
+
+    # Small settle time
+    await page.wait_for_timeout(300)
+
+    # Extract C-number and attachments in one shot
+    result = await page.evaluate(
+        """() => {
+            const cnum = document.querySelector('.item-view-title-text');
+            const c_number = cnum ? cnum.textContent.trim() : '';
+            const anchors = document.querySelectorAll('a[id^="lnkAttachment_"]');
+            const attachments = Array.from(anchors).map(a => ({
+                href: a.getAttribute('href') || '',
+                text: (a.textContent || '').trim()
+            }));
+            return { c_number, attachments };
+        }"""
+    )
+
+    return result
+
+
+async def is_image_based_agenda(page) -> bool:
+    """Check if the agenda page is image-based (scanned) and unparseable.
+
+    Looks for:
+    - Zero interactive links (href=\"#\" in #agendaView)
+    - Zero numbered table items matching the agenda pattern
+    - Significant base64 image data as primary content
+    - Zero lnkAgendaItem_TOC links with numeric patterns
+    """
+    try:
+        data = await page.evaluate(
+            """() => {
+                const av = document.getElementById('agendaView');
+                if (!av) return { interactive: 0, tables: 0, images: 0, hasNumberedItems: false };
+                const interactive = av.querySelectorAll('a[href="#"]').length;
+                const tables = av.querySelectorAll('table').length;
+                const images = av.querySelectorAll('img').length;
+                const text = av.textContent || '';
+                // Check for numbered item patterns like "1. " or "1)"
+                const hasNumberedItems = /\\b\\d+\\.\\s+|\\b\\d+\\)\\s+/.test(text);
+                // Check for image-based content (data URI images, large image content)
+                const hasDataUriImages = av.innerHTML.includes('data:image');
+                return { interactive, tables, images, hasNumberedItems, hasDataUriImages, textLen: text.length };
+            }"""
+        )
+        # Image-based: no interactive links, no numbered items, has data URI images or many images + little text
+        if data['interactive'] == 0 and not data['hasNumberedItems'] and data['images'] > 0:
+            return True
+        if data['interactive'] == 0 and not data['hasNumberedItems'] and data.get('hasDataUriImages'):
+            return True
+        return False
+    except Exception:
+        # If the evaluation fails, assume it's not image-based
+        return False
+
+
+async def extract_agenda_items_for_meeting(page, meeting: dict[str, str]) -> list[dict[str, str]]:
+    source_url = (meeting.get("document_url") or meeting.get("agenda_url") or "").strip()
+    if not source_url:
+        return []
+    await page.goto(source_url, wait_until="domcontentloaded")
+    await page.wait_for_timeout(3000)
+    html = await page.content()
+    normalized_meeting = {
+        "meeting_id": (meeting.get("record_id") or meeting.get("meeting_id") or "meeting").strip() or "meeting",
+        "meeting_date": (meeting.get("record_date") or meeting.get("meeting_date") or "").strip(),
+        "meeting_type": (meeting.get("meeting_type") or "").strip(),
+    }
+    return parse_agenda_items_from_html(html, source_url, normalized_meeting)
+
+
+async def extract_raw_agenda_blocks_for_meeting(page, meeting: dict[str, str]) -> list[dict[str, str]]:
+    source_url = (meeting.get("document_url") or meeting.get("agenda_url") or "").strip()
+    if not source_url:
+        return []
+    await page.goto(source_url, wait_until="domcontentloaded")
+    await page.wait_for_timeout(1000)
+    return parse_raw_agenda_blocks_html(await page.content(), meeting)
+
+
+async def extract_raw_agenda_blocks_from_metadata(page, meeting_rows: Optional[list[dict[str, str]]] = None) -> int:
+    if meeting_rows is None:
+        meeting_rows = read_agenda_metadata_rows()
+    if not meeting_rows:
+        print("No agenda metadata rows found for raw block extraction.")
+        return 0
+
+    existing_keys = read_existing_raw_block_keys(RAW_AGENDA_ITEMS_CSV)
+    ensure_dir(RAW_AGENDA_ITEMS_CSV.parent)
+    wrote = 0
+
+    for meeting in meeting_rows:
+        blocks = await extract_raw_agenda_blocks_for_meeting(page, meeting)
+        for block in blocks:
+            key = (block["meeting_id"], block["raw_block_index"])
+            if key in existing_keys:
+                continue
+            write_raw_agenda_item_row(block)
+            existing_keys.add(key)
+            wrote += 1
+    return wrote
+
+
+async def extract_agenda_items_from_metadata(
+    page,
+    start_date: Optional[dt.date] = None,
+    end_date: Optional[dt.date] = None,
+    limit: Optional[int] = None,
+) -> int:
+    meeting_rows = filter_agenda_metadata_rows(
+        read_agenda_metadata_rows(), start_date, end_date, limit
+    )
+    if not meeting_rows:
+        print("No agenda metadata rows matched the selected date range/limit.")
+        return 0
+
+    existing_keys = read_existing_agenda_item_keys(AGENDA_ITEMS_CSV)
+    ensure_dir(AGENDA_ITEMS_CSV.parent)
+    wrote = 0
+
+    for meeting in meeting_rows:
+        meeting_id = (meeting.get("record_id") or meeting.get("meeting_id") or "").strip() or "meeting"
+        items = await extract_agenda_items_for_meeting(page, meeting)
+        for item in items:
+            key = (item["meeting_id"], item["agenda_item_id"])
+            if key in existing_keys:
+                continue
+            write_agenda_item_row(item)
+            existing_keys.add(key)
+            wrote += 1
+    return wrote
+
+
+async def extract_meetings(page, search_url: str) -> list[Meeting]:
+    await page.goto(search_url, wait_until="domcontentloaded")
+    await page.wait_for_timeout(1000)
+    table_found = False
+    try:
+        await page.wait_for_selector('table:has(th:has-text("Meeting Name"))', timeout=60000)
+        table_found = True
+    except Exception:
+        try:
+            await page.wait_for_selector('text=Meeting Search Results', timeout=60000)
+        except Exception:
+            pass
+    html = await page.content()
+    table_found = table_found or _search_results_table_present(html)
+    meetings = parse_search_results_html(html, search_url)
+
+    if not table_found:
+        ensure_dir(LOGS_ROOT)
+        await page.screenshot(path=str(LOGS_ROOT / "debug-search-page.png"), full_page=True)
+        (LOGS_ROOT / "debug-search-page.html").write_text(html, encoding="utf-8")
+    return meetings
+
+
+def iter_discovery_documents(meeting: Meeting):
+    yield "agenda", meeting.agenda_url
+    yield "summary", meeting.summary_url
+    yield "minutes", meeting.minutes_url
+    yield "video", meeting.video_url
+
+
+def write_discovery_rows(meeting: Meeting, search_url: str, existing_keys: set[tuple[str, str]]) -> None:
+    for category, url in iter_discovery_documents(meeting):
+        if not url or (category, url) in existing_keys:
+            continue
+        write_discovery_row({
+            "source_body": "Board of Supervisors",
+            "document_category": category,
+            "record_id": meeting.meeting_id,
+            "record_date": meeting.meeting_date,
+            "record_time": meeting.meeting_time,
+            "record_title": meeting.meeting_title,
+            "meeting_type": meeting.meeting_type,
+            "source_page_url": SOURCE_PAGE,
+            "document_url": url,
+            "local_path": "",
+            "download_status": "discovered",
+            "downloaded_at": "",
+            "source_search_url": search_url,
+            "notes": "",
+        })
+        existing_keys.add((category, url))
+
+
+async def count_agenda_items_for_meeting(page, meeting_url: str) -> int:
+    """Visit an agenda HTML page and count the number of numbered agenda items."""
+    items = await extract_agenda_item_titles(page, meeting_url)
+    return len(items)
+
+
+def _clean_lnk_title(text: str) -> str:
+    """Decode HTML entities and collapse whitespace."""
+    return _clean_html_text(text)
+
+
+def _find_item_tables(html: str) -> list[tuple[int, int, int]]:
+    """Find all numbered agenda items and their containing table boundaries.
+
+    Returns: list of (item_number, bold_span_position, table_end_position)
+    """
+    bold_pattern = re.compile(
+        r'<span[^>]*font-weight:bold[^>]*>(\d+)\.</span>'
+    )
+    items: list[tuple[int, int, int]] = []
+    for m in bold_pattern.finditer(html):
+        num = int(m.group(1))
+        pos = m.start()
+        tend = html.find("</table>", pos)
+        if tend < 0:
+            continue
+        items.append((num, pos, tend))
+    return items
+
+
+def _extract_lnk_from_table(table_html: str, bold_offset: int) -> list[str]:
+    """Extract all lnkAgendaItem titles from a table that appear after the bold span."""
+    titles: list[str] = []
+    for m in re.finditer(
+        r'id="lnkAgendaItem_\d+"[^>]*>(.*?)</a>', table_html, re.DOTALL
+    ):
+        if m.start() <= bold_offset:
+            continue  # Before the bold span — not the item's title
+        text = re.sub(r"<[^>]+>", " ", m.group(1)).strip()
+        text = _clean_lnk_title(text)
+        if text:
+            titles.append(text)
+    return titles
+
+
+async def extract_agenda_item_titles(page, meeting_url: str) -> list[tuple[int, str]]:
+    """Visit an agenda HTML page and extract (item_number, title) pairs.
+
+    Finds bold numbered <span> elements and their associated titles:
+    - Uses the first lnkAgendaItem anchor after the bold span in the item's
+      own table as the title.
+    - Subsequent lnkAgendaItems in the same table are section headings for
+      the next items.
+    - Items without any anchor in their table fall back to the nearest
+      preceding lnkAgendaItem by position in the full HTML.
+    """
+    await page.goto(meeting_url, wait_until="domcontentloaded")
+    await page.wait_for_timeout(2000)
+    html = await page.content()
+
+    # Find all numbered items with their table boundaries
+    items = _find_item_tables(html)
+    if not items:
+        return []
+
+    # Sort by display position
+    items.sort(key=lambda x: x[1])
+
+    # Build position-sorted list of all lnkAgendaItem entries
+    all_lnk_positions: list[tuple[str, int]] = []
+    for m in re.finditer(
+        r'id="lnkAgendaItem_\d+"[^>]*>(.*?)</a>', html, re.DOTALL
+    ):
+        text = re.sub(r"<[^>]+>", " ", m.group(1)).strip()
+        text = _clean_lnk_title(text)
+        if text:
+            all_lnk_positions.append((text, m.start()))
+    all_lnk_positions.sort(key=lambda x: x[1])
+
+    # Track latest section heading found as extra lnk within an item's table
+    pending_section = ""
+
+    results: list[tuple[int, str, int]] = []
+    for idx, (num, item_pos, tend) in enumerate(items):
+        tstart = html.rfind("<table", 0, item_pos)
+        if tstart < 0:
+            results.append((num, pending_section, item_pos))
+            continue
+
+        table_html = html[tstart : tend + 8]
+        lnk_titles = _extract_lnk_from_table(table_html, item_pos - tstart)
+
+        if lnk_titles:
+            # First title is the item's own
+            title = lnk_titles[0]
+            # Subsequent titles in the same table are section headings
+            # for upcoming items (e.g. "CALL TO THE PUBLIC" in the
+            # same table as the preceding FCD item)
+            for extra_title in lnk_titles[1:]:
+                pending_section = extra_title
+        else:
+            # No title anchor in this item's table — fall back to
+            # the most recently seen section heading (from a prior
+            # item's extra lnkAgendaItem, not from the TOC area).
+            title = pending_section
+
+        results.append((num, title, item_pos))
+
+    return [(num, title) for num, title, _ in results]
+
+
+async def main() -> int:
+    args = parse_args()
+
+    if args.self_test_splitter:
+        return 0 if splitter_self_test(verbose=True) else 1
+
+    if args.init_db:
+        from db import init_db
+
+        init_db()
+        print("Database tables created.")
+        return 0
+
+    if args.status:
+        from db import get_session, get_sync_status_summary
+        session = get_session()
+        summary = get_sync_status_summary(session)
+        session.close()
+        print(f"{'Status':<14}  {'Count':>6}")
+        print(f"{'─' * 14}  {'─' * 6}")
+        for status in ["complete", "partial", "manual_review", "failed", "pending"]:
+            print(f"{status:<14}  {summary.get(status, 0):>6}")
+        print(f"{'─' * 14}  {'─' * 6}")
+        print(f"{'Total':<14}  {summary['total']:>6}")
+        print(f"\nItems: {summary['total_items']}  Supporting docs: {summary['total_docs']}")
+        return 0
+
+    if args.failed:
+        from db import get_session, get_failed_meetings, get_meetings_by_status
+        session = get_session()
+        failed_statuses = ["failed", "partial", "manual_review"] if args.include_manual_review else ["failed", "partial"]
+        meetings = get_meetings_by_status(session, failed_statuses)
+        session.close()
+        if not meetings:
+            print("No meetings with issues.")
+            return 0
+        print(f"{'ID':>6}  {'Date':<12}  {'Status':<12}  {'Retries':>7}  {'Error'}")
+        print(f"{'─' * 6}  {'─' * 12}  {'─' * 12}  {'─' * 7}  {'─' * 40}")
+        for m in meetings:
+            err = (m.last_error or "")[:60]
+            print(f"{m.meeting_id:>6}  {m.meeting_date:<12}  {m.sync_status:<12}  {m.retry_count:>7}  {err}")
+        return 0
+
+    if args.persist:
+        from db import get_session, persist_meeting
+        import csv
+
+        csv_path = AGENDA_ITEMS_CSV
+        if not csv_path.exists():
+            print(f"No agenda items CSV found at {csv_path}. Run --extract-agenda-items first.")
+            return 1
+
+        with csv_path.open(newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+        if not rows:
+            print("CSV is empty.")
+            return 1
+
+        # Group by meeting_id + meeting_date
+        groups: dict[tuple[str, str], list[dict]] = {}
+        for row in rows:
+            key = (row.get("meeting_id", ""), row.get("meeting_date", ""))
+            groups.setdefault(key, []).append(row)
+
+        session = get_session()
+        total = 0
+        errors = 0
+        for (meeting_id, meeting_date), items in sorted(groups.items()):
+            first = items[0]
+            meeting_dict = {
+                "meeting_id": meeting_id,
+                "meeting_date": meeting_date,
+                "meeting_type": first.get("meeting_type", ""),
+                "meeting_title": first.get("agenda_item_section", "") or meeting_id,
+                "source_url": first.get("source_url", ""),
+            }
+            try:
+                count = persist_meeting(session, meeting_id, items)
+                total += count
+                print(f"  {meeting_id} {meeting_date}: {count} items")
+            except Exception as e:
+                errors += 1
+                print(f"  {meeting_id} {meeting_date}: FAILED - {e}")
+
+        session.close()
+        print(f"Persisted {total} agenda items across {len(groups)} meeting(s)")
+        if errors:
+            print(f"{errors} meeting(s) had errors")
+            return 1
+        return 0
+
+    if args.sync:
+        from db import get_session, init_db, persist_meeting
+
+        init_db()
+
+        if not args.from_file and args.meeting_id and not args.offline:
+            meeting_id = args.meeting_id
+            source_url = (
+                "https://mccobagenda.databankcloud.com/AgendaOnline/Meetings/ViewMeeting"
+                f"?id={meeting_id}&doctype=1"
+            )
+            print(f"Syncing meeting {meeting_id}...")
+            print(f"  Agenda URL: {source_url}")
+
+            meeting_dict = {
+                "meeting_id": meeting_id,
+                "meeting_date": "",
+                "meeting_type": "",
+                "meeting_title": "",
+                "source_url": source_url,
+            }
+            extract_meeting = {
+                "document_url": source_url,
+                "agenda_url": source_url,
+                "record_id": meeting_id,
+                "meeting_id": meeting_id,
+                "record_date": "",
+                "meeting_date": "",
+                "meeting_type": "",
+            }
+
+            from db import create_or_get_meeting, update_sync_status, replace_meeting_data_safe
+
+            session = get_session()
+            try:
+                # Ensure meeting row exists
+                meeting = create_or_get_meeting(session, meeting_dict)
+                session.commit()
+
+                # Check if we should skip complete
+                if args.skip_complete and meeting.sync_status == "complete":
+                    print(f"  {meeting_id}: status=complete, skipping (use --force to re-sync)")
+                    session.close()
+                    return 0
+
+                async_playwright = get_async_playwright()
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=not args.headed)
+                    page = await browser.new_page()
+                    page.set_default_timeout(60000)
+                    try:
+                        # Mark as attempted
+                        update_sync_status(session, meeting_id, meeting.sync_status)
+                        session.commit()
+
+                        retry = args.retry_count
+
+                        # Extract agenda items with retry
+                        async def do_extract_items():
+                            return await extract_agenda_items_for_meeting(page, extract_meeting)
+
+                        items = await retry_with_backoff(
+                            lambda: do_extract_items(),
+                            max_attempts=retry,
+                            label=f"items {meeting_id}",
+                        )
+                        if not items:
+                            # Check if page is image-based (unparseable but reachable)
+                            if await is_image_based_agenda(page):
+                                status = "manual_review"
+                                error = "Unsupported agenda format: page loaded but no parseable agenda items found; possible image/scanned agenda"
+                                print(f"  {meeting_id}: 0 items (image/scanned agenda - manual review)")
+                            else:
+                                status = "failed"
+                                error = "No agenda items found on page"
+                                print(f"  {meeting_id}: 0 items (no agenda items found)")
+                            update_sync_status(
+                                session, meeting_id, status,
+                                error=error,
+                            )
+                            session.commit()
+                            return 1
+
+                        # Extract supporting documents with retry
+                        async def do_extract_docs():
+                            return await extract_supporting_documents_dynamic(page, items, source_url)
+
+                        docs = []
+                        docs_ok = True
+                        try:
+                            docs = await retry_with_backoff(
+                                lambda: do_extract_docs(),
+                                max_attempts=retry,
+                                label=f"docs {meeting_id}",
+                            )
+                        except Exception as e:
+                            docs_ok = False
+                            print(f"  {meeting_id}: supporting doc extraction failed: {e}")
+
+                        if not docs_ok:
+                            # Items succeeded but docs failed - partial
+                            replace_meeting_data_safe(
+                                session, meeting_id, meeting_dict, items,
+                                supporting_doc_dicts=docs,
+                            )
+                            update_sync_status(
+                                session, meeting_id, "partial",
+                                item_count_expected=len(items),
+                                item_count_actual=len(items),
+                                supporting_doc_count=len(docs),
+                                items_extracted=True,
+                                supporting_docs_extracted=False,
+                                error="Supporting document extraction failed",
+                            )
+                            session.commit()
+                            print(f"  {meeting_id}: {len(items)} items synced (partial - no supporting docs)")
+                        else:
+                            replace_meeting_data_safe(
+                                session, meeting_id, meeting_dict, items,
+                                supporting_doc_dicts=docs,
+                            )
+                            session.commit()
+                            print(f"  {meeting_id}: {len(items)} items, {len(docs)} supporting docs synced")
+
+                    except Exception as e:
+                        # Items extraction failed
+                        update_sync_status(
+                            session, meeting_id, "failed",
+                            error=str(e)[:500],
+                        )
+                        session.commit()
+                        print(f"  {meeting_id}: FAILED - {e}")
+                        return 1
+                    finally:
+                        await browser.close()
+            except Exception as e:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+            return 0
+
+        if args.offline and args.meeting_id:
+            # Offline: auto-discover HTML file by meeting ID
+            meeting_id = args.meeting_id
+            search_dirs = [
+                ROOT / "data" / "agenda-html",
+                ROOT / "tests" / "fixtures",
+                ROOT / "tests" / "fixtures" / "agendas",
+                ROOT,
+            ]
+            found = None
+            for d in search_dirs:
+                if not d.exists():
+                    continue
+                for pattern in [f"*{meeting_id}*.html", f"*{meeting_id}*.htm"]:
+                    candidates = list(d.glob(pattern))
+                    if candidates:
+                        found = candidates[0]
+                        break
+                if found:
+                    break
+
+            if not found:
+                raise SystemExit(
+                    f"No HTML file found for meeting {meeting_id}. "
+                    "Save the agenda HTML to one of:"
+                    f"\n  - data/agenda-html/{meeting_id}.html"
+                    f"\n  - tests/fixtures/"
+                )
+
+            print(f"Offline sync: using {found}")
+            # Delegate to the --from-file handler by rewriting args
+            args.from_file = str(found)
+            # Fall through to the from-file block below
+
+        if args.from_file:
+            # Sync from a local HTML file — no server needed
+            # Check this before --meeting-id so --from-file takes priority
+            # when both flags are given
+            fixture_path = Path(args.from_file)
+            if not fixture_path.exists():
+                raise SystemExit(f"File not found: {fixture_path}")
+
+            # Parse meeting metadata from filename
+            # Supports:
+            #   {date}_{type}_{id}_agenda.html  (e.g. 2025-01-29_formal_4449_agenda.html)
+            #   {id}_{type}_{date}.html         (e.g. 4667_formal_2026-04-22.html)
+            fn_match = re.match(
+                r"(\d{4}-\d{2}-\d{2})_(.+?)_(\d+)_agenda\.html"
+                r"|(\d+)_(.+?)_(\d{4}-\d{2}-\d{2})\.html",
+                fixture_path.name,
+            )
+            if fn_match:
+                groups = fn_match.groups()
+                if groups[0]:  # date_type_id_agenda pattern
+                    meeting_date = groups[0]
+                    meeting_type = groups[1].replace("_", " ").title()
+                    meeting_id = groups[2]
+                else:  # id_type_date pattern
+                    meeting_id = groups[3]
+                    meeting_type = groups[4].replace("_", " ").title()
+                    meeting_date = groups[5]
+            elif args.meeting_id:
+                meeting_id = args.meeting_id
+                meeting_date = ""
+                meeting_type = ""
+            else:
+                raise SystemExit(
+                    f"Could not parse meeting info from filename '{fixture_path.name}'. "
+                    "Use --meeting-id to specify the meeting ID, "
+                    "or rename the file to: YYYY-MM-DD_type_ID_agenda.html"
+                )
+
+            html = fixture_path.read_text(encoding="utf-8")
+            source_url = (
+                "https://mccobagenda.databankcloud.com/AgendaOnline/Meetings/ViewMeeting"
+                f"?id={meeting_id}&doctype=1"
+            )
+
+            meeting = {
+                "meeting_id": meeting_id,
+                "meeting_date": meeting_date,
+                "meeting_type": meeting_type,
+            }
+            meeting_dict = {
+                "meeting_id": meeting_id,
+                "meeting_date": meeting_date,
+                "meeting_type": meeting_type,
+                "meeting_title": f"Meeting {meeting_id}",
+                "source_url": source_url,
+            }
+
+            items = parse_agenda_items_from_html(html, source_url, meeting)
+            if not items:
+                print(f"  {meeting_id}: 0 items (no agenda items found in file)")
+                return 1
+
+            # Extract supporting documents from the HTML
+            docs = extract_supporting_documents_from_items(html, items, source_url)
+            if docs:
+                print(f"  {meeting_id}: {len(docs)} supporting document(s) found")
+
+            session = get_session()
+            count = persist_meeting(session, meeting_id, items, supporting_doc_dicts=docs)
+            session.close()
+            print(f"  {meeting_id} {meeting_date}: {count} items synced from '{fixture_path.name}'")
+            return 0
+
+        if not args.start_date or not args.end_date:
+            raise SystemExit("--start-date and --end-date (or --date) are required for --sync, or use --meeting-id")
+        start_date = parse_date(args.start_date)
+        end_date = parse_date(args.end_date)
+        if end_date < start_date:
+            raise SystemExit("--end-date must be on or after --start-date")
+
+        search_url = build_search_url(start_date, end_date)
+        print(f"Agenda Online search URL: {search_url}")
+
+        from db import get_session, init_db, persist_meeting
+
+        init_db()
+        async_playwright = get_async_playwright()
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=not args.headed)
+            page = await browser.new_page()
+            page.set_default_timeout(60000)
+            try:
+                await page.goto(SOURCE_PAGE, wait_until="domcontentloaded")
+                await page.goto(search_url, wait_until="domcontentloaded")
+                meetings = await extract_meetings(page, search_url)
+
+                if not meetings:
+                    print(f"No meetings found for {start_date.isoformat()} through {end_date.isoformat()}")
+                    return 0
+
+                if args.limit is not None:
+                    meetings = meetings[: args.limit]
+
+                from db import create_or_get_meeting, update_sync_status, replace_meeting_data_safe
+
+                session = get_session()
+                total = 0
+                errors = 0
+                skipped = 0
+                for meeting in meetings:
+                    meeting_dict = {
+                        "meeting_id": meeting.meeting_id,
+                        "meeting_date": meeting.meeting_date,
+                        "meeting_type": meeting.meeting_type,
+                        "meeting_title": meeting.meeting_title,
+                        "source_url": meeting.agenda_url,
+                    }
+
+                    extract_meeting = {
+                        "document_url": meeting.agenda_url,
+                        "agenda_url": meeting.agenda_url,
+                        "record_id": meeting.meeting_id,
+                        "meeting_id": meeting.meeting_id,
+                        "record_date": meeting.meeting_date,
+                        "meeting_date": meeting.meeting_date,
+                        "meeting_type": meeting.meeting_type,
+                    }
+
+                    # Ensure meeting row exists
+                    db_meeting = create_or_get_meeting(session, meeting_dict)
+                    session.commit()
+
+                    # Determine which statuses to retry
+                    retry_statuses = ["failed", "partial", "pending"]
+                    if args.include_manual_review:
+                        retry_statuses.append("manual_review")
+                    # When --retry-failed is used, only process retry_statuses
+                    # When --force is used, process everything
+                    # When neither, skip complete
+                    if not args.force and args.retry_failed:
+                        if db_meeting.sync_status not in retry_statuses:
+                            skipped += 1
+                            continue
+                    elif not args.force and db_meeting.sync_status == "complete":
+                        skipped += 1
+                        continue
+                    elif args.retry_failed and db_meeting.sync_status not in retry_statuses:
+                        skipped += 1
+                        continue
+
+                    try:
+                        items = await extract_agenda_items_for_meeting(page, extract_meeting)
+                        if not items:
+                            if await is_image_based_agenda(page):
+                                status = "manual_review"
+                                error = "Unsupported agenda format: page loaded but no parseable agenda items found; possible image/scanned agenda"
+                                print(f"  {meeting.meeting_id} {meeting.meeting_date}: 0 items (image/scanned - manual review)")
+                            else:
+                                status = "failed"
+                                error = "No agenda items found"
+                                print(f"  {meeting.meeting_id} {meeting.meeting_date}: 0 items ({status})")
+                            update_sync_status(
+                                session, meeting.meeting_id, status,
+                                error=error,
+                            )
+                            session.commit()
+                            if status == "failed":
+                                errors += 1
+                            continue
+
+                        docs = await extract_supporting_documents_dynamic(
+                            page, items, meeting.agenda_url
+                        )
+
+                        status_line = f"  {meeting.meeting_id} {meeting.meeting_date}: {len(items)} items, {len(docs)} supporting doc(s)"
+
+                        try:
+                            replace_meeting_data_safe(
+                                session, meeting.meeting_id, meeting_dict, items,
+                                supporting_doc_dicts=docs,
+                            )
+                            total += len(items)
+                            print(f"{status_line}")
+                        except Exception as e:
+                            update_sync_status(
+                                session, meeting.meeting_id, "failed",
+                                error=str(e)[:500],
+                            )
+                            session.commit()
+                            print(f"{status_line}: FAILED - {e}")
+                            errors += 1
+                    except Exception as e:
+                        # Pre-extraction failure
+                        update_sync_status(
+                            session, meeting.meeting_id, "failed",
+                            error=str(e)[:500],
+                        )
+                        session.commit()
+                        print(f"  {meeting.meeting_id} {meeting.meeting_date}: FAILED - {e}")
+                        errors += 1
+
+                session.close()
+                print(f"Synced {total} agenda items across {len(meetings)} meeting(s)")
+                if skipped:
+                    print(f"{skipped} meeting(s) skipped (status=complete), use --force to re-sync")
+                if errors:
+                    print(f"{errors} meeting(s) had errors")
+                    return 1
+            finally:
+                await browser.close()
+        return 0
+
+    if args.count_agenda_items or args.list_agenda_items:
+        if not args.start_date or not args.end_date:
+            raise SystemExit("--start-date and --end-date are required")
+        start_date = parse_date(args.start_date)
+        end_date = parse_date(args.end_date)
+        if end_date < start_date:
+            raise SystemExit("--end-date must be on or after --start-date")
+
+        search_url = build_search_url(start_date, end_date)
+        async_playwright = get_async_playwright()
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=not args.headed)
+            page = await browser.new_page()
+            page.set_default_timeout(60000)
+            try:
+                await page.goto(SOURCE_PAGE, wait_until="domcontentloaded")
+                await page.goto(search_url, wait_until="domcontentloaded")
+                meetings = await extract_meetings(page, search_url)
+
+                if not meetings:
+                    print(f"No meetings found for {start_date.isoformat()} through {end_date.isoformat()}")
+                    return 0
+
+                if args.limit is not None:
+                    meetings = meetings[: args.limit]
+
+                if args.count_agenda_items:
+                    print(f"{'ID':>6}  {'Date':<12}  {'Count':>5}  {'Title'}")
+                    print(f"{'------':>6}  {'------------':<12}  {'-----':>5}  {'-----'}")
+                    total = 0
+                    for meeting in meetings:
+                        count = await count_agenda_items_for_meeting(page, meeting.agenda_url)
+                        total += count
+                        print(f"{meeting.meeting_id:>6}  {meeting.meeting_date:<12}  {count:>5}  {meeting.meeting_title}")
+                    print()
+                    print(f"{len(meetings)} meeting(s), {total} total items")
+                else:
+                    for meeting in meetings:
+                        items = await extract_agenda_item_titles(page, meeting.agenda_url)
+                        print()
+                        print(f"{'=' * 70}")
+                        print(f"{meeting.meeting_id}  {meeting.meeting_date}  {meeting.meeting_type}  {meeting.meeting_title}")
+                        print(f"{len(items)} items")
+                        print(f"{'=' * 70}")
+                        for num, title in items:
+                            print(f"  {num:>4}.  {title}")
+                    print()
+                    print(f"{len(meetings)} meeting(s)")
+            finally:
+                await browser.close()
+        return 0
+
+    if args.extract_agenda_items:
+        async_playwright = get_async_playwright()
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=not args.headed)
+            page = await browser.new_page()
+            page.set_default_timeout(60000)
+            try:
+                if args.debug_agenda_html:
+                    meeting_rows = read_agenda_metadata_rows()
+                    if meeting_rows:
+                        await page.goto((meeting_rows[0].get("document_url") or meeting_rows[0].get("agenda_url") or "").strip(), wait_until="domcontentloaded")
+                        await page.wait_for_timeout(1000)
+                        await write_agenda_debug_files(page, meeting_rows[0])
+                start_date = parse_date(args.start_date) if args.start_date else None
+                end_date = parse_date(args.end_date) if args.end_date else None
+                wrote = await extract_agenda_items_from_metadata(
+                    page, start_date=start_date, end_date=end_date, limit=args.limit
+                )
+                print(f"Extracted {wrote} agenda item row(s)")
+            finally:
+                await browser.close()
+        return 0
+
+    if args.extract_raw_agenda_blocks:
+        start_date = parse_date(args.start_date) if args.start_date else None
+        end_date = parse_date(args.end_date) if args.end_date else None
+        meeting_rows = filter_agenda_metadata_rows(read_agenda_metadata_rows(), start_date, end_date, args.limit)
+        ensure_dir(AGENDA_ITEMS_ROOT)
+        if not RAW_AGENDA_ITEMS_CSV.exists():
+            RAW_AGENDA_ITEMS_CSV.write_text(
+                "source_body,meeting_id,meeting_date,meeting_type,raw_block_index,raw_text,source_url\n",
+                encoding="utf-8",
+            )
+        if not meeting_rows:
+            print("No agenda metadata rows matched the selected date range/limit.")
+            return 0
+        async_playwright = get_async_playwright()
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=not args.headed)
+            page = await browser.new_page()
+            page.set_default_timeout(60000)
+            try:
+                wrote_raw = await extract_raw_agenda_blocks_from_metadata(page, meeting_rows)
+                if wrote_raw == 0:
+                    print("No raw agenda blocks were extracted for the selected meeting(s).")
+                    print("Possible causes: no matching agenda rows, selector mismatch, or the agenda HTML layout changed.")
+                    return 0
+                wrote_structured = split_raw_agenda_blocks_to_structured()
+                print(f"Extracted {wrote_raw} raw agenda block row(s)")
+                print(f"Extracted {wrote_structured} structured agenda item row(s)")
+                if wrote_structured == 0:
+                    print("All raw blocks were rejected; see data/agenda-items/rejected_raw_blocks.csv")
+            finally:
+                await browser.close()
+        return 0
+
+    if args.split_raw_agenda_blocks:
+        wrote = split_raw_agenda_blocks_to_structured()
+        print(f"Extracted {wrote} structured agenda item row(s)")
+        return 0
+
+    if not args.start_date or not args.end_date:
+        raise SystemExit("--start-date and --end-date are required unless --extract-agenda-items, --extract-raw-agenda-blocks, --split-raw-agenda-blocks, or --sync is used")
+
+    start_date = parse_date(args.start_date)
+    end_date = parse_date(args.end_date)
+    if end_date < start_date:
+        raise SystemExit("--end-date must be on or after --start-date")
+
+    search_url = build_search_url(start_date, end_date)
+    existing = read_existing_rows()
+    existing_agenda_urls = read_existing_agenda_urls([DISCOVERY_CSV, *AGENDAS_ROOT.rglob("metadata.csv")])
+    existing_discovery_keys = read_existing_discovery_keys(DISCOVERY_CSV)
+
+    ensure_dir(AGENDAS_ROOT)
+    ensure_dir(SUPPORT_ROOT)
+    ensure_dir(AGENDA_ITEMS_ROOT)
+    ensure_dir(DISCOVERY_CSV.parent)
+
+    print(f"Agenda Online search URL: {search_url}")
+
+    async_playwright = get_async_playwright()
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=not args.headed)
+        page = await browser.new_page()
+        page.set_default_timeout(60000)
+        try:
+            await page.goto(SOURCE_PAGE, wait_until="domcontentloaded")
+            await page.goto(search_url, wait_until="domcontentloaded")
+            meetings = await extract_meetings(page, search_url)
+            print(f"Detected {len(meetings)} meeting row(s)")
+
+            if not meetings:
+                print(f"No meetings found for {start_date.isoformat()} through {end_date.isoformat()}")
+                return 0
+
+            processed = 0
+            for meeting in meetings:
+                if args.limit is not None and processed >= args.limit:
+                    break
+                processed += 1
+
+                agenda_month_dir = month_dir_for_date(meeting.meeting_date, AGENDAS_ROOT)
+                support_month_dir = month_dir_for_date(meeting.meeting_date, SUPPORT_ROOT)
+                ensure_dir(agenda_month_dir)
+                ensure_dir(support_month_dir)
+
+                existing_row = existing.get(meeting.agenda_url)
+                if args.download and existing_row and row_paths_present(existing_row):
+                    continue
+
+                time_part = f"{slugify(meeting.meeting_time)}_" if meeting.meeting_time else ""
+                prefix = f"{meeting.meeting_date}_{time_part}{slugify(meeting.meeting_type)}_{meeting.meeting_id}"
+                agenda_path = agenda_month_dir / f"{prefix}_agenda.pdf"
+                supporting_paths: list[str] = []
+
+                if not args.download:
+                    print(f"{meeting.meeting_date} | {meeting.meeting_title} | {meeting.meeting_type}")
+                    print(f"  agenda_url: {meeting.agenda_url}")
+                    print(f"  summary_url: {meeting.summary_url or 'none'}")
+                    print(f"  minutes_url: {meeting.minutes_url or 'none'}")
+                    print(f"  video_url: {meeting.video_url or 'none'}")
+                    print("  supporting_materials_url: none")
+
+                if args.download:
+                    if not agenda_path.exists():
+                        agenda_path, _ = download_url(meeting.agenda_url, agenda_path)
+                else:
+                    supporting_paths = []
+
+                row = {
+                    "source_body": "Board of Supervisors",
+                    "document_category": "agenda",
+                    "record_id": meeting.meeting_id,
+                    "record_date": meeting.meeting_date,
+                    "record_time": meeting.meeting_time,
+                    "record_title": meeting.meeting_title,
+                    "meeting_type": meeting.meeting_type,
+                    "source_page_url": SOURCE_PAGE,
+                    "document_url": meeting.agenda_url,
+                    "local_path": str(agenda_path.relative_to(ROOT)),
+                    "download_status": "downloaded",
+                    "downloaded_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "source_search_url": search_url,
+                    "notes": "",
+                }
+
+                if args.download and meeting.agenda_url not in existing:
+                    write_download_row(row)
+                    existing[meeting.agenda_url] = row
+                elif not args.download:
+                    write_discovery_rows(meeting, search_url, existing_discovery_keys)
+        finally:
+            await browser.close()
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))
