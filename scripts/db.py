@@ -180,6 +180,69 @@ class Meeting(Base):
     )
 
 
+class Case(Base):
+    __tablename__ = "cases"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    case_number = Column(String(32), nullable=False, unique=True, index=True)
+    case_type = Column(String(16), nullable=False, default="")
+    normalized_case_number = Column(String(32), nullable=False, index=True)
+    description = Column(Text, nullable=True, default=None)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class PZItemDetail(Base):
+    """Structured fields extracted from P&Z agenda PDF items."""
+    __tablename__ = "pz_item_details"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agenda_item_id = Column(Integer, nullable=True, default=None, index=True)
+    meeting_id = Column(String(32), nullable=False, index=True)
+    agenda_item_number = Column(Integer, nullable=False)
+    case_number = Column(String(32), nullable=False, default="", index=True)
+    district = Column(String(32), nullable=True, default=None)
+    project_name = Column(String(256), nullable=True, default=None)
+    applicant = Column(String(256), nullable=True, default=None)
+    request = Column(Text, nullable=True, default=None)
+    location = Column(Text, nullable=True, default=None)
+    recommendation = Column(String(256), nullable=True, default=None)
+    presented_by = Column(String(128), nullable=True, default=None)
+    staff_report_url = Column(String(512), nullable=True, default=None)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class CaseEvent(Base):
+    __tablename__ = "case_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    case_id = Column(Integer, nullable=False, index=True)
+    meeting_id = Column(String(32), nullable=False, index=True)
+    agenda_item_id = Column(Integer, nullable=True, default=None)
+    source = Column(String(16), nullable=False, default="")
+    event_type = Column(String(32), nullable=False, default="")
+    event_date = Column(String(16), nullable=False, default="")
+    notes = Column(Text, nullable=True, default=None)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class AgendaItem(Base):
     __tablename__ = "agenda_items"
 
@@ -196,6 +259,7 @@ class AgendaItem(Base):
     c_number = Column(String(32), nullable=False, default="", index=True)
     c_number_base = Column(String(48), nullable=False, default="", index=True)
     c_number_revision = Column(String(16), nullable=True, default=None, index=True)
+    case_number = Column(String(32), nullable=False, default="", index=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -256,10 +320,10 @@ def normalize_meeting_type(raw_type: str, raw_title: str = "") -> str:
     for t in ("executive", "informal", "formal", "special"):
         if t in combined:
             return t.capitalize()
-    # Fallback: first word of raw_type
-    parts = (raw_type or "").strip().split()
-    if parts:
-        return parts[0].capitalize()
+    # Fallback: return raw_type as-is for custom types (e.g., "Planning & Zoning")
+    raw = (raw_type or "").strip()
+    if raw:
+        return raw
     return "Unknown"
 
 
@@ -396,6 +460,12 @@ def init_db():
     _migrate_col(engine, "agenda_items", "c_number", "VARCHAR(32) NOT NULL DEFAULT ''")
     _migrate_col(engine, "agenda_items", "c_number_base", "VARCHAR(48) NOT NULL DEFAULT ''")
     _migrate_col(engine, "agenda_items", "c_number_revision", "VARCHAR(16) DEFAULT NULL")
+
+    _migrate_table("cases")
+    _migrate_table("case_events")
+    _migrate_table("pz_item_details")
+
+    _migrate_col(engine, "agenda_items", "case_number", "VARCHAR(32) NOT NULL DEFAULT ''")
 
     _migrate_table("supervisors")
     _migrate_table("meeting_supervisors")
@@ -659,6 +729,7 @@ def persist_meeting(
             c_number=item_dict.get("c_number", ""),
             c_number_base=item_dict.get("c_number_base", ""),
             c_number_revision=item_dict.get("c_number_revision", None),
+            case_number=item_dict.get("case_number", ""),
         )
         session.add(item)
         inserted_item_count += 1
@@ -687,8 +758,90 @@ def persist_meeting(
             session.add(doc)
             inserted_doc_count += 1
 
+    # Flush to get IDs for the newly inserted items before creating case events
+    session.flush()
+
+    # Delete existing CaseEvent records for this meeting (idempotency)
+    session.execute(
+        CaseEvent.__table__.delete().where(
+            CaseEvent.meeting_id == meeting_id
+        )
+    )
+    session.flush()
+
+    # Create case and event records for items with case_number
+    meeting_date = agenda_item_dicts[0].get("meeting_date", "") if agenda_item_dicts else ""
+    for item_dict in agenda_item_dicts:
+        # Determine source from source_body
+        source_body = (item_dict.get("source_body") or "").strip()
+        item_source = "PZ" if "planning" in source_body.lower() else "BOS"
+        _upsert_case_and_event(
+            session, meeting_id, meeting_date, item_dict, source=item_source
+        )
+
     session.commit()
     return inserted_item_count
+
+
+def _upsert_case_and_event(
+    session: Session,
+    meeting_id: str,
+    meeting_date: str,
+    item_dict: dict,
+    source: str = "BOS",
+) -> Optional[Case]:
+    """Upsert a Case record and create a CaseEvent for an agenda item.
+
+    If the item has no case_number, returns None.
+    """
+    case_number = (item_dict.get("case_number") or "").strip()
+    if not case_number:
+        return None
+
+    case_number_upper = case_number.upper()
+
+    # Determine case_type
+    case_type = ""
+    for prefix in ["CPA", "Z", "GPA"]:
+        if case_number_upper.startswith(prefix):
+            case_type = prefix
+            break
+
+    # Create or get case
+    case = session.execute(
+        select(Case).where(Case.case_number == case_number_upper)
+    ).scalar_one_or_none()
+    if not case:
+        case = Case(
+            case_number=case_number_upper,
+            case_type=case_type,
+            normalized_case_number=re.sub(r"[^A-Z0-9]", " ", case_number_upper).strip(),
+            description=(item_dict.get("agenda_item_title", "") or "")[:500],
+        )
+        session.add(case)
+        session.flush()
+
+    # Look up the DB agenda_item by meeting_id + agenda_item_id to get its ID
+    db_item = session.execute(
+        select(AgendaItem).where(
+            AgendaItem.meeting_id == meeting_id,
+            AgendaItem.agenda_item_id == item_dict.get("agenda_item_id", ""),
+        )
+    ).scalar_one_or_none()
+    agenda_item_db_id = db_item.id if db_item else None
+
+    # Create event
+    event = CaseEvent(
+        case_id=case.id,
+        meeting_id=meeting_id,
+        agenda_item_id=agenda_item_db_id,
+        source=source,
+        event_type="agenda" if source == "BOS" else "hearing",
+        event_date=meeting_date,
+        notes=None,
+    )
+    session.add(event)
+    return case
 
 
 def replace_meeting_data_safe(
@@ -850,10 +1003,25 @@ def persist_votes(
         session.add(ms)
 
     # 4. Insert vote records
+    seen_item_db_ids: set[int] = set()
     for vote in votes:
         item_number = int(vote.get("agenda_item_number", 0))
+        # Look up the actual AgendaItem database row for FK reference
+        db_agenda_item = session.execute(
+            select(AgendaItem).where(
+                AgendaItem.meeting_id == meeting_id,
+                AgendaItem.agenda_item_number == item_number,
+            )
+        ).scalar_one_or_none()
+        db_agenda_item_id = db_agenda_item.id if db_agenda_item else item_number
+        if db_agenda_item_id in seen_item_db_ids:
+            # Duplicate item number (e.g., agenda has two #2 entries for
+            # different sub-items). Skip rather than violate the unique
+            # constraint on agenda_item_id.
+            continue
+        seen_item_db_ids.add(db_agenda_item_id)
         aiv = AgendaItemVote(
-            agenda_item_id=vote.get("agenda_item_id", 0),
+            agenda_item_id=db_agenda_item_id,
             meeting_id=meeting_id,
             agenda_item_number=item_number,
             c_number=vote.get("c_number"),

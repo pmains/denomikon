@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from db import (
     get_session, Meeting, AgendaItem, SupportingDocument,
     Supervisor, MeetingSupervisor, AgendaItemVote, SupervisorVote,
+    Case, CaseEvent,
 )
 from sqlalchemy import or_, select, func, and_
 
@@ -633,6 +634,76 @@ def cmd_votes_search(args):
         print(f"\n[Reached limit of {args.limit}]")
 
 
+def cmd_cases(args):
+    """List all cases with event counts."""
+    session = get_session()
+    rows = session.execute(
+        select(
+            Case.case_number,
+            Case.case_type,
+            Case.description,
+            func.count(CaseEvent.id).label("event_count"),
+            func.count(func.distinct(CaseEvent.meeting_id)).label("meeting_count"),
+        )
+        .outerjoin(CaseEvent, CaseEvent.case_id == Case.id)
+        .group_by(Case.id, Case.case_number, Case.case_type, Case.description)
+        .order_by(Case.case_number)
+    ).all()
+
+    if not rows:
+        print("No cases in database.")
+        session.close()
+        return
+
+    print(f"{'Case':<30}  {'Type':<6}  {'Events':>6}  {'Meetings':>6}  {'Description'}")
+    print(f"{'─' * 29}  {'─' * 6}  {'─' * 6}  {'─' * 6}  {'─' * 40}")
+    for row in rows:
+        desc = (row.description or "")[:50]
+        print(f"{row.case_number:<30}  {row.case_type:<6}  {row.event_count:>6}  {row.meeting_count:>6}  {desc}")
+    print(f"\n{len(rows)} case(s)")
+    session.close()
+
+
+def cmd_case(args):
+    """Show full detail for a single case."""
+    session = get_session()
+    case = session.execute(
+        select(Case).where(Case.case_number == args.case_number.upper())
+    ).scalar_one_or_none()
+
+    if not case:
+        print(f"Case '{args.case_number}' not found.")
+        session.close()
+        return
+
+    print(f"Case: {case.case_number}")
+    print(f"Type: {case.case_type}")
+    print(f"Description: {case.description or '(none)'}")
+    print(f"Normalized: {case.normalized_case_number}")
+    print()
+
+    events = session.execute(
+        select(CaseEvent, Meeting.meeting_date, Meeting.meeting_type)
+        .outerjoin(Meeting, Meeting.meeting_id == CaseEvent.meeting_id)
+        .where(CaseEvent.case_id == case.id)
+        .order_by(CaseEvent.event_date, CaseEvent.id)
+    ).all()
+
+    if events:
+        print(f"Events ({len(events)}):")
+        print(f"  {'Date':<14}  {'Source':<6}  {'Type':<12}  {'Meeting Type':<20}  {'Meeting ID'}")
+        print(f"  {'─' * 13}  {'─' * 5}  {'─' * 11}  {'─' * 19}  {'─' * 10}")
+        for ev, mdate, mtype in events:
+            meeting_type = (mtype or ev.source or "")
+            print(f"  {ev.event_date:<14}  {ev.source:<6}  {ev.event_type:<12}  {meeting_type:<20}  {ev.meeting_id}")
+    session.close()
+
+
+def cmd_case_history(args):
+    """Alias for cmd_case."""
+    cmd_case(args)
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Inspect Maricopa agenda database")
     sub = p.add_subparsers(dest="command", required=True)
@@ -701,6 +772,17 @@ def parse_args(argv=None):
     ap_vs.add_argument("query", help="Search term (C-number, result, or title)")
     ap_vs.add_argument("--limit", type=int, default=50, help="Max results (default 50)")
 
+    # cases
+    sub.add_parser("cases", help="List all cases with event counts")
+
+    # case <case_number>
+    ap_case = sub.add_parser("case", help="Show full detail for a single case")
+    ap_case.add_argument("case_number", help="Case number (e.g. CPA2024001)")
+
+    # case-history <case_number>
+    ap_case_hist = sub.add_parser("case-history", help="Show event history for a case (alias for case)")
+    ap_case_hist.add_argument("case_number", help="Case number (e.g. CPA2024001)")
+
     return p.parse_args(argv)
 
 
@@ -724,6 +806,9 @@ def main(argv=None):
         "vote": cmd_vote_detail,
         "votes-by-supervisor": cmd_votes_by_supervisor,
         "votes-search": cmd_votes_search,
+        "cases": cmd_cases,
+        "case": cmd_case,
+        "case-history": cmd_case_history,
     }
 
     handler = dispatch.get(args.command)

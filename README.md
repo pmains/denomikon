@@ -49,20 +49,31 @@ Browse meetings in a Bootstrap 5 table with sync status badges (green = complete
 python scripts/maricopa_agenda_scraper.py --init-db
 ```
 
+## Board of Supervisors (BOS)
+
+Commands default to BOS when no subcommand is given. The `bos` subcommand is
+optional for BOS operations.
+
 ### Sync a single meeting
 
 ```bash
 python scripts/maricopa_agenda_scraper.py --sync --meeting-id=4449
 ```
 
+Or with explicit subcommand:
+
+```bash
+python scripts/maricopa_agenda_scraper.py bos --sync --meeting-id=4449
+```
+
 ### Sync a date range
 
 ```bash
 # Discover and sync all meetings between two dates
-python scripts/maricopa_agenda_scraper.py --sync --start-date=2025-01-01 --end-date=2025-01-31
+python scripts/maricopa_agenda_scraper.py bos --sync --start-date=2025-01-01 --end-date=2025-01-31
 
 # Resume previously failed/partial/pending meetings
-python scripts/maricopa_agenda_scraper.py --sync --start-date=2025-01-01 --end-date=2025-01-31 --retry-failed
+python scripts/maricopa_agenda_scraper.py bos --sync --start-date=2025-01-01 --end-date=2025-01-31 --retry-failed
 ```
 
 ### Resumable sync flags
@@ -86,6 +97,33 @@ python scripts/maricopa_agenda_scraper.py --failed
 
 # List meetings needing manual review (image-based agendas)
 python scripts/maricopa_agenda_scraper.py --failed --include-manual-review
+```
+
+## Planning & Zoning (PZ)
+
+Use the `pz` subcommand to sync Planning & Zoning meetings. All date flags use
+YYYY-MM-DD format.
+
+```bash
+# Sync P&Z meetings by date range
+python scripts/maricopa_agenda_scraper.py pz --sync --start-date=2026-01-01 --end-date=2026-05-01
+
+# Limit the number of meetings
+python scripts/maricopa_agenda_scraper.py pz --sync --start-date=2026-01-01 --limit=5
+```
+
+When no start/end date is given, PZ defaults to the last 90 days.
+
+## Legacy --sync-pz (deprecated)
+
+The old `--sync-pz` flag still works but prints a deprecation warning:
+
+```bash
+# Old style (deprecated, prints warning):
+python scripts/maricopa_agenda_scraper.py --sync-pz --pz-start-date=01/01/2026
+
+# New style (preferred):
+python scripts/maricopa_agenda_scraper.py pz --sync --start-date=2026-01-01
 ```
 
 ### Inspect the database
