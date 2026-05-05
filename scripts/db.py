@@ -6,6 +6,7 @@ Defaults to SQLite; set DATABASE_URL to switch to Postgres.
 """
 
 import os
+import re
 from datetime import date, datetime, timezone
 from typing import Optional
 
@@ -153,6 +154,10 @@ class Meeting(Base):
     meeting_date = Column(String(16), nullable=False)
     meeting_type = Column(String(64), nullable=False, default="")
     meeting_title = Column(String(256), nullable=False, default="")
+    meeting_title_raw = Column(Text, nullable=True, default=None)
+    meeting_context = Column(String(128), nullable=True, default=None)
+    meeting_body = Column(String(128), nullable=True, default=None)
+    display_name = Column(String(256), nullable=True, default=None)
     source_url = Column(String(512), nullable=False, default="")
     sync_status = Column(String(32), nullable=False, default="pending", index=True)
     last_synced_at = Column(DateTime(timezone=True), nullable=True, default=None)
@@ -233,6 +238,154 @@ class SupportingDocument(Base):
     )
 
 
+_KNWON_MEETING_TYPES = {"formal", "informal", "special", "executive"}
+
+
+def normalize_meeting_type(raw_type: str, raw_title: str = "") -> str:
+    """Normalize a meeting type string to one of: Formal, Informal, Special, Executive.
+
+    Examples:
+        "Formal Meeting" → "Formal"
+        "Special" → "Special"
+        "Special Executive" → "Executive" (context is extracted separately)
+        "Executive (CONTINUED)" → "Executive"
+    """
+    combined = f"{raw_type} {raw_title}".lower()
+    # Check longer/more specific terms first to avoid substring false matches
+    # (e.g. "informal" contains "formal")
+    for t in ("executive", "informal", "formal", "special"):
+        if t in combined:
+            return t.capitalize()
+    # Fallback: first word of raw_type
+    parts = (raw_type or "").strip().split()
+    if parts:
+        return parts[0].capitalize()
+    return "Unknown"
+
+
+def extract_meeting_context(raw_title: str, meeting_type: str) -> Optional[str]:
+    """Extract meaningful context from raw title.
+
+    Special/Election of Chairman → "Election of Chairman"
+    Emergency Meeting → "Emergency"
+    Special Executive → None (handled by meeting_type normalization)
+    4467 → None
+    BOARD OF SUPERVISORS... → None
+
+    Returns None when no meaningful context found.
+    """
+    t = (raw_title or "").strip()
+    if not t:
+        return None
+
+    # Skip if entirely numeric (meeting ID as title)
+    if re.match(r'^\d+$', t):
+        return None
+
+    # Skip if just a body/header
+    if "BOARD OF SUPERVISORS" in t.upper():
+        return None
+
+    # Skip if it's just a known meeting type word
+    lower = t.lower()
+    if lower in ("formal", "informal", "special", "executive", "formal meeting", "informal meeting", "special meeting", "executive meeting"):
+        return None
+
+    # "Emergency Meeting" → "Emergency"
+    if re.search(r'\bemergency\s+meeting\b', lower):
+        return "Emergency"
+
+    # "Special/Election of Chairman" type patterns
+    # Look for content after a slash or after "Special/"
+    slash_m = re.search(r'/(.+)$', t)
+    if slash_m:
+        candidate = slash_m.group(1).strip()
+        if candidate and candidate.lower() not in _KNWON_MEETING_TYPES:
+            return candidate
+
+    # "Special/Call" → "Call"
+    if re.search(r'\bspecial\s*/\s*(.+)', lower):
+        context = re.search(r'\bspecial\s*/\s*(.+)', lower, re.I)
+        if context:
+            return context.group(1).strip()
+
+    # If title is a useful phrase (not just a type), return it
+    # Remove known type words
+    cleaned = re.sub(r'\b(formal|informal|special|executive|meeting)\b', '', lower, flags=re.I).strip()
+    if cleaned and len(cleaned) > 3:
+        return t.strip()  # Return original formatting
+
+    return None
+
+
+def extract_meeting_body(raw_title: str) -> Optional[str]:
+    """Extract body name from raw title.
+
+    BOARD OF SUPERVISORS - JUNTA DE SUPERVISORES → "Board of Supervisors"
+
+    Returns None if no body identified.
+    """
+    t = (raw_title or "").strip()
+    if "BOARD OF SUPERVISORS" in t.upper():
+        return "Board of Supervisors"
+    # Other bodies could be added here
+    return None
+
+
+def build_meeting_display_name(meeting_type: str, meeting_date: str, meeting_context: Optional[str] = None) -> str:
+    """Build a canonical display name from structured fields.
+
+    Format:
+        If meeting_context: "{Meeting Type} Meeting — {Context} — {Mon D, YYYY}"
+        Else: "{Meeting Type} Meeting — {Mon D, YYYY}"
+    """
+    mtype = (meeting_type or "Meeting").strip()
+    if not mtype.lower().endswith("meeting"):
+        mtype = f"{mtype} Meeting"
+
+    # Parse date
+    try:
+        parts = meeting_date.split("-")
+        dt = date(int(parts[0]), int(parts[1]), int(parts[2]))
+        date_str = dt.strftime("%b %-d, %Y")  # "Mar 20, 2026"
+    except (IndexError, ValueError):
+        date_str = meeting_date
+
+    if meeting_context:
+        return f"{mtype} — {meeting_context} — {date_str}"
+    return f"{mtype} — {date_str}"
+
+
+def backfill_meeting_normalization(session, force: bool = False):
+    """Iterate over all meetings and apply normalization to new fields.
+
+    If force=True, updates all meetings even if display_name is already set.
+    """
+    q = select(Meeting)
+    if not force:
+        q = q.where(Meeting.display_name.is_(None))
+    meetings = list(session.execute(q).scalars().all())
+
+    count = 0
+    for m in meetings:
+        raw_type = m.meeting_type or ""
+        raw_title = m.meeting_title_raw or m.meeting_title or ""
+
+        m.meeting_type = normalize_meeting_type(raw_type, raw_title)
+        m.meeting_context = extract_meeting_context(raw_title, raw_type)
+        m.meeting_body = extract_meeting_body(raw_title)
+        m.display_name = build_meeting_display_name(
+            m.meeting_type,
+            m.meeting_date,
+            m.meeting_context,
+        )
+        count += 1
+
+    if count:
+        session.commit()
+    return count
+
+
 def init_db():
     """Create all tables if they don't exist, or migrate existing ones."""
     Base.metadata.create_all(bind=get_engine())
@@ -260,6 +413,12 @@ def init_db():
     _migrate_col(engine, "meetings", "supporting_doc_count", "INTEGER NOT NULL DEFAULT 0")
     _migrate_col(engine, "meetings", "items_extracted", "BOOLEAN NOT NULL DEFAULT 0")
     _migrate_col(engine, "meetings", "supporting_docs_extracted", "BOOLEAN NOT NULL DEFAULT 0")
+
+    # Normalization columns
+    _migrate_col(engine, "meetings", "meeting_title_raw", "TEXT DEFAULT NULL")
+    _migrate_col(engine, "meetings", "meeting_context", "VARCHAR(128) DEFAULT NULL")
+    _migrate_col(engine, "meetings", "meeting_body", "VARCHAR(128) DEFAULT NULL")
+    _migrate_col(engine, "meetings", "display_name", "VARCHAR(256) DEFAULT NULL")
 
 
 def _migrate_table(table_name: str):
@@ -297,6 +456,7 @@ def create_or_get_meeting(session: Session, meeting_dict: dict) -> Meeting:
         meeting_date=meeting_dict.get("meeting_date", ""),
         meeting_type=meeting_dict.get("meeting_type", ""),
         meeting_title=meeting_dict.get("meeting_title", ""),
+        meeting_title_raw=meeting_dict.get("meeting_title", ""),
         source_url=meeting_dict.get("source_url", ""),
         sync_status="pending",
     )
@@ -560,6 +720,23 @@ def replace_meeting_data_safe(
             meeting.meeting_title = meeting_dict["meeting_title"]
         if meeting_dict.get("source_url"):
             meeting.source_url = meeting_dict["source_url"]
+
+        # Store raw title and normalize fields
+        if meeting_dict.get("meeting_title"):
+            meeting.meeting_title_raw = meeting_dict["meeting_title"]
+
+        if meeting_dict.get("meeting_type") or meeting_dict.get("meeting_title"):
+            raw_type = meeting_dict.get("meeting_type", "")
+            raw_title = meeting_dict.get("meeting_title", "")
+
+            meeting.meeting_type = normalize_meeting_type(raw_type, raw_title)
+            meeting.meeting_context = extract_meeting_context(raw_title, raw_type)
+            meeting.meeting_body = extract_meeting_body(raw_title)
+            meeting.display_name = build_meeting_display_name(
+                meeting.meeting_type,
+                meeting.meeting_date,
+                meeting.meeting_context,
+            )
 
         persisted = persist_meeting(
             session,

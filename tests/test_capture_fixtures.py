@@ -4,6 +4,9 @@ import unittest
 from argparse import Namespace
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_tiers import integration_test
+
 
 def _load_capture_fixtures():
     script_path = Path(__file__).resolve().parents[1] / "scripts" / "capture_fixtures.py"
@@ -19,6 +22,7 @@ def _load_capture_fixtures():
 capture_fixtures = _load_capture_fixtures()
 
 
+@integration_test
 class CaptureFixturesTests(unittest.TestCase):
     def test_manifest_schema_includes_validation_fields(self):
         self.assertIn("validation_status", capture_fixtures.MANIFEST_FIELDS)

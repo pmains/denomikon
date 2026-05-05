@@ -1847,12 +1847,40 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
     return supervisors, votes
 
 
+def parse_metadata_from_page_data(page_data: dict) -> dict:
+    """Parse meeting metadata from page text data.
+
+    Pure function counterpart to extract_meeting_metadata_from_page.
+    Takes the dict from page.evaluate and returns parsed metadata.
+    """
+    body = page_data.get("bodyText", "")
+    result = {
+        "meeting_date": "",
+        "meeting_type": "",
+        "meeting_title": "",
+    }
+
+    # Title: use header or formTitle
+    result["meeting_title"] = (page_data.get("formTitle") or page_data.get("headerText") or "").strip()
+
+    # Date: parse MM/DD/YYYY from body text
+    date_m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", body)
+    if date_m:
+        result["meeting_date"] = f"{date_m.group(3)}-{int(date_m.group(1)):02d}-{int(date_m.group(2)):02d}"
+
+    # Type: look for Formal Meeting / Informal Meeting in body
+    type_m = re.search(r"\b(FORMAL|INFORMAL)\s+MEETING\b", body, re.I)
+    if type_m:
+        result["meeting_type"] = type_m.group(1).capitalize() + " Meeting"
+
+    return result
+
+
 async def extract_meeting_metadata_from_page(page, source_url: str) -> dict:
     """Extract meeting date, type, and title from the loaded agenda page.
 
-    Grabs page body text, then parses dates/types in Python for cleaner
-    regex handling. Returns a dict with meeting_date, meeting_type,
-    meeting_title keys. Missing values are returned as empty strings.
+    Grabs page body text via Playwright, then delegates to
+    parse_metadata_from_page_data for structured parsing.
     """
     try:
         data = await page.evaluate(
@@ -1877,27 +1905,7 @@ async def extract_meeting_metadata_from_page(page, source_url: str) -> dict:
     except Exception:
         return {"meeting_date": "", "meeting_type": "", "meeting_title": ""}
 
-    body = data.get("bodyText", "")
-    result = {
-        "meeting_date": "",
-        "meeting_type": "",
-        "meeting_title": "",
-    }
-
-    # Title: use header or formTitle
-    result["meeting_title"] = (data.get("formTitle") or data.get("headerText") or "").strip()
-
-    # Date: parse MM/DD/YYYY from body text
-    date_m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", body)
-    if date_m:
-        result["meeting_date"] = f"{date_m.group(3)}-{int(date_m.group(1)):02d}-{int(date_m.group(2)):02d}"
-
-    # Type: look for Formal Meeting / Informal Meeting in body
-    type_m = re.search(r"\b(FORMAL|INFORMAL)\s+MEETING\b", body, re.I)
-    if type_m:
-        result["meeting_type"] = type_m.group(1).capitalize() + " Meeting"
-
-    return result
+    return parse_metadata_from_page_data(data)
 
 
 async def is_image_based_agenda(page) -> bool:

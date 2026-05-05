@@ -41,11 +41,11 @@ def cmd_meetings(args):
             Meeting.meeting_id,
             Meeting.meeting_date,
             Meeting.meeting_type,
-            Meeting.meeting_title,
+            Meeting.display_name,
             func.count(AgendaItem.id).label("item_count"),
         )
         .outerjoin(AgendaItem, AgendaItem.meeting_id == Meeting.meeting_id)
-        .group_by(Meeting.meeting_id, Meeting.meeting_date, Meeting.meeting_type, Meeting.meeting_title)
+        .group_by(Meeting.meeting_id, Meeting.meeting_date, Meeting.meeting_type, Meeting.display_name)
         .order_by(Meeting.meeting_date, Meeting.meeting_id)
     ).all()
 
@@ -53,10 +53,11 @@ def cmd_meetings(args):
         print("No meetings in database.")
         return
 
-    print(f"{'ID':>6}  {'Date':<12}  {'Type':<14}  {'Items':>5}  {'Title'}")
-    print(f"{'------':>6}  {'------------':<12}  {'--------------':<14}  {'-----':>5}  {'-----'}")
+    print(f"{'ID':>6}  {'Date':<12}  {'Type':<14}  {'Items':>5}  {'Display Name'}")
+    print(f"{'------':>6}  {'------------':<12}  {'--------------':<14}  {'-----':>5}  {'------------'}")
     for row in rows:
-        print(f"{row.meeting_id:>6}  {row.meeting_date:<12}  {row.meeting_type:<14}  {row.item_count:>5}  {row.meeting_title}")
+        display = row.display_name or "(not normalized)"
+        print(f"{row.meeting_id:>6}  {row.meeting_date:<12}  {row.meeting_type:<14}  {row.item_count:>5}  {display}")
     print(f"\n{len(rows)} meeting(s)")
     session.close()
 
@@ -428,10 +429,13 @@ def cmd_meeting(args):
         print(f"Meeting '{args.meeting_id}' not found.")
         return
     print(f"Meeting: {m.meeting_id}")
-    print(f"  Date:     {m.meeting_date}")
-    print(f"  Type:     {m.meeting_type}")
-    print(f"  Title:    {m.meeting_title}")
-    print(f"  Status:   {m.sync_status}")
+    print(f"  Date:         {m.meeting_date}")
+    print(f"  Display Name: {m.display_name or '(not normalized)'}")
+    print(f"  Type:         {m.meeting_type}")
+    print(f"  Context:      {m.meeting_context or '(none)'}")
+    print(f"  Body:         {m.meeting_body or '(none)'}")
+    print(f"  Raw Title:    {m.meeting_title_raw or m.meeting_title or '(none)'}")
+    print(f"  Status:       {m.sync_status}")
     print(f"  Items:    expected={m.item_count_expected or '?'}  actual={m.item_count_actual or '?'}")
     print(f"  Docs:     {m.supporting_doc_count}")
     print(f"  Extracted:  items={m.items_extracted}  docs={m.supporting_docs_extracted}")

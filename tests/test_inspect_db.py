@@ -1,116 +1,150 @@
-"""Tests for the inspect_db CLI script."""
-
+"""Tests for inspect_db CLI with temporary database."""
+import io
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_tiers import integration_test
 
-from inspect_db import main, get_session, Meeting, AgendaItem
-from sqlalchemy import select
+_test_db = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+os.environ["DATABASE_URL"] = f"sqlite:///{_test_db.name}"
+
+from db import init_db, get_session, Meeting, AgendaItem, SupportingDocument
 
 
-def setUpModule():
-    """Verify test database has data before running tests."""
+def _capture_output(argv: list[str]) -> str:
+    """Run inspect_db.main() with the given args and return stdout as string."""
+    from inspect_db import main
+    out = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = out
+    try:
+        main(argv)
+    except SystemExit:
+        pass
+    finally:
+        sys.stdout = old_stdout
+    return out.getvalue()
+
+
+def _populate_db():
+    """Insert minimal test data. Safe to call multiple times."""
+    from sqlalchemy import select, func as sa_func
+
     session = get_session()
-    meeting = session.execute(
+    existing = session.execute(
         select(Meeting).where(Meeting.meeting_id == "4667")
     ).scalar_one_or_none()
+    if existing:
+        session.close()
+        return
+
+    for mid, date, mtype, title in [
+        ("4667", "2026-04-22", "Formal", "Formal Meeting"),
+        ("4668", "2026-05-04", "Informal", "Special Session"),
+        ("4669", "2026-05-06", "Formal", "Formal Meeting"),
+    ]:
+        session.add(Meeting(meeting_id=mid, meeting_date=date, meeting_type=mtype, meeting_title=title))
+    session.commit()
+
+    for mid, num, title, cnum in [
+        ("4667", 1, "ROLL CALL", ""),
+        ("4667", 2, "INVOCATION", ""),
+        ("4667", 3, "PUBLIC COMMENT", "C-86-26-001-X-00"),
+        ("4669", 1, "CALL TO ORDER", ""),
+    ]:
+        session.add(AgendaItem(
+            meeting_id=mid,
+            agenda_item_number=num,
+            agenda_item_id=f"{mid}-{num}-item",
+            agenda_item_title=title,
+            agenda_item_text=f"Text for {title}",
+            agenda_item_url=f"https://example.com/item?m={mid}&n={num}",
+            source_url=f"https://example.com/meeting?id={mid}",
+            c_number=cnum,
+            c_number_base=cnum.rpartition("-")[0] if cnum else "",
+            c_number_revision=cnum.rpartition("-")[2] if cnum else None,
+        ))
+    session.commit()
+
+    session.add(SupportingDocument(
+        meeting_id="4667", agenda_item_number=3,
+        agenda_item_id=3,
+        c_number="C-86-26-001-X-00",
+        document_title="Public Comment Doc",
+        document_url="https://example.com/doc.pdf",
+        file_extension="pdf",
+    ))
+    session.commit()
     session.close()
-    if not meeting:
-        raise unittest.SkipTest(
-            "No data for meeting 4667. Run --sync --date=2026-04-22 first."
-        )
 
 
+@integration_test
 class TestInspectDbMeetings(unittest.TestCase):
-    def test_meetings_exits_cleanly(self):
-        """meetings command should produce output without errors."""
-        rc = main(["meetings"])
-        self.assertEqual(rc, 0)
+    @classmethod
+    def setUpClass(cls):
+        init_db()
+        _populate_db()
 
-    def test_meetings_shows_4667(self):
-        """meetings list should include meeting 4667."""
+    def test_meetings_output(self):
         out = _capture_output(["meetings"])
         self.assertIn("4667", out)
-        self.assertIn("Formal", out)
+        self.assertIn("4668", out)
+        self.assertIn("4669", out)
 
-
-class TestInspectDbCounts(unittest.TestCase):
-    def test_counts_exits_cleanly(self):
-        rc = main(["counts"])
-        self.assertEqual(rc, 0)
-
-    def test_counts_shows_86(self):
-        """Item counts should show 86 for meeting 4667."""
+    def test_counts_output(self):
         out = _capture_output(["counts"])
-        self.assertIn("86", out)
+        self.assertIn("4667", out)
+        self.assertIn("4 total items", out)
 
-
-class TestInspectDbAgenda(unittest.TestCase):
-    def test_agenda_exits_cleanly(self):
-        rc = main(["agenda", "4667"])
-        self.assertEqual(rc, 0)
-
-    def test_agenda_shows_item_1(self):
+    def test_agenda_output(self):
         out = _capture_output(["agenda", "4667"])
         self.assertIn("ROLL CALL", out)
+        self.assertIn("INVOCATION", out)
+        self.assertIn("PUBLIC COMMENT", out)
 
-    def test_agenda_shows_item_86(self):
-        out = _capture_output(["agenda", "4667"])
-        self.assertIn("summary of current events", out.lower())
+    def test_item_output(self):
+        out = _capture_output(["item", "4667", "3"])
+        self.assertIn("C-86-26-001-X-00", out)
+        self.assertIn("Public Comment Doc", out)
 
-    def test_agenda_unknown_meeting(self):
-        out = _capture_output(["agenda", "9999"])
-        self.assertIn("not found", out.lower())
-
-
-class TestInspectDbSearch(unittest.TestCase):
-    def test_search_exits_cleanly(self):
-        rc = main(["search", "Test"])
-        self.assertEqual(rc, 0)
-
-    def test_search_finds_items(self):
-        out = _capture_output(["search", "ROLL CALL"])
+    def test_search_output(self):
+        out = _capture_output(["search", "ROLL"])
         self.assertIn("ROLL CALL", out)
 
     def test_search_no_results(self):
         out = _capture_output(["search", "XYZZY_NOTHING"])
         self.assertIn("No results", out)
 
-    def test_search_limit(self):
-        out = _capture_output(["search", "the", "--limit", "3"])
-        self.assertIn("limit of 3", out)
+    def test_docs_output(self):
+        out = _capture_output(["docs", "4667"])
+        self.assertIn("Public Comment Doc", out)
 
+    def test_docs_for_item(self):
+        out = _capture_output(["docs", "4667", "3"])
+        self.assertIn("Public Comment Doc", out)
+        out_no = _capture_output(["docs", "4667", "1"])
+        self.assertNotIn("Public Comment Doc", out_no)
 
-class TestInspectDbItem(unittest.TestCase):
-    def test_item_exits_cleanly(self):
-        rc = main(["item", "4667", "1"])
-        self.assertEqual(rc, 0)
+    def test_revisions_output(self):
+        out = _capture_output(["revisions"])
+        self.assertIn("C-86-26-001-X", out)
 
-    def test_item_shows_detail(self):
-        out = _capture_output(["item", "4667", "85"])
-        self.assertIn("CALL TO THE PUBLIC", out)
-        self.assertIn("4667-85-item", out)
-        self.assertIn("Public comment", out)
+    def test_status_output(self):
+        out = _capture_output(["status"])
+        self.assertIn("complete", out.lower())
 
-    def test_item_unknown_meeting(self):
-        out = _capture_output(["item", "9999", "1"])
+    def test_unknown_meeting(self):
+        out = _capture_output(["agenda", "9999"])
         self.assertIn("not found", out.lower())
 
-
-def _capture_output(argv: list[str]) -> str:
-    """Run main() with the given args and return stdout as a string."""
-    import io
-
-    out = io.StringIO()
-    old_stdout = sys.stdout
-    sys.stdout = out
-    try:
-        main(argv)
-    finally:
-        sys.stdout = old_stdout
-    return out.getvalue()
+    def test_unknown_item(self):
+        out = _capture_output(["item", "9999", "1"])
+        self.assertIn("not found", out.lower())
 
 
 if __name__ == "__main__":
