@@ -37,28 +37,30 @@ from sqlalchemy import or_, select, func, and_
 def cmd_meetings(args):
     """List all meetings with item counts, ordered by date."""
     session = get_session()
-    rows = session.execute(
-        select(
-            Meeting.meeting_id,
-            Meeting.meeting_date,
-            Meeting.meeting_type,
-            Meeting.display_name,
-            func.count(AgendaItem.id).label("item_count"),
-        )
-        .outerjoin(AgendaItem, AgendaItem.meeting_id == Meeting.meeting_id)
-        .group_by(Meeting.meeting_id, Meeting.meeting_date, Meeting.meeting_type, Meeting.display_name)
-        .order_by(Meeting.meeting_date, Meeting.meeting_id)
-    ).all()
+    q = select(
+        Meeting.body,
+        Meeting.meeting_id,
+        Meeting.meeting_date,
+        Meeting.meeting_type,
+        Meeting.display_name,
+        func.count(AgendaItem.id).label("item_count"),
+    )
+    if hasattr(args, 'body') and args.body and args.body.lower() != "all":
+        q = q.where(Meeting.body == args.body.lower())
+    q = q.outerjoin(AgendaItem, AgendaItem.meeting_id == Meeting.meeting_id)
+    q = q.group_by(Meeting.body, Meeting.meeting_id, Meeting.meeting_date, Meeting.meeting_type, Meeting.display_name)
+    q = q.order_by(Meeting.body, Meeting.meeting_date, Meeting.meeting_id)
+    rows = session.execute(q).all()
 
     if not rows:
         print("No meetings in database.")
         return
 
-    print(f"{'ID':>6}  {'Date':<12}  {'Type':<14}  {'Items':>5}  {'Display Name'}")
-    print(f"{'------':>6}  {'------------':<12}  {'--------------':<14}  {'-----':>5}  {'------------'}")
+    print(f"{'Body':<5}  {'ID':>6}  {'Date':<12}  {'Type':<14}  {'Items':>5}  {'Display Name'}")
+    print(f"{'─' * 4:<5}  {'─' * 6:>6}  {'─' * 12:<12}  {'─' * 14:<14}  {'─' * 5:>5}  {'─' * 12}")
     for row in rows:
         display = row.display_name or "(not normalized)"
-        print(f"{row.meeting_id:>6}  {row.meeting_date:<12}  {row.meeting_type:<14}  {row.item_count:>5}  {display}")
+        print(f"{row.body or 'bos':<5}  {row.meeting_id:>6}  {row.meeting_date:<12}  {row.meeting_type:<14}  {row.item_count:>5}  {display}")
     print(f"\n{len(rows)} meeting(s)")
     session.close()
 
@@ -92,23 +94,38 @@ def cmd_counts(args):
     session.close()
 
 
+def _body_filter(args):
+    """Return body string from args, defaulting to None (no filter)."""
+    if hasattr(args, 'body') and args.body and args.body.lower() != "all":
+        return args.body.lower()
+    return None
+
+
+def _meeting_lookup(session, args, meeting_id: str):
+    """Lookup a meeting by (body, meeting_id). Returns Meeting or None."""
+    body = _body_filter(args)
+    if body:
+        q = select(Meeting).where(Meeting.body == body, Meeting.meeting_id == meeting_id)
+    else:
+        q = select(Meeting).where(Meeting.meeting_id == meeting_id)
+    return session.execute(q).scalar_one_or_none()
+
+
 def cmd_agenda(args):
     """Show all agenda items for a meeting."""
     session = get_session()
-    meeting = session.execute(
-        select(Meeting).where(Meeting.meeting_id == args.meeting_id)
-    ).scalar_one_or_none()
+    meeting = _meeting_lookup(session, args, args.meeting_id)
 
     if not meeting:
         print(f"Meeting '{args.meeting_id}' not found.")
         session.close()
         return
 
-    items = session.execute(
-        select(AgendaItem)
-        .where(AgendaItem.meeting_id == args.meeting_id)
-        .order_by(AgendaItem.agenda_item_number)
-    ).scalars().all()
+    q = select(AgendaItem).order_by(AgendaItem.agenda_item_number)
+    if meeting.body:
+        q = q.where(AgendaItem.body == meeting.body)
+    q = q.where(AgendaItem.meeting_id == args.meeting_id)
+    items = session.execute(q).scalars().all()
 
     if not items:
         print(f"No agenda items for meeting {args.meeting_id}.")
@@ -188,26 +205,39 @@ def cmd_search(args):
 
 
 def cmd_item(args):
-    """Show the full record for one agenda item."""
+    """Show the full record for one agenda item.
+
+    Usage:
+        inspect_db.py item [bos|pz] MEETING_ID ITEM_NUMBER
+        inspect_db.py item MEETING_ID ITEM_NUMBER  (auto-detect)
+    """
     session = get_session()
-    result = session.execute(
-        select(AgendaItem, Meeting.meeting_date, Meeting.meeting_type)
-        .join(Meeting, Meeting.meeting_id == AgendaItem.meeting_id)
-        .where(
-            AgendaItem.meeting_id == args.meeting_id,
-            AgendaItem.agenda_item_number == args.agenda_item_number,
-        )
-    ).one_or_none()
+
+    # Handle optional body positional argument
+    meeting_id = args.meeting_id
+    body = getattr(args, 'body', None) or None
+
+    # Build query with body scope if provided
+    q = select(AgendaItem, Meeting.meeting_date, Meeting.meeting_type)
+    q = q.join(Meeting, Meeting.meeting_id == AgendaItem.meeting_id)
+    if body:
+        q = q.where(Meeting.body == body.lower())
+    q = q.where(
+        AgendaItem.meeting_id == meeting_id,
+        AgendaItem.agenda_item_number == args.agenda_item_number,
+    )
+    result = session.execute(q).one_or_none()
 
     if not result:
-        print(f"Item {args.meeting_id} #{args.agenda_item_number} not found.")
+        body_hint = f"{body} " if body else ""
+        print(f"Item {body_hint}{meeting_id} #{args.agenda_item_number} not found.")
         session.close()
         return
 
     item, meeting_date, meeting_type = result
 
     print(f"{'=' * 70}")
-    print(f"  Item:     {item.meeting_id} #{item.agenda_item_number}")
+    print(f"  Item:     {item.body or 'bos'} {item.meeting_id} #{item.agenda_item_number}")
     print(f"  Date:     {meeting_date}  {meeting_type}")
     print(f"  ID:       {item.agenda_item_id}")
     print(f"  Title:    {item.agenda_item_title}")
@@ -351,6 +381,8 @@ def cmd_docs(args):
     stmt = select(SupportingDocument).where(
         SupportingDocument.meeting_id == args.meeting_id
     )
+    if hasattr(args, 'body') and args.body and args.body.lower() != "all":
+        stmt = stmt.where(SupportingDocument.body == args.body.lower())
     if args.agenda_item_number is not None:
         stmt = stmt.where(
             SupportingDocument.agenda_item_number == args.agenda_item_number
@@ -423,7 +455,9 @@ def cmd_meeting(args):
     from sqlalchemy import select
     session = get_session()
     m = session.execute(
-        select(Meeting).where(Meeting.meeting_id == args.meeting_id)
+        select(Meeting).where(
+            Meeting.meeting_id == args.meeting_id,
+        )
     ).scalar_one_or_none()
     session.close()
     if not m:
@@ -431,10 +465,11 @@ def cmd_meeting(args):
         return
     print(f"Meeting: {m.meeting_id}")
     print(f"  Date:         {m.meeting_date}")
+    print(f"  Body:         {m.body or 'bos'}")
     print(f"  Display Name: {m.display_name or '(not normalized)'}")
     print(f"  Type:         {m.meeting_type}")
     print(f"  Context:      {m.meeting_context or '(none)'}")
-    print(f"  Body:         {m.meeting_body or '(none)'}")
+    print(f"  Meeting Body: {m.meeting_body or '(none)'}")
     print(f"  Raw Title:    {m.meeting_title_raw or m.meeting_title or '(none)'}")
     print(f"  Status:       {m.sync_status}")
     print(f"  Items:    expected={m.item_count_expected or '?'}  actual={m.item_count_actual or '?'}")
@@ -709,14 +744,17 @@ def parse_args(argv=None):
     sub = p.add_subparsers(dest="command", required=True)
 
     # meetings
-    sub.add_parser("meetings", help="List all meetings with item counts")
+    ap_meetings = sub.add_parser("meetings", help="List all meetings with item counts")
+    ap_meetings.add_argument("--body", default="all", help="Filter by body: bos, pz, or all (default all)")
 
     # counts
-    sub.add_parser("counts", help="Show item counts per meeting")
+    ap_counts = sub.add_parser("counts", help="Show item counts per meeting")
+    ap_counts.add_argument("--body", default="all", help="Filter by body: bos, pz, or all (default all)")
 
     # agenda <meeting_id>
     ap_agenda = sub.add_parser("agenda", help="Show agenda items for a meeting")
     ap_agenda.add_argument("meeting_id", help="Meeting ID (e.g. 4667)")
+    ap_agenda.add_argument("--body", default=None, help="Body scope: bos or pz (default: auto-detect)")
 
     # search <query>
     ap_search = sub.add_parser("search", help="Search agenda item titles and text")
@@ -726,6 +764,7 @@ def parse_args(argv=None):
 
     # item <meeting_id> <agenda_item_number>
     ap_item = sub.add_parser("item", help="Show full record for one agenda item")
+    ap_item.add_argument("body", nargs="?", default=None, help="Body: bos or pz (optional, auto-detect)")
     ap_item.add_argument("meeting_id", help="Meeting ID")
     ap_item.add_argument("agenda_item_number", type=int, help="Item number")
 
@@ -740,10 +779,12 @@ def parse_args(argv=None):
     ap_docs = sub.add_parser("docs", help="List supporting documents for a meeting or item")
     ap_docs.add_argument("meeting_id", help="Meeting ID")
     ap_docs.add_argument("agenda_item_number", nargs="?", type=int, default=None, help="Optional item number")
+    ap_docs.add_argument("--body", default=None, help="Body scope: bos or pz (default: auto-detect)")
 
     # meeting <meeting_id>
     ap_meeting = sub.add_parser("meeting", help="Show sync metadata for a meeting")
     ap_meeting.add_argument("meeting_id", help="Meeting ID")
+    ap_meeting.add_argument("--body", default=None, help="Body scope: bos or pz (default: auto-detect)")
 
     # status
     sub.add_parser("status", help="Show counts by sync_status and totals")
@@ -757,11 +798,13 @@ def parse_args(argv=None):
     # votes <meeting_id>
     ap_votes = sub.add_parser("votes", help="Show vote summary for all items in a meeting")
     ap_votes.add_argument("meeting_id", help="Meeting ID")
+    ap_votes.add_argument("--body", default=None, help="Body scope: bos or pz (default: auto-detect)")
 
     # vote <meeting_id> <item_number>
     ap_vote = sub.add_parser("vote", help="Show vote detail for one item")
     ap_vote.add_argument("meeting_id", help="Meeting ID")
     ap_vote.add_argument("agenda_item_number", type=int, help="Item number")
+    ap_vote.add_argument("--body", default=None, help="Body scope: bos or pz (default: auto-detect)")
 
     # votes-by-supervisor <name>
     ap_vbs = sub.add_parser("votes-by-supervisor", help="Show votes cast by a supervisor")

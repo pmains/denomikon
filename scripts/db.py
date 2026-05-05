@@ -82,6 +82,7 @@ class MeetingSupervisor(Base):
     __tablename__ = "meeting_supervisors"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    body = Column(String(16), nullable=False, default="", index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
     supervisor_id = Column(Integer, nullable=False, index=True)
     role = Column(String(64), nullable=True, default=None)
@@ -97,7 +98,7 @@ class MeetingSupervisor(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("meeting_id", "supervisor_id", name="uq_meeting_supervisor"),
+        UniqueConstraint("body", "meeting_id", "supervisor_id", name="uq_meeting_supervisor"),
     )
 
 
@@ -105,6 +106,7 @@ class AgendaItemVote(Base):
     __tablename__ = "agenda_item_votes"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    body = Column(String(16), nullable=False, default="", index=True)
     agenda_item_id = Column(Integer, nullable=False, index=True, unique=True)
     meeting_id = Column(String(32), nullable=False, index=True)
     agenda_item_number = Column(Integer, nullable=False, index=True)
@@ -150,7 +152,12 @@ class Meeting(Base):
     __tablename__ = "meetings"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    meeting_id = Column(String(32), unique=True, nullable=False, index=True)
+    body = Column(String(16), nullable=False, default="", index=True)
+    meeting_id = Column(String(32), nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("body", "meeting_id", name="uq_meeting_body_id"),
+    )
     meeting_date = Column(String(16), nullable=False)
     meeting_type = Column(String(64), nullable=False, default="")
     meeting_title = Column(String(256), nullable=False, default="")
@@ -204,6 +211,7 @@ class PZItemDetail(Base):
     __tablename__ = "pz_item_details"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    body = Column(String(16), nullable=False, default="", index=True)
     agenda_item_id = Column(Integer, nullable=True, default=None, index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
     agenda_item_number = Column(Integer, nullable=False)
@@ -231,6 +239,7 @@ class CaseEvent(Base):
     __tablename__ = "case_events"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    body = Column(String(16), nullable=False, default="", index=True)
     case_id = Column(Integer, nullable=False, index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
     agenda_item_id = Column(Integer, nullable=True, default=None)
@@ -247,6 +256,7 @@ class AgendaItem(Base):
     __tablename__ = "agenda_items"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    body = Column(String(16), nullable=False, default="", index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
     agenda_item_number = Column(Integer, nullable=False)
     agenda_item_id = Column(String(128), nullable=False, unique=True)
@@ -271,6 +281,7 @@ class SupportingDocument(Base):
     __tablename__ = "supporting_documents"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    body = Column(String(16), nullable=False, default="", index=True)
     agenda_item_id = Column(Integer, nullable=False, index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
     agenda_item_number = Column(Integer, nullable=False, index=True)
@@ -350,8 +361,19 @@ def extract_meeting_context(raw_title: str, meeting_type: str) -> Optional[str]:
     if "BOARD OF SUPERVISORS" in t.upper():
         return None
 
-    # Skip if it's just a known meeting type word
+    # Compute lower once
     lower = t.lower()
+
+    # Skip P&Z boilerplate: "Planning and Zoning Commission Meeting"
+    # adds no meaningful context beyond what meeting_type="Planning & Zoning" already conveys
+    if re.search(r'planning\s+and\s+zoning', lower):
+        return None
+
+    # Skip venue/connection boilerplate commonly in PZ titles
+    if re.search(r'bos\s*auditorium|gotowebinar|webinar', lower):
+        return None
+
+    # Skip if it's just a known meeting type word
     if lower in ("formal", "informal", "special", "executive", "formal meeting", "informal meeting", "special meeting", "executive meeting"):
         return None
 
@@ -490,6 +512,115 @@ def init_db():
     _migrate_col(engine, "meetings", "meeting_body", "VARCHAR(128) DEFAULT NULL")
     _migrate_col(engine, "meetings", "display_name", "VARCHAR(256) DEFAULT NULL")
 
+    # Body column migrations (for body-scoped identity)
+    _migrate_col(engine, "meetings", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
+    _migrate_col(engine, "meetings", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
+    _migrate_col(engine, "agenda_items", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
+    _migrate_col(engine, "agenda_items", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
+    _migrate_col(engine, "supporting_documents", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
+    _migrate_col(engine, "supporting_documents", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
+    _migrate_col(engine, "case_events", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
+    _migrate_col(engine, "case_events", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
+    _migrate_col(engine, "meeting_supervisors", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
+    _migrate_col(engine, "meeting_supervisors", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
+    _migrate_col(engine, "agenda_item_votes", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
+    _migrate_col(engine, "agenda_item_votes", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
+    _migrate_col(engine, "pz_item_details", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
+    _migrate_col(engine, "pz_item_details", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
+
+    # Backfill existing records to body='bos' and determine pz from meeting_type
+    backfill_body_column(engine)
+
+
+def backfill_body_column(engine):
+    """Backfill body column for existing records.
+
+    - All meetings with meeting_type != 'Planning & Zoning' get body='bos'
+    - All meetings with meeting_type == 'Planning & Zoning' get body='pz'
+    - Related tables (agenda_items, supporting_documents, etc.) are updated
+      to match their meeting's body value.
+    - Uses _body_backfilled flag as a migration marker.
+    """
+    inspector = sa_inspect(engine)
+
+    # Check backfill status using a temp column we added as a marker
+    tables_to_backfill = [
+        "meetings", "agenda_items", "supporting_documents",
+        "case_events", "meeting_supervisors", "agenda_item_votes", "pz_item_details",
+    ]
+
+    with engine.connect() as conn:
+        for table in tables_to_backfill:
+            existing_cols = {c["name"] for c in inspector.get_columns(table)}
+            if "body" not in existing_cols:
+                continue  # Table doesn't have body column yet, skip
+            marker = f"_body_backfilled"
+            if marker not in existing_cols:
+                continue
+
+            # Check if already backfilled
+            row = conn.execute(
+                text(f"SELECT COUNT(*) FROM {table} WHERE {marker} = 0")
+            ).scalar()
+            if not row or row == 0:
+                # Already backfilled or no rows
+                conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {marker}"))
+                conn.commit()
+                continue
+
+        # Backfill meetings body column
+        if "meetings" in [t for t in tables_to_backfill if t in {c["name"] for c in inspector.get_columns(t)}]:
+            # Update BOS meetings (not Planning & Zoning)
+            conn.execute(
+                text("UPDATE meetings SET body = 'bos' WHERE meeting_type != 'Planning & Zoning' AND _body_backfilled = 0")
+            )
+            # Update PZ meetings
+            conn.execute(
+                text("UPDATE meetings SET body = 'pz' WHERE meeting_type = 'Planning & Zoning' AND _body_backfilled = 0")
+            )
+            # Mark backfilled
+            conn.execute(text("UPDATE meetings SET _body_backfilled = 1 WHERE body != ''"))
+            conn.commit()
+
+            # Backfill related tables by joining to meetings
+            for table in ["agenda_items", "supporting_documents", "case_events", "meeting_supervisors", "agenda_item_votes", "pz_item_details"]:
+                if table not in [c["name"] for c in inspector.get_columns(table)]:
+                    continue
+                existing_cols = {c["name"] for c in inspector.get_columns(table)}
+                if "body" not in existing_cols or marker not in existing_cols:
+                    continue
+
+                try:
+                    # SQLite doesn't support UPDATE with JOIN directly
+                    # Use subquery approach
+                    conn.execute(
+                        text(f"""
+                            UPDATE {table}
+                            SET body = (
+                                SELECT COALESCE(m.body, 'bos')
+                                FROM meetings m
+                                WHERE m.meeting_id = {table}.meeting_id
+                                LIMIT 1
+                            ),
+                            _body_backfilled = 1
+                            WHERE _body_backfilled = 0
+                        """)
+                    )
+                except Exception:
+                    # Fallback: set all to 'bos'
+                    conn.execute(
+                        text(f"UPDATE {table} SET body = 'bos', _body_backfilled = 1 WHERE _body_backfilled = 0")
+                    )
+                conn.commit()
+
+            # Drop the marker columns
+            for table in tables_to_backfill:
+                try:
+                    conn.execute(text(f"ALTER TABLE {table} DROP COLUMN _body_backfilled"))
+                except Exception:
+                    pass
+            conn.commit()
+
 
 def _migrate_table(table_name: str):
     """Create a table via raw SQL if the model doesn't already exist."""
@@ -513,15 +644,19 @@ def _migrate_col(engine, table: str, col: str, col_def: str):
             conn.commit()
 
 
-def create_or_get_meeting(session: Session, meeting_dict: dict) -> Meeting:
+def create_or_get_meeting(session: Session, body: str, meeting_dict: dict) -> Meeting:
     """Get or create a meeting row, setting sync_status=pending for new rows."""
     meeting_id = meeting_dict.get("meeting_id", "")
     existing = session.execute(
-        select(Meeting).where(Meeting.meeting_id == meeting_id)
+        select(Meeting).where(
+            Meeting.body == body,
+            Meeting.meeting_id == meeting_id,
+        )
     ).scalar_one_or_none()
     if existing:
         return existing
     meeting = Meeting(
+        body=body,
         meeting_id=meeting_id,
         meeting_date=meeting_dict.get("meeting_date", ""),
         meeting_type=meeting_dict.get("meeting_type", ""),
@@ -536,6 +671,7 @@ def create_or_get_meeting(session: Session, meeting_dict: dict) -> Meeting:
 
 def update_sync_status(
     session: Session,
+    body: str,
     meeting_id: str,
     status: str,
     *,
@@ -548,10 +684,13 @@ def update_sync_status(
 ) -> Meeting:
     """Update sync tracking fields on a meeting row."""
     meeting = session.execute(
-        select(Meeting).where(Meeting.meeting_id == meeting_id)
+        select(Meeting).where(
+            Meeting.body == body,
+            Meeting.meeting_id == meeting_id,
+        )
     ).scalar_one_or_none()
     if not meeting:
-        raise ValueError(f"Meeting {meeting_id} not found")
+        raise ValueError(f"{body} meeting {meeting_id} not found")
 
     now = datetime.now(timezone.utc)
     meeting.sync_status = status
@@ -587,12 +726,14 @@ def update_sync_status(
 
 def get_meetings_by_date_range(
     session: Session,
+    body: str,
     start_date_iso: str,
     end_date_iso: str,
 ) -> list[Meeting]:
-    """Get all meetings with meeting_date in the given ISO date range (inclusive)."""
+    """Get all meetings for a body with meeting_date in the given ISO date range (inclusive)."""
     q = (
         select(Meeting)
+        .where(Meeting.body == body)
         .where(Meeting.meeting_date >= start_date_iso)
         .where(Meeting.meeting_date <= end_date_iso)
         .order_by(Meeting.meeting_date, Meeting.meeting_id)
@@ -602,16 +743,17 @@ def get_meetings_by_date_range(
 
 def get_meetings_by_status(
     session: Session,
+    body: str,
     statuses: Optional[list[str]] = None,
     *,
     force: bool = False,
     meeting_ids: Optional[list[str]] = None,
 ) -> list[Meeting]:
-    """Get meetings filtered by sync_status and/or meeting_ids.
+    """Get meetings for a body filtered by sync_status and/or meeting_ids.
 
     If force is True, ignore status filter and return all matching meeting_ids.
     """
-    q = select(Meeting).order_by(Meeting.meeting_date, Meeting.meeting_id)
+    q = select(Meeting).where(Meeting.body == body).order_by(Meeting.meeting_date, Meeting.meeting_id)
     if meeting_ids:
         q = q.where(Meeting.meeting_id.in_(meeting_ids))
     if not force and statuses:
@@ -656,15 +798,18 @@ def get_sync_status_summary(session: Session) -> dict:
     return summary
 
 
-def get_failed_meetings(session: Session) -> list[Meeting]:
+def get_failed_meetings(session: Session, body: str = "bos") -> list[Meeting]:
     """Get meetings with failed or partial status (excludes manual_review)."""
-    return get_meetings_by_status(session, ["failed", "partial"], force=False)
+    return get_meetings_by_status(session, body, ["failed", "partial"], force=False)
 
 
-def upsert_meeting(session: Session, meeting: Meeting) -> Meeting:
-    """Insert or update a meeting by meeting_id."""
+def upsert_meeting(session: Session, body: str, meeting: Meeting) -> Meeting:
+    """Insert or update a meeting by (body, meeting_id)."""
     existing = session.execute(
-        select(Meeting).where(Meeting.meeting_id == meeting.meeting_id)
+        select(Meeting).where(
+            Meeting.body == body,
+            Meeting.meeting_id == meeting.meeting_id,
+        )
     ).scalar_one_or_none()
     if existing:
         existing.meeting_date = meeting.meeting_date
@@ -679,6 +824,7 @@ def upsert_meeting(session: Session, meeting: Meeting) -> Meeting:
 
 def persist_meeting(
     session: Session,
+    body: str,
     meeting_id: str,
     agenda_item_dicts: list[dict],
     supporting_doc_dicts: Optional[list[dict]] = None,
@@ -686,12 +832,12 @@ def persist_meeting(
     """Transactionally persist a meeting's agenda items and supporting docs.
 
     WARNING: This replaces ALL existing agenda_items and supporting_documents
-    for the given meeting_id. Callers should only invoke this after
-    successfully extracting data into memory and validating.
+    for the given meeting_id within the body scope. Callers should only invoke
+    this after successfully extracting data into memory and validating.
 
     Steps:
-    1. Delete existing agenda_items for this meeting_id.
-    2. Delete existing supporting_documents for this meeting_id.
+    1. Delete existing agenda_items for this (body, meeting_id).
+    2. Delete existing supporting_documents for this (body, meeting_id).
     3. Insert new agenda_item rows and supporting doc rows.
     4. Verify the inserted count matches expected.
     5. Commit only if validation passes; rollback on failure.
@@ -703,20 +849,23 @@ def persist_meeting(
     inserted_item_count = 0
     inserted_doc_count = 0
 
-    # Delete existing rows for this meeting
+    # Delete existing rows for this meeting within body scope
     session.execute(
         AgendaItem.__table__.delete().where(
-            AgendaItem.meeting_id == meeting_id
+            AgendaItem.body == body,
+            AgendaItem.meeting_id == meeting_id,
         )
     )
     session.execute(
         SupportingDocument.__table__.delete().where(
-            SupportingDocument.meeting_id == meeting_id
+            SupportingDocument.body == body,
+            SupportingDocument.meeting_id == meeting_id,
         )
     )
 
     for item_dict in agenda_item_dicts:
         item = AgendaItem(
+            body=body,
             meeting_id=meeting_id,
             agenda_item_number=int(item_dict.get("agenda_item_number", 0)),
             agenda_item_id=item_dict.get("agenda_item_id", ""),
@@ -742,6 +891,7 @@ def persist_meeting(
     if supporting_doc_dicts:
         for doc_dict in supporting_doc_dicts:
             doc = SupportingDocument(
+                body=body,
                 agenda_item_id=doc_dict.get("agenda_item_id", 0),
                 meeting_id=meeting_id,
                 agenda_item_number=int(doc_dict.get("agenda_item_number", 0)),
@@ -846,6 +996,7 @@ def _upsert_case_and_event(
 
 def replace_meeting_data_safe(
     session: Session,
+    body: str,
     meeting_id: str,
     meeting_dict: dict,
     agenda_item_dicts: list[dict],
@@ -853,7 +1004,7 @@ def replace_meeting_data_safe(
 ) -> int:
     """Safely replace meeting data within a transaction.
 
-    This creates the meeting row if needed, replaces items/docs,
+    This creates the meeting row (body-scoped) if needed, replaces items/docs,
     and updates sync status to 'complete' on success.
     Returns the number of agenda items persisted.
 
@@ -861,7 +1012,7 @@ def replace_meeting_data_safe(
     """
     try:
         # Ensure meeting row exists (creates if new)
-        meeting = create_or_get_meeting(session, meeting_dict)
+        meeting = create_or_get_meeting(session, body, meeting_dict)
 
         # Update meeting metadata from meeting_dict (preserves existing
         # values when meeting_dict has empty fields, e.g. --meeting-id path)
@@ -893,6 +1044,7 @@ def replace_meeting_data_safe(
 
         persisted = persist_meeting(
             session,
+            body,
             meeting_id,
             agenda_item_dicts,
             supporting_doc_dicts,
@@ -902,6 +1054,7 @@ def replace_meeting_data_safe(
 
         update_sync_status(
             session,
+            body,
             meeting_id,
             "complete",
             item_count_expected=meeting.item_count_expected or len(agenda_item_dicts),
@@ -921,6 +1074,7 @@ def replace_meeting_data_safe(
 
 def persist_votes(
     session: Session,
+    body: str,
     meeting_id: str,
     supervisors: list[dict],
     votes: list[dict],
@@ -961,14 +1115,18 @@ def persist_votes(
             session.flush()
             supervisor_map[norm] = new.id
 
-    # 2. Delete existing records for this meeting
+    # 2. Delete existing records for this meeting (body-scoped)
     session.execute(
         MeetingSupervisor.__table__.delete().where(
-            MeetingSupervisor.meeting_id == meeting_id
+            MeetingSupervisor.body == body,
+            MeetingSupervisor.meeting_id == meeting_id,
         )
     )
     existing_aiv_rows = session.execute(
-        select(AgendaItemVote).where(AgendaItemVote.meeting_id == meeting_id)
+        select(AgendaItemVote).where(
+            AgendaItemVote.body == body,
+            AgendaItemVote.meeting_id == meeting_id,
+        )
     ).scalars().all()
     existing_aiv_ids = [r.id for r in existing_aiv_rows]
     if existing_aiv_ids:
@@ -979,11 +1137,11 @@ def persist_votes(
         )
     session.execute(
         AgendaItemVote.__table__.delete().where(
-            AgendaItemVote.meeting_id == meeting_id
+            AgendaItemVote.body == body,
+            AgendaItemVote.meeting_id == meeting_id,
         )
     )
     session.flush()
-    # Clear identity map to avoid stale identity warnings when re-inserting
     session.expire_all()
 
     vote_count = 0
@@ -995,6 +1153,7 @@ def persist_votes(
         if sup_id is None:
             continue
         ms = MeetingSupervisor(
+            body=body,
             meeting_id=meeting_id,
             supervisor_id=sup_id,
             role=sup.get("role"),
@@ -1021,6 +1180,7 @@ def persist_votes(
             continue
         seen_item_db_ids.add(db_agenda_item_id)
         aiv = AgendaItemVote(
+            body=body,
             agenda_item_id=db_agenda_item_id,
             meeting_id=meeting_id,
             agenda_item_number=item_number,

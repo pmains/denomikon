@@ -80,6 +80,7 @@ class Meeting:
     meeting_time: str
     meeting_title: str
     meeting_type: str
+    body: str
     row_text: str
     detail_url: str
     agenda_url: str
@@ -94,10 +95,13 @@ class Meeting:
             m = re.search(r"[?&]ID=(\d+)", url or "", re.I)
             if m:
                 return m.group(1)
-            # PZ format: /Agenda/_04232026-3722?html=true
+            # PZ format: /Agenda/_04232026-3722?html=true  or  /Agenda/3734
             m = re.search(r"/Agenda/[^/]*-(\d{3,})", url or "")
             if m:
-                return "pz-" + m.group(1)
+                return m.group(1)
+            m = re.search(r"/Agenda/(\d{3,})", url or "")
+            if m:
+                return m.group(1)
         return "meeting"
 
 
@@ -264,6 +268,7 @@ def parse_search_results_html(html: str, base_url: str) -> list[Meeting]:
                 meeting_time="",
                 meeting_title=meeting_title,
                 meeting_type=meeting_type,
+                body="bos",
                 row_text=row_text,
                 detail_url="",
                 agenda_url=agenda["href"],
@@ -2376,21 +2381,13 @@ def parse_pz_meetings_from_html(html: str, base_url: str) -> list[Meeting]:
         if not agenda_url:
             continue
 
-        # Extract meeting_id from the agenda URL
-        # Format: /AgendaCenter/ViewFile/Agenda/_04232026-3722?html=true
-        meeting_id = "pz-" + meeting_date.replace("-", "")
-        # Try extracting the numeric meeting ID from the agenda path
-        # Format: /AgendaCenter/ViewFile/Agenda/_04232026-3722?html=true
-        # The meeting ID is the numeric suffix after the last dash
-        path_m = re.search(r"-(\d{3,})(?:$|[?#])", agenda_url)
-        if path_m:
-            meeting_id = "pz-" + path_m.group(1)
-
+        # Note: meeting_id is extracted from agenda_url by the Meeting property
         meetings.append(Meeting(
             meeting_date=meeting_date,
             meeting_time="",
             meeting_title=meeting_title,
             meeting_type="Planning & Zoning",
+            body="pz",
             row_text=_clean_html_text(_node_text(row)),
             detail_url=agenda_url,
             agenda_url=agenda_url,
@@ -2400,28 +2397,170 @@ def parse_pz_meetings_from_html(html: str, base_url: str) -> list[Meeting]:
 
 
 async def extract_pz_agenda_items(page, meeting_url: str) -> list[dict]:
-    """Extract agenda items from a P&Z agenda HTML page."""
+    """Extract real agenda items from a P&Z AgendaCenter meeting.
+
+    The AgendaCenter overview page (ViewFile/Agenda/...) is a document index,
+    NOT an agenda. Real agenda items come from the linked agenda PDF.
+    Staff reports on the overview page become supporting documents.
+    """
     await page.goto(meeting_url, wait_until="domcontentloaded")
     await page.wait_for_timeout(2000)
     html = await page.content()
-    return parse_pz_agenda_items_from_html(html, meeting_url)
+    base_for_url = urllib.parse.urljoin(meeting_url, "/")
 
-def parse_pz_agenda_items_from_html(html: str, source_url: str) -> list[dict]:
-    """Parse P&Z agenda items from the HTML agenda page.
+    # Parse overview: find agenda PDF link + staff reports
+    overview = parse_pz_overview(html, meeting_url, base_for_url)
 
-    P&Z agenda pages on maricopa.gov use:
-      <h1 class="title">Item Title</h1>
-      <a class="file" href="/AgendaCenter/ViewFile/Item/...">filename.pdf</a>
+    agenda_pdf_url = ""
+    staff_report_files: list[dict] = []
+    if overview:
+        agenda_pdf_url = overview.get("agenda_pdf_url", "")
+        staff_report_files = overview.get("staff_report_files", [])
 
-    Each h1.title represents one agenda item, followed by
-    <a class="file"> links to staff reports or other documents.
+    # If overview parsing found no agenda PDF, try fallback link search
+    if not agenda_pdf_url:
+        # Fallback: scan the page for any link with "agenda" in href or text
+        found_count = len(staff_report_files) if staff_report_files else 0
+        for m in re.finditer(
+            r'<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+            html, re.DOTALL | re.I
+        ):
+            href = m.group(1)
+            link_text = re.sub(r"<[^>]+>", " ", m.group(2)).strip()
+            if re.search(r"agenda", href + " " + link_text, re.I) and "ViewFile/Item/" in href:
+                agenda_pdf_url = urllib.parse.urljoin(base_for_url, href)
+                break
+        if not agenda_pdf_url:
+            print(f"    No agenda PDF found in overview (found {found_count} staff reports)")
+            return []
+        else:
+            print(f"    Found agenda PDF (title did not match expected pattern)")
+
+    if not agenda_pdf_url:
+        print("    No agenda PDF found on overview page")
+        return []
+
+    # Download the agenda PDF directly (not via Playwright click, which is unreliable)
+    pdf_path_str = f"/tmp/pz_agenda_{Path(meeting_url).stem}.pdf"
+    pdf_path = Path(pdf_path_str)
+    try:
+        pdf_req = urllib.request.Request(
+            agenda_pdf_url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; MaricopaAgendaBot)"},
+        )
+        with urllib.request.urlopen(pdf_req, timeout=60) as pdf_resp:
+            pdf_path.write_bytes(pdf_resp.read())
+        if not pdf_path.exists() or pdf_path.stat().st_size < 100:
+            raise RuntimeError(f"Downloaded file is {pdf_path.stat().st_size} bytes, too small")
+    except Exception as e:
+        print(f"    Failed to download agenda PDF: {e}")
+        Path(pdf_path_str).unlink(missing_ok=True)
+        return []
+
+    # Parse the agenda PDF for real items
+    pdf_items = parse_pz_agenda_pdf(pdf_path_str)
+    pdf_path.unlink(missing_ok=True)
+
+    if not pdf_items:
+        print(f"    Agenda PDF parse returned no items — keeping existing data")
+        return []
+
+    # Build real agenda item dicts from PDF data
+    items: list[dict] = []
+    for pi in pdf_items:
+        item_num = pi.get("agenda_item_number", 0)
+        case_number = (pi.get("case_number") or "").strip()
+        title = (pi.get("project_name") or f"Case {case_number}" if case_number else f"Agenda Item #{item_num}")
+
+        item = {
+            "source_body": "Planning & Zoning",
+            "meeting_id": "",
+            "meeting_date": "",
+            "meeting_type": "Planning & Zoning",
+            "agenda_item_number": str(item_num),
+            "agenda_item_id": "",
+            "agenda_item_title": title[:200],
+            "agenda_item_text": f"Case: {case_number}" if case_number else "",
+            "agenda_item_url": meeting_url,
+            "vote_or_action": "",
+            "source_url": meeting_url,
+            "c_number": "",
+            "c_number_base": "",
+            "c_number_revision": None,
+            "case_number": case_number,
+            "supporting_doc_dicts": [],
+            "pz_data_complete": True,
+            "pz_case_number": case_number,
+            "pz_district": pi.get("district"),
+            "pz_project_name": pi.get("project_name"),
+            "pz_applicant": pi.get("applicant"),
+            "pz_request": pi.get("request"),
+            "pz_location": pi.get("location"),
+            "pz_recommendation": pi.get("recommendation"),
+            "pz_presented_by": pi.get("presented_by"),
+            "staff_report_url": None,
+        }
+        items.append(item)
+
+    # Build (all_case_numbers) -> staff report file lookups
+    # A file like "CPAZ250011 & Z250034 P&Z Report" applies to BOTH cases
+    file_case_to_files: dict[str, list[dict]] = {}
+    for srf in staff_report_files:
+        # Register under ALL case numbers this file applies to
+        all_cases = srf.get("all_case_numbers", [])
+        primary_case = (srf.get("c_number") or "").upper()
+        if primary_case and primary_case not in all_cases:
+            all_cases.append(primary_case)
+        if not all_cases and primary_case:
+            all_cases = [primary_case]
+        for cn in all_cases:
+            file_case_to_files.setdefault(cn.upper(), []).append(srf)
+        # Also register under the direct c_number for backward compat
+        if primary_case and primary_case not in all_cases:
+            file_case_to_files.setdefault(primary_case, []).append(srf)
+
+    # Match staff report files to items by case number
+    for it in items:
+        it_case = (it.get("case_number") or "").upper()
+        if it_case and it_case in file_case_to_files:
+            for srf in file_case_to_files[it_case]:
+                sd = {
+                    "agenda_item_number": int(it["agenda_item_number"]),
+                    "agenda_item_id": int(it["agenda_item_number"]),
+                    "c_number": srf.get("c_number"),
+                    "document_title": srf.get("document_title", ""),
+                    "document_url": srf.get("document_url", ""),
+                    "document_type": "PDF",
+                    "file_name": f"{srf.get('document_title', '')}.pdf",
+                    "file_extension": "pdf",
+                }
+                # Deduplicate by URL
+                existing_urls = {d["document_url"] for d in it["supporting_doc_dicts"]}
+                if sd["document_url"] not in existing_urls:
+                    it["supporting_doc_dicts"].append(sd)
+                if it.get("staff_report_url") is None:
+                    it["staff_report_url"] = srf.get("document_url", "")
+
+    return items
+
+
+def parse_pz_overview(html: str, source_url: str, base_url: str) -> dict | None:
+    """Parse a P&Z AgendaCenter overview/document-index page.
+
+    Each h1.title section may have multiple file links (staff reports, exhibits).
+    Titles like "CPAZ250011 & Z250034 P&Z Report" contain multiple case numbers.
+
+    Returns:
+      {
+        "agenda_pdf_url": str | "",
+        "agenda_title": str | "",
+        "staff_report_files": list[dict],  # One dict per actual file
+      }
+    Returns None if no h1.title structure found.
     """
     from html import unescape
-    items: list[dict] = []
-    base_for_url = urllib.parse.urljoin(source_url, "/")
+    base_for_url = base_url
 
-    # Find item blocks: <h1 class="title">...</h1> followed by any content
-    # up to the next <h1 class="title"> or end of document
     item_blocks: list[tuple[str, str]] = []
     for m in re.finditer(
         r'<h1[^>]*class="title"[^>]*>(.*?)</h1>\s*(.*?)(?=<h1[^>]*class="title"|\Z)',
@@ -2432,24 +2571,30 @@ def parse_pz_agenda_items_from_html(html: str, source_url: str) -> list[dict]:
         item_blocks.append((title_html, section))
 
     if not item_blocks:
-        return items
+        return None
 
-    item_counter = 0
+    agenda_pdf_url = ""
+    agenda_title = ""
+    staff_report_files: list[dict] = []
+
     for title_html, section in item_blocks:
-        item_counter += 1
-
-        # Extract clean title text
         title = re.sub(r"<[^>]+>", " ", title_html)
         title = unescape(re.sub(r"\s+", " ", title)).strip()
         if not title:
             continue
 
-        # Skip irrelevant boilerplate items
         if re.search(r"GoToWebinar|Webinar User Guide", title, re.I):
             continue
 
-        # Find document links inside this section
-        doc_entries: list[tuple[str, str]] = []  # (title, url)
+        # Extract ALL case numbers from the title (e.g. "CPAZ250011 & Z250034")
+        title_cases: list[str] = []
+        for c_m in CASE_PATTERN.finditer(title):
+            cn = c_m.group(1).upper()
+            if cn not in title_cases:
+                title_cases.append(cn)
+
+        # Find ALL document links in this section
+        doc_urls: list[tuple[str, str]] = []  # (url, link_text)
         for a_m in re.finditer(
             r'<a[^>]*class="[^"]*file[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
             section, re.DOTALL | re.I
@@ -2459,59 +2604,51 @@ def parse_pz_agenda_items_from_html(html: str, source_url: str) -> list[dict]:
             link_text = re.sub(r"\s+", " ", link_text).strip()
             if "/ViewFile/Item/" in href:
                 doc_url = urllib.parse.urljoin(base_for_url, href)
-                doc_entries.append((link_text, doc_url))
+                doc_urls.append((doc_url, link_text))
 
-        # Full text for case number extraction
-        doc_urls_text = " ".join(url for _, url in doc_entries)
-        full_text = title + " " + doc_urls_text
+        if not doc_urls:
+            continue
 
-        # Extract case number from title or document URLs
-        case_number = ""
-        c_m = CASE_PATTERN.search(full_text)
-        if c_m:
-            case_number = c_m.group(1).upper()
+        # Identify the agenda document vs staff reports
+        # Identify the agenda document: match by "agenda", "Planning and Zoning" (without staff report),
+        # or any title that looks like a date-range descriptor (e.g. "April 23, 2026 - Planning and Zoning")
+        has_no_case = not title_cases
+        is_agenda = (
+            (bool(re.search(r"agenda", title, re.I)) and not re.search(r"staff report", title, re.I))
+            or (bool(re.search(r"planning\s+and\s+zoning", title, re.I))
+                and not re.search(r"staff report", title, re.I)
+                and has_no_case)
+            or (has_no_case and bool(re.search(r"(january|february|march|april|may|june|july|august|september|october|november|december)", title, re.I)))
+        )
 
-        # Build supporting doc dicts
-        supporting_doc_dicts: list[dict] = []
-        for doc_title, doc_url in doc_entries:
-            doc_case = ""
-            dc = CASE_PATTERN.search(doc_url + " " + doc_title)
-            if dc:
-                doc_case = dc.group(1).upper()
+        if is_agenda:
+            # The agenda document is typically the first file link
+            agenda_pdf_url = doc_urls[0][0]
+            agenda_title = title
+        else:
+            # Each file link is a separate staff report document
+            for doc_url, link_text in doc_urls:
+                # Extract case number from this specific file
+                file_case = ""
+                dc = CASE_PATTERN.search(doc_url + " " + link_text)
+                if dc:
+                    file_case = dc.group(1).upper()
+                
+                # Also try to extract from the section title
+                doc_case = file_case or (title_cases[0] if title_cases else "")
+                
+                staff_report_files.append({
+                    "document_title": link_text.replace(".pdf", "").replace(".PDF", "").strip() or title,
+                    "document_url": doc_url,
+                    "c_number": doc_case if doc_case else None,
+                    "all_case_numbers": title_cases.copy(),
+                })
 
-            supporting_doc_dicts.append({
-                "agenda_item_id": item_counter,
-                "meeting_id": "",
-                "agenda_item_number": item_counter,
-                "c_number": doc_case if doc_case else None,
-                "document_title": doc_title.replace(".pdf", "").replace(".PDF", "").strip(),
-                "document_url": doc_url,
-                "document_type": "PDF",
-                "file_name": doc_title,
-                "file_extension": "pdf",
-            })
-
-        items.append({
-            "source_body": "Planning & Zoning",
-            "meeting_id": "",
-            "meeting_date": "",
-            "meeting_type": "Planning & Zoning",
-            "agenda_item_number": str(item_counter),
-            "agenda_item_id": "",
-            "agenda_item_title": title[:200],
-            "agenda_item_text": full_text[:2000],
-            "agenda_item_url": source_url,
-            "vote_or_action": "",
-            "source_url": source_url,
-            "c_number": "",
-            "c_number_base": "",
-            "c_number_revision": None,
-            "case_number": case_number,
-            "supporting_doc_dicts": supporting_doc_dicts,
-        })
-
-    return items
-
+    return {
+        "agenda_pdf_url": agenda_pdf_url,
+        "agenda_title": agenda_title,
+        "staff_report_files": staff_report_files,
+    }
 
 def _format_mm_dd_yyyy(date_iso: str) -> str | None:
     """Convert YYYY-MM-DD to MM/DD/YYYY. Returns None if input is empty."""
@@ -2571,7 +2708,10 @@ def parse_pz_agenda_pdf(filepath: str) -> list[dict]:
         if re.match(r"^\s*(Continuance|Consent|Regular)\s+Agenda\s*$", stripped, re.I):
             continue
 
+        # Match items starting with "N. Case: ..." or "N. CASENUMBER ..." (ZIPPOR format)
         item_start = re.match(r"^\s*(\d+)\.?\s*Case\b", stripped, re.I)
+        if not item_start:
+            item_start = re.match(r"^\s*(\d+)\.\s+([A-Z]+-?\d{3,})", stripped)
         if item_start:
             if current:
                 items.append(current)
@@ -2583,6 +2723,10 @@ def parse_pz_agenda_pdf(filepath: str) -> list[dict]:
                 "location": None, "recommendation": None, "presented_by": None,
             }
             rest = stripped[item_start.end():].strip()
+            # For "N. CASENUMBER" format (ZIPPOR), the case number is in group(2)
+            # and was consumed by the regex — prepend it back to rest
+            if len(item_start.groups()) >= 2:
+                rest = (item_start.group(2) + " " + rest).strip()
             case_m = re.search(r"([A-Z]+-?\d{3,})", rest)
             if case_m:
                 current["case_number"] = case_m.group(1)
@@ -2640,20 +2784,60 @@ async def main() -> int:
 
         init_db()
 
-        now = dt.date.today()
-        if args.start_date:
-            pz_start = _format_mm_dd_yyyy(args.start_date) or f"{now.month:02d}/01/{now.year}"
-        else:
-            three_months_ago = now - dt.timedelta(days=90)
-            pz_start = f"{three_months_ago.month:02d}/01/{three_months_ago.year}"
+        # If --meeting-id is provided, bypass search and use direct meeting URL
+        if args.meeting_id:
+            meeting_id = args.meeting_id
+            # Try to get the agenda URL from the database first
+            from db import Meeting as MeetingModel
+            from sqlalchemy import select
+            db_session = get_session()
+            existing = db_session.execute(
+                select(MeetingModel).where(
+                    MeetingModel.body == "pz",
+                    MeetingModel.meeting_id == meeting_id,
+                )
+            ).scalar_one_or_none()
+            agenda_url = ""
+            meeting_date = ""
+            meeting_title = ""
+            if existing and existing.source_url:
+                # Use the HTML agenda URL from previous sync
+                agenda_url = existing.source_url
+                meeting_date = existing.meeting_date or ""
+                meeting_title = existing.meeting_title or ""
+                print(f"Found existing P&Z meeting {meeting_id} in database")
+            else:
+                # Construct a best-guess URL. Agenda Center HTML pages use
+                # ViewFile/Agenda/<id>?html=true
+                agenda_url = f"https://www.maricopa.gov/AgendaCenter/ViewFile/Agenda/{meeting_id}?html=true"
+            db_session.close()
 
-        if args.end_date:
-            pz_end = _format_mm_dd_yyyy(args.end_date) or f"{now.month:02d}/{min(28, now.day):02d}/{now.year}"
+            pz_meetings = [Meeting(
+                meeting_date=meeting_date,
+                meeting_time="",
+                meeting_title=meeting_title,
+                meeting_type="Planning & Zoning",
+                body="pz",
+                row_text="",
+                detail_url="",
+                agenda_url=agenda_url,
+            )]
+            print(f"Syncing P&Z meeting {meeting_id}...")
         else:
-            pz_end = f"{now.month:02d}/{min(28, now.day):02d}/{now.year}"
+            now = dt.date.today()
+            if args.start_date:
+                pz_start = _format_mm_dd_yyyy(args.start_date) or f"{now.month:02d}/01/{now.year}"
+            else:
+                three_months_ago = now - dt.timedelta(days=90)
+                pz_start = f"{three_months_ago.month:02d}/01/{three_months_ago.year}"
 
-        search_url = build_pz_search_url(pz_start, pz_end)
-        print(f"P&Z search URL: {search_url}")
+            if args.end_date:
+                pz_end = _format_mm_dd_yyyy(args.end_date) or f"{now.month:02d}/{min(28, now.day):02d}/{now.year}"
+            else:
+                pz_end = f"{now.month:02d}/{min(28, now.day):02d}/{now.year}"
+
+            search_url = build_pz_search_url(pz_start, pz_end)
+            print(f"P&Z search URL: {search_url}")
 
         async_playwright = get_async_playwright()
         async with async_playwright() as p:
@@ -2661,11 +2845,15 @@ async def main() -> int:
             page = await browser.new_page()
             page.set_default_timeout(60000)
             try:
-                pz_meetings = await extract_pz_meetings(page, search_url)
+                if args.meeting_id:
+                    # Skip search when --meeting-id is provided; list already built above
+                    pass
+                else:
+                    pz_meetings = await extract_pz_meetings(page, search_url)
 
-                if not pz_meetings:
-                    print(f"No P&Z meetings found.")
-                    return 0
+                    if not pz_meetings:
+                        print(f"No P&Z meetings found.")
+                        return 0
 
                 if args.limit:
                     pz_meetings = pz_meetings[:args.limit]
@@ -2686,71 +2874,22 @@ async def main() -> int:
 
                     items = await extract_pz_agenda_items(page, meeting.agenda_url)
 
-                    # Fix up PZ item metadata — meeting_id and agenda_item_id need to be unique
+                    # extract_pz_agenda_items now returns real items from the PDF
+                    # with supporting_doc_dicts already set. We just need to fix
+                    # meeting_id and agenda_item_id, then flatten supporting docs.
                     docs: list[dict] = []
-                    # Find the agenda PDF URL (typically the doc with "Agenda" in the title)
-                    agenda_pdf_url = ""
                     for it in items:
                         it["meeting_id"] = meeting.meeting_id
                         it["agenda_item_id"] = f"{meeting.meeting_id}-{it['agenda_item_number']}-item"
-                        # Extract embedded supporting doc dicts
                         for sd in it.pop("supporting_doc_dicts", []):
                             sd["meeting_id"] = meeting.meeting_id
                             sd["agenda_item_number"] = int(it["agenda_item_number"])
                             sd["agenda_item_id"] = int(it["agenda_item_number"])
                             docs.append(sd)
-                            # Record staff report URL on the item itself
-                            if "staff report" in sd.get("document_title", "").lower():
-                                it["staff_report_url"] = sd.get("document_url", "")
-                            # Check for agenda PDF
-                            if "agenda" in sd.get("document_title", "").lower():
-                                agenda_pdf_url = sd.get("document_url", "")
-
-                    # Parse the agenda PDF for structured field data
-                    pz_details: list[dict] = []
-                    pdf_path_str = f"/tmp/pz_agenda_{meeting.meeting_id}.pdf"
-                    pdf_path = Path(pdf_path_str)
-                    try:
-                        # Download the agenda PDF via Playwright (page is on agenda HTML)
-                        # Find the link by href fragment for the specific Item ID
-                        item_id = agenda_pdf_url.split("Item/")[1].split("?")[0] if "Item/" in agenda_pdf_url else ""
-                        async with page.expect_download() as dl_info:
-                            await page.click(f'a[href*="Item/{item_id}"]')
-                        dl = await dl_info.value
-                        await dl.save_as(pdf_path_str)
-                        if pdf_path.exists() and pdf_path.stat().st_size > 1000:
-                            pdf_items = parse_pz_agenda_pdf(pdf_path_str)
-                            if pdf_path.exists():
-                                pdf_path.unlink(missing_ok=True)
-
-                            # Match PDF items to HTML items by case_number
-                            case_to_detail: dict[str, dict] = {}
-                            for pi in pdf_items:
-                                cn = (pi.get("case_number") or "").strip()
-                                if cn:
-                                    case_to_detail[cn] = pi
-
-                            for it in items:
-                                cn = (it.get("case_number") or "").strip()
-                                if cn and cn in case_to_detail:
-                                    detail = case_to_detail[cn]
-                                    for field in ["project_name", "applicant", "request",
-                                                  "location", "recommendation", "presented_by",
-                                                  "district"]:
-                                        if detail.get(field):
-                                            it[f"pz_{field}"] = detail[field]
-                                    it["pz_data_complete"] = True
-                                elif cn:
-                                    # Case number in item title exists but not in PDF
-                                    # Create basic entry with what we have
-                                    it["pz_project_name"] = it.get("agenda_item_title", "")
-                                    it["pz_data_complete"] = False
-                    except Exception as pdf_err:
-                        print(f"    PDF parse skipped: {pdf_err}")
 
                     if items:
                         replace_meeting_data_safe(
-                            session, meeting.meeting_id, meeting_dict, items,
+                            session, meeting.body, meeting.meeting_id, meeting_dict, items,
                             supporting_doc_dicts=docs,
                         )
 
@@ -2761,7 +2900,8 @@ async def main() -> int:
                             # Delete old details for this meeting
                             session.execute(
                                 PZItemDetail.__table__.delete().where(
-                                    PZItemDetail.meeting_id == meeting.meeting_id
+                                    PZItemDetail.body == meeting.body,
+                                    PZItemDetail.meeting_id == meeting.meeting_id,
                                 )
                             )
                             # Look up agenda item DB IDs after persist
@@ -2769,7 +2909,10 @@ async def main() -> int:
                                 row.agenda_item_number: row.id
                                 for row in session.execute(
                                     select(AgendaItem.id, AgendaItem.agenda_item_number)
-                                    .where(AgendaItem.meeting_id == meeting.meeting_id)
+                                    .where(
+                                        AgendaItem.body == meeting.body,
+                                        AgendaItem.meeting_id == meeting.meeting_id,
+                                    )
                                 ).all()
                             }
                             # Insert new details
@@ -2777,6 +2920,7 @@ async def main() -> int:
                                 if it.get("pz_project_name"):
                                     item_num = int(it.get("agenda_item_number", 0))
                                     detail = PZItemDetail(
+                                        body=meeting.body,
                                         agenda_item_id=db_items.get(item_num),
                                         meeting_id=meeting.meeting_id,
                                         agenda_item_number=item_num,
@@ -2824,7 +2968,8 @@ async def main() -> int:
         from db import get_session, get_failed_meetings, get_meetings_by_status
         session = get_session()
         failed_statuses = ["failed", "partial", "manual_review"] if args.include_manual_review else ["failed", "partial"]
-        meetings = get_meetings_by_status(session, failed_statuses)
+        body_filter = args.source if hasattr(args, 'source') else "bos"
+        meetings = get_meetings_by_status(session, body_filter, failed_statuses)
         session.close()
         if not meetings:
             print("No meetings with issues.")
@@ -2871,7 +3016,8 @@ async def main() -> int:
                 "source_url": first.get("source_url", ""),
             }
             try:
-                count = persist_meeting(session, meeting_id, items)
+                body = first.get("body", "bos") if "body" in first else args.source if hasattr(args, 'source') else "bos"
+                count = persist_meeting(session, body, meeting_id, items)
                 total += count
                 print(f"  {meeting_id} {meeting_date}: {count} items")
             except Exception as e:
@@ -2921,7 +3067,7 @@ async def main() -> int:
             session = get_session()
             try:
                 # Ensure meeting row exists
-                meeting = create_or_get_meeting(session, meeting_dict)
+                meeting = create_or_get_meeting(session, args.source, meeting_dict)
                 session.commit()
 
                 # Check if we should skip complete
@@ -2937,7 +3083,7 @@ async def main() -> int:
                     page.set_default_timeout(60000)
                     try:
                         # Mark as attempted
-                        update_sync_status(session, meeting_id, meeting.sync_status)
+                        update_sync_status(session, args.source, meeting_id, meeting.sync_status)
                         session.commit()
 
                         retry = args.retry_count
@@ -2975,7 +3121,7 @@ async def main() -> int:
                                 error = "No agenda items found on page"
                                 print(f"  {meeting_id}: 0 items (no agenda items found)")
                             update_sync_status(
-                                session, meeting_id, status,
+                                session, args.source, meeting_id, status,
                                 error=error,
                             )
                             session.commit()
@@ -3000,11 +3146,11 @@ async def main() -> int:
                         if not docs_ok:
                             # Items succeeded but docs failed - partial
                             replace_meeting_data_safe(
-                                session, meeting_id, meeting_dict, items,
+                                session, args.source, meeting_id, meeting_dict, items,
                                 supporting_doc_dicts=docs,
                             )
                             update_sync_status(
-                                session, meeting_id, "partial",
+                                session, args.source, meeting_id, "partial",
                                 item_count_expected=len(items),
                                 item_count_actual=len(items),
                                 supporting_doc_count=len(docs),
@@ -3016,7 +3162,7 @@ async def main() -> int:
                             print(f"  {meeting_id}: {len(items)} items synced (partial - no supporting docs)")
                         else:
                             replace_meeting_data_safe(
-                                session, meeting_id, meeting_dict, items,
+                                session, args.source, meeting_id, meeting_dict, items,
                                 supporting_doc_dicts=docs,
                             )
                             session.commit()
@@ -3035,12 +3181,12 @@ async def main() -> int:
                                 page, summary_url, vote_items
                             )
                             if votes:
-                                vote_count = persist_votes(session, meeting_id, supervisors, votes)
+                                vote_count = persist_votes(session, args.source, meeting_id, supervisors, votes)
                                 session.commit()
                                 print(f"  {meeting_id}: {vote_count} vote(s) synced")
                             elif supervisors:
                                 # Supervisors found but no item votes (display-only meeting)
-                                vote_count = persist_votes(session, meeting_id, supervisors, votes)
+                                vote_count = persist_votes(session, args.source, meeting_id, supervisors, votes)
                                 session.commit()
                                 print(f"  {meeting_id}: {len(supervisors)} supervisor(s) present, no item votes")
                         except Exception as ve:
@@ -3050,7 +3196,7 @@ async def main() -> int:
                     except Exception as e:
                         # Items extraction failed
                         update_sync_status(
-                            session, meeting_id, "failed",
+                            session, args.source, meeting_id, "failed",
                             error=str(e)[:500],
                         )
                         session.commit()
@@ -3167,7 +3313,7 @@ async def main() -> int:
                 print(f"  {meeting_id}: {len(docs)} supporting document(s) found")
 
             session = get_session()
-            count = persist_meeting(session, meeting_id, items, supporting_doc_dicts=docs)
+            count = persist_meeting(session, args.source, meeting_id, items, supporting_doc_dicts=docs)
             session.close()
             print(f"  {meeting_id} {meeting_date}: {count} items synced from '{fixture_path.name}'")
             return 0
@@ -3206,6 +3352,7 @@ async def main() -> int:
                 if args.force:
                     db_meetings = get_meetings_by_date_range(
                         session,
+                        args.source,
                         start_date.isoformat(),
                         end_date.isoformat(),
                     )
@@ -3228,6 +3375,7 @@ async def main() -> int:
                                 meeting_time="",
                                 meeting_title=db_m.meeting_title,
                                 meeting_type=db_m.meeting_type,
+                                body=db_m.body if hasattr(db_m, 'body') and db_m.body else "bos",
                                 row_text="",
                                 detail_url="",
                                 agenda_url=db_m.source_url,
@@ -3265,7 +3413,7 @@ async def main() -> int:
                     }
 
                     # Ensure meeting row exists
-                    db_meeting = create_or_get_meeting(session, meeting_dict)
+                    db_meeting = create_or_get_meeting(session, args.source, meeting_dict)
                     session.commit()
 
                     # Determine which statuses to retry
@@ -3298,7 +3446,7 @@ async def main() -> int:
                                 error = "No agenda items found"
                                 print(f"  {meeting.meeting_id} {meeting.meeting_date}: 0 items ({status})")
                             update_sync_status(
-                                session, meeting.meeting_id, status,
+                                session, args.source, meeting.meeting_id, status,
                                 error=error,
                             )
                             session.commit()
@@ -3314,14 +3462,14 @@ async def main() -> int:
 
                         try:
                             replace_meeting_data_safe(
-                                session, meeting.meeting_id, meeting_dict, items,
+                                session, args.source, meeting.meeting_id, meeting_dict, items,
                                 supporting_doc_dicts=docs,
                             )
                             total += len(items)
                             print(f"{status_line}")
                         except Exception as e:
                             update_sync_status(
-                                session, meeting.meeting_id, "failed",
+                                session, args.source, meeting.meeting_id, "failed",
                                 error=str(e)[:500],
                             )
                             session.commit()
@@ -3330,7 +3478,7 @@ async def main() -> int:
                     except Exception as e:
                         # Pre-extraction failure
                         update_sync_status(
-                            session, meeting.meeting_id, "failed",
+                            session, args.source, meeting.meeting_id, "failed",
                             error=str(e)[:500],
                         )
                         session.commit()
@@ -3369,19 +3517,26 @@ async def main() -> int:
                     print(f"  Summary URL: {summary_url}")
 
                     # Load agenda items for C-number matching
-                    from db import Meeting, AgendaItem
+                    from db import Meeting as MeetingModel, AgendaItem
                     from sqlalchemy import select
                     session = get_session()
+                    body = args.source if hasattr(args, 'source') else "bos"
                     try:
                         meeting = session.execute(
-                            select(Meeting).where(Meeting.meeting_id == meeting_id)
+                            select(MeetingModel).where(
+                                MeetingModel.body == body,
+                                MeetingModel.meeting_id == meeting_id,
+                            )
                         ).scalar_one_or_none()
                         if not meeting:
-                            print(f"  Meeting {meeting_id} not found in database. Run --sync first.")
+                            print(f"  {body} meeting {meeting_id} not found in database. Run --sync first.")
                             return 1
                         db_items = session.execute(
                             select(AgendaItem)
-                            .where(AgendaItem.meeting_id == meeting_id)
+                            .where(
+                                AgendaItem.body == body,
+                                AgendaItem.meeting_id == meeting_id,
+                            )
                             .order_by(AgendaItem.agenda_item_number)
                         ).scalars().all()
                         agenda_items = [
@@ -3428,7 +3583,7 @@ async def main() -> int:
                     # Persist to database
                     session = get_session()
                     try:
-                        vote_count = persist_votes(session, meeting_id, supervisors, votes)
+                        vote_count = persist_votes(session, body, meeting_id, supervisors, votes)
                         print(f"  Persisted {vote_count} vote record(s)")
                     finally:
                         session.close()

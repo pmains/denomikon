@@ -95,6 +95,7 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
     """Query meetings with optional filters. Returns list of dicts."""
     session = get_session()
     q = select(
+        Meeting.body,
         Meeting.meeting_id,
         Meeting.meeting_date,
         Meeting.meeting_type,
@@ -108,9 +109,9 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
 
     if body and body.lower() != "all":
         if body.lower() in ("bz", "pz", "planning"):
-            q = q.where(Meeting.meeting_type == "Planning & Zoning")
+            q = q.where(Meeting.body == "pz")
         else:
-            q = q.where(Meeting.meeting_type != "Planning & Zoning")
+            q = q.where(Meeting.body == "bos")
 
     if meeting_type and meeting_type.lower() != "all":
         # Exact match: dropdown sends "Formal", "Informal", etc.
@@ -129,8 +130,9 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
 
     meetings_list = []
     for row in rows:
-        is_pz = (row.meeting_type or "") == "Planning & Zoning"
+        is_pz = (row.body or "") == "pz"
         meetings_list.append({
+            "body": row.body or "bos",
             "meeting_id": row.meeting_id,
             "meeting_date": row.meeting_date or "",
             "meeting_type": row.meeting_type or "",
@@ -171,22 +173,29 @@ def meetings():
 
 
 @app.route("/meetings/<meeting_id>")
-def meeting_detail(meeting_id):
+@app.route("/meetings/<body>/<meeting_id>")
+def meeting_detail(meeting_id, body=None):
     session = get_session()
 
     # --- Meeting header ---
-    meeting = session.execute(
-        select(Meeting).where(Meeting.meeting_id == meeting_id)
-    ).scalar_one_or_none()
+    q = select(Meeting).where(Meeting.meeting_id == meeting_id)
+    if body:
+        q = q.where(Meeting.body == body.lower())
+    meeting = session.execute(q).scalar_one_or_none()
 
     if not meeting:
         session.close()
         return render_template("meeting_detail.html", meeting_id=meeting_id, meeting=None)
 
+    meeting_body_val = meeting.body or "bos"
+
     # --- Agenda items ---
     items = session.execute(
         select(AgendaItem)
-        .where(AgendaItem.meeting_id == meeting_id)
+        .where(
+            AgendaItem.body == meeting_body_val,
+            AgendaItem.meeting_id == meeting_id,
+        )
         .order_by(AgendaItem.agenda_item_number)
     ).scalars().all()
 
@@ -194,7 +203,10 @@ def meeting_detail(meeting_id):
     docs_by_item: dict[int, list] = {}
     docs = session.execute(
         select(SupportingDocument)
-        .where(SupportingDocument.meeting_id == meeting_id)
+        .where(
+            SupportingDocument.body == meeting_body_val,
+            SupportingDocument.meeting_id == meeting_id,
+        )
         .order_by(SupportingDocument.agenda_item_number, SupportingDocument.id)
     ).scalars().all()
     for d in docs:
@@ -204,7 +216,10 @@ def meeting_detail(meeting_id):
     votes_by_item: dict[int, dict] = {}
     item_votes = session.execute(
         select(AgendaItemVote)
-        .where(AgendaItemVote.meeting_id == meeting_id)
+        .where(
+            AgendaItemVote.body == meeting_body_val,
+            AgendaItemVote.meeting_id == meeting_id,
+        )
     ).scalars().all()
 
     vote_ids = [v.id for v in item_votes]
@@ -231,10 +246,13 @@ def meeting_detail(meeting_id):
 
     # PZ item details
     pz_details: dict[int, dict] = {}
-    is_pz = (meeting.meeting_type or "") == "Planning & Zoning"
+    is_pz = (meeting.body or "") == "pz"
     if is_pz:
         detail_rows = session.execute(
-            select(PZItemDetail).where(PZItemDetail.meeting_id == meeting_id)
+            select(PZItemDetail).where(
+                PZItemDetail.body == meeting_body_val,
+                PZItemDetail.meeting_id == meeting_id,
+            )
         ).scalars().all()
         for d in detail_rows:
             pz_details[d.agenda_item_number] = {

@@ -429,5 +429,453 @@ class AgendaItemSchemaContractTests(unittest.TestCase):
                     self.assertIn("ViewMeeting?id=", item["source_url"], f"{row['meeting_id']} bad source_url: {item}")
 
 
+class BodyScopedIdentityTests(unittest.TestCase):
+    """Regression tests for body-scoped meeting identity."""
+
+    def test_meeting_dataclass_has_body_field(self):
+        """Meeting dataclass must have a body field."""
+        from dataclasses import fields
+        field_names = {f.name for f in fields(scraper.Meeting)}
+        self.assertIn("body", field_names)
+
+    def test_meeting_id_for_bos_url(self):
+        """BOS meeting ID extracted from ViewMeeting URL."""
+        m = scraper.Meeting(
+            meeting_date="2025-01-29", meeting_time="", meeting_title="Formal",
+            meeting_type="Formal", body="bos", row_text="",
+            detail_url="",
+            agenda_url="https://mccobagenda.databankcloud.com/AgendaOnline/Meetings/ViewMeeting?id=4470&doctype=1",
+        )
+        self.assertEqual(m.meeting_id, "4470")
+        self.assertEqual(m.body, "bos")
+
+    def test_meeting_id_for_pz_url_with_dash(self):
+        """PZ meeting ID extracted from dashed URL format, no pz- prefix."""
+        m = scraper.Meeting(
+            meeting_date="", meeting_time="", meeting_title="",
+            meeting_type="Planning & Zoning", body="pz", row_text="",
+            detail_url="",
+            agenda_url="https://www.maricopa.gov/AgendaCenter/ViewFile/Agenda/_04232026-3722?html=true",
+        )
+        self.assertEqual(m.meeting_id, "3722")
+        self.assertEqual(m.body, "pz")
+
+    def test_meeting_id_for_pz_viewfile_url(self):
+        """PZ meeting ID extracted from ViewFile/Agenda/NNNN format."""
+        m = scraper.Meeting(
+            meeting_date="", meeting_time="", meeting_title="",
+            meeting_type="Planning & Zoning", body="pz", row_text="",
+            detail_url="",
+            agenda_url="https://www.maricopa.gov/AgendaCenter/ViewFile/Agenda/3734",
+        )
+        self.assertEqual(m.meeting_id, "3734")
+        self.assertEqual(m.body, "pz")
+
+    def test_pz_meeting_id_no_pz_prefix_in_storage(self):
+        """PZ meeting IDs stored without pz- prefix; body field provides scope."""
+        m = scraper.Meeting(
+            meeting_date="", meeting_time="", meeting_title="",
+            meeting_type="Planning & Zoning", body="pz", row_text="",
+            detail_url="",
+            agenda_url="https://www.maricopa.gov/AgendaCenter/ViewFile/Agenda/3734",
+        )
+        self.assertFalse(m.meeting_id.startswith("pz-"),
+                         "meeting_id should not have pz- prefix")
+
+    def test_db_meeting_has_body_column(self):
+        """Database Meeting model has body column for scoping."""
+        from sqlalchemy import inspect
+        from scripts.db import get_engine, Meeting
+        insp = inspect(get_engine())
+        cols = {c["name"] for c in insp.get_columns("meetings")}
+        self.assertIn("body", cols)
+
+    def test_body_backfill_bos_meetings_exist(self):
+        """Existing BOS meetings should have body='bos'."""
+        from scripts.db import get_session, Meeting
+        from sqlalchemy import select, func
+        session = get_session()
+        count = session.execute(
+            select(func.count()).select_from(Meeting).where(
+                Meeting.body == "bos",
+                Meeting.meeting_type != "Planning & Zoning",
+            )
+        ).scalar()
+        self.assertGreater(count, 0, "Should have BOS meetings with body='bos'")
+        session.close()
+
+    def test_body_backfill_pz_meeting_exists(self):
+        """Existing PZ meeting should have body='pz'."""
+        from scripts.db import get_session, Meeting
+        from sqlalchemy import select, func
+        session = get_session()
+        count = session.execute(
+            select(func.count()).select_from(Meeting).where(
+                Meeting.body == "pz",
+            )
+        ).scalar()
+        self.assertGreaterEqual(count, 1, "Should have PZ meetings with body='pz'")
+        session.close()
+
+    def test_db_agenda_items_have_body_column(self):
+        """Agenda items table has body column."""
+        from sqlalchemy import inspect
+        from scripts.db import get_engine
+        insp = inspect(get_engine())
+        cols = {c["name"] for c in insp.get_columns("agenda_items")}
+        self.assertIn("body", cols)
+
+    def test_pz_meeting_item_body_scoped(self):
+        """PZ agenda items should have body='pz'."""
+        from scripts.db import get_session, AgendaItem
+        from sqlalchemy import select, func
+        session = get_session()
+        count = session.execute(
+            select(func.count()).select_from(AgendaItem).where(
+                AgendaItem.body == "pz",
+            )
+        ).scalar()
+        self.assertGreaterEqual(count, 1, "Should have PZ agenda items with body='pz'")
+        session.close()
+
+    def test_bos_meeting_item_body_scoped(self):
+        """BOS agenda items should have body='bos'."""
+        from scripts.db import get_session, AgendaItem
+        from sqlalchemy import select, func
+        session = get_session()
+        count = session.execute(
+            select(func.count()).select_from(AgendaItem).where(
+                AgendaItem.body == "bos",
+            )
+        ).scalar()
+        self.assertGreaterEqual(count, 1, "Should have BOS agenda items with body='bos'")
+        session.close()
+
+    def test_bos_and_pz_can_share_meeting_id(self):
+        """BOS and PZ can both have meeting_id='3734' without collision."""
+        from scripts.db import get_session, Meeting
+        from sqlalchemy import select, func
+        session = get_session()
+        bos_3734 = session.execute(
+            select(Meeting).where(
+                Meeting.body == "bos",
+                Meeting.meeting_id == "3734",
+            )
+        ).scalar_one_or_none()
+        pz_3734 = session.execute(
+            select(Meeting).where(
+                Meeting.body == "pz",
+                Meeting.meeting_id == "3734",
+            )
+        ).scalar_one_or_none()
+        # With body scoping, bos 3734 and pz 3734 can coexist
+        self.assertIsNotNone(pz_3734, "PZ meeting 3734 should exist")
+        session.close()
+
+    def test_parse_pz_meetings_creates_body_scoped_meetings(self):
+        """parse_pz_meetings_from_html creates Meeting with body='pz'."""
+        html = """
+        <html><body>
+        <table id="meetingDetail">
+          <tbody>
+            <tr id="row3711" class="catAgendaRow">
+              <td>
+                <h3><strong aria-label="Agenda for May 7, 2026"><abbr title="May">May</abbr> 7, 2026</strong></h3>
+                <p>
+                  <a id="05072026-3734" href="/AgendaCenter/ViewFile/Agenda/_05072026-3734?html=true">
+                    May 7, 2026 Planning and Zoning Commission Meeting
+                  </a>
+                </p>
+              </td>
+              <td class="minutes"></td>
+              <td class="media"></td>
+            </tr>
+          </tbody>
+        </table>
+        </body></html>
+        """
+        meetings = scraper.parse_pz_meetings_from_html(html, "https://www.maricopa.gov/AgendaCenter/Search")
+        self.assertGreater(len(meetings), 0)
+        for m in meetings:
+            self.assertEqual(m.body, "pz")
+            self.assertFalse(m.meeting_id.startswith("pz-"),
+                             f"meeting_id should not have pz- prefix: {m.meeting_id}")
+
+
+class RegressionTests(unittest.TestCase):
+    """Regression tests for fixed bugs."""
+
+    def test_pz_sync_with_meeting_id_does_not_raise_unbound_local(self):
+        """
+        Regression: PZ --sync --meeting-id must not raise UnboundLocalError.
+
+        The bug was caused by 'from db import Meeting' inside main() shadowing
+        the module-level Meeting dataclass.  This test verifies that the
+        module-level Meeting class name is not shadowed by the db import.
+        """
+        # Verify the globals are accessible as expected
+        # If there were an import shadowing Meeting, constructing one would
+        # raise UnboundLocalError
+        m = scraper.Meeting(
+            meeting_date="2026-05-07", meeting_time="", meeting_title="",
+            meeting_type="Planning & Zoning", body="pz", row_text="",
+            detail_url="",
+            agenda_url="https://www.maricopa.gov/AgendaCenter/ViewFile/Agenda/3734",
+        )
+        self.assertEqual(m.body, "pz")
+        self.assertEqual(m.meeting_id, "3734")
+
+    def test_pz_meeting_id_from_parse_matches_body_and_no_prefix(self):
+        """Regression: PZ meetings parsed from HTML don't get pz- prefix."""
+        html = """
+        <html><body>
+        <table id="meetingDetail">
+          <tbody>
+            <tr id="row3734" class="catAgendaRow">
+              <td>
+                <h3><strong aria-label="Agenda for May 7, 2026"><abbr title="May">May</abbr> 7, 2026</strong></h3>
+                <p>
+                  <a id="05072026-3734" href="/AgendaCenter/ViewFile/Agenda/_05072026-3734?html=true">
+                    May 7, 2026 Planning and Zoning Commission Meeting
+                  </a>
+                </p>
+              </td>
+              <td class="minutes"></td>
+              <td class="media"></td>
+            </tr>
+          </tbody>
+        </table>
+        </body></html>
+        """
+        meetings = scraper.parse_pz_meetings_from_html(
+            html, "https://www.maricopa.gov/AgendaCenter/Search"
+        )
+        self.assertEqual(len(meetings), 1)
+        self.assertEqual(meetings[0].meeting_id, "3734")
+        self.assertEqual(meetings[0].body, "pz")
+
+
+class PZStaffReportRegressionTests(unittest.TestCase):
+    """Regression tests for P&Z staff report extraction and linking."""
+
+    def test_parse_pz_overview_identifies_agenda_and_staff_reports(self):
+        """parse_pz_overview correctly identifies agenda doc and staff reports."""
+        html = """
+        <html><body>
+        <h1 class="title">May 7, 2026 Planning and Zoning Commission Agenda</h1>
+        <p><a class="file" href="/AgendaCenter/ViewFile/Item/10270">Agenda.pdf</a></p>
+
+        <h1 class="title">CPAZ250011 &amp; Z250034 P&amp;Z Report</h1>
+        <p><a class="file" href="/AgendaCenter/ViewFile/Item/10271?fileID=100385">01.02.CPA250011 PZ Staff Report.pdf</a></p>
+        <p><a class="file" href="/AgendaCenter/ViewFile/Item/10272?fileID=100386">01.02.Z250034 Appendix.pdf</a></p>
+
+        <h1 class="title">Z250026 P&amp;Z Staff Report</h1>
+        <p><a class="file" href="/AgendaCenter/ViewFile/Item/10275?fileID=100390">03.Z250026 PZ Staff Report.pdf</a></p>
+        </body></html>
+        """
+        result = scraper.parse_pz_overview(
+            html,
+            "https://www.maricopa.gov/AgendaCenter/ViewFile/Agenda/_05072026-3734?html=true",
+            "https://www.maricopa.gov/",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertIn("Agenda", result["agenda_title"])
+        self.assertIn("Item/10270", result["agenda_pdf_url"])
+
+        # Agenda document should NOT appear in staff reports
+        staff_titles = [s["document_title"] for s in result["staff_report_files"]]
+        self.assertNotIn("Agenda.pdf", [t[:10] for t in staff_titles])
+
+    def test_parse_pz_overview_multi_case_staff_report(self):
+        """Staff report covering multiple cases extracts ALL case numbers."""
+        html = """
+        <html><body>
+        <h1 class="title">CPAZ250011 &amp; Z250034 P&amp;Z Report</h1>
+        <p><a class="file" href="/AgendaCenter/ViewFile/Item/10271?fileID=100385">01.02.CPA250011 PZ Staff Report.pdf</a></p>
+        <p><a class="file" href="/AgendaCenter/ViewFile/Item/10272?fileID=100386">01.02.Z250034 Appendix.pdf</a></p>
+        </body></html>
+        """
+        result = scraper.parse_pz_overview(
+            html,
+            "https://example.com/overview",
+            "https://example.com/",
+        )
+
+        self.assertEqual(len(result["staff_report_files"]), 2)
+
+        # First file should list both case numbers in all_case_numbers
+        first = result["staff_report_files"][0]
+        self.assertIn("CPAZ250011", first["all_case_numbers"])
+        self.assertIn("Z250034", first["all_case_numbers"])
+
+        # Second file should also list both case numbers
+        second = result["staff_report_files"][1]
+        self.assertIn("CPAZ250011", second["all_case_numbers"])
+        self.assertIn("Z250034", second["all_case_numbers"])
+
+    def test_pz_staff_report_has_file_specific_url(self):
+        """Each staff report file has its own unique document URL."""
+        html = """
+        <html><body>
+        <h1 class="title">CPAZ250011 &amp; Z250034 P&amp;Z Report</h1>
+        <p><a class="file" href="/AgendaCenter/ViewFile/Item/10271?fileID=100385">01.02.CPA250011 PZ Staff Report.pdf</a></p>
+        <p><a class="file" href="/AgendaCenter/ViewFile/Item/10272?fileID=100386">01.02.Z250034 Appendix.pdf</a></p>
+        </body></html>
+        """
+        result = scraper.parse_pz_overview(
+            html,
+            "https://example.com/overview",
+            "https://example.com/",
+        )
+
+        urls = [s["document_url"] for s in result["staff_report_files"]]
+        self.assertEqual(len(urls), len(set(urls)), "All file URLs must be unique")
+
+    def test_persist_meeting_sets_body_on_supporting_docs(self):
+        """Regression: persist_meeting must set body=body on SupportingDocument.
+
+        Previously, SupportingDocument rows were created without the body field,
+        causing UNIQUE constraint violations because the delete-by-(body, meeting_id)
+        didn't match rows with empty body, while the insert added them.
+        """
+        import tempfile
+        from scripts.db import get_session, get_engine, Base, Meeting, AgendaItem, SupportingDocument
+        from sqlalchemy import create_engine, inspect
+
+        # Create an in-memory SQLite database with the schema
+        db_url = "sqlite://"
+        import os
+        old_url = os.environ.get("DATABASE_URL")
+        os.environ["DATABASE_URL"] = db_url
+        try:
+            # Reload db module with new URL
+            import importlib
+            from scripts import db
+            importlib.reload(db)
+
+            db.init_db()
+            session = db.get_session()
+
+            meeting_dict = {
+                "meeting_id": "9999",
+                "meeting_date": "2026-05-07",
+                "meeting_type": "Planning & Zoning",
+                "meeting_title": "Test",
+                "source_url": "https://example.com",
+            }
+            db.create_or_get_meeting(session, "pz", meeting_dict)
+            session.commit()
+
+            items = [{
+                "source_body": "Planning & Zoning",
+                "meeting_id": "9999",
+                "meeting_date": "2026-05-07",
+                "meeting_type": "Planning & Zoning",
+                "agenda_item_number": "1",
+                "agenda_item_id": "9999-1-item",
+                "agenda_item_title": "Test Item",
+                "agenda_item_text": "",
+                "agenda_item_url": "",
+                "vote_or_action": "",
+                "source_url": "",
+                "c_number": "CPAZ250011",
+                "c_number_base": "",
+                "c_number_revision": None,
+                "case_number": "CPAZ250011",
+            }]
+
+            docs = [{
+                "agenda_item_id": 1,
+                "agenda_item_number": 1,
+                "c_number": "CPAZ250011",
+                "document_title": "Staff Report",
+                "document_url": "https://example.com/doc1.pdf",
+                "document_type": "PDF",
+                "file_name": "report.pdf",
+                "file_extension": "pdf",
+            }]
+
+            # First persist - should succeed
+            count = db.persist_meeting(session, "pz", "9999", items, docs)
+            self.assertEqual(count, 1)
+
+            # Verify body was set on supporting doc
+            sd = session.execute(
+                db.select(SupportingDocument).where(
+                    SupportingDocument.body == "pz",
+                    SupportingDocument.meeting_id == "9999",
+                )
+            ).scalar_one_or_none()
+            self.assertIsNotNone(sd, "Supporting doc must have body='pz'")
+            self.assertEqual(sd.body, "pz")
+
+            # Second persist - should succeed without IntegrityError
+            count2 = db.persist_meeting(session, "pz", "9999", items, docs)
+            self.assertEqual(count2, 1)
+
+            session.close()
+        finally:
+            os.environ["DATABASE_URL"] = old_url or ""
+
+    def test_persist_meeting_body_scope_isolation(self):
+        """persist_meeting with different body values should not interfere."""
+        import os
+        old_url = os.environ.get("DATABASE_URL")
+        os.environ["DATABASE_URL"] = "sqlite:///"
+        try:
+            from scripts import db as db_mod
+            import importlib
+            importlib.reload(db_mod)
+
+            db_mod.init_db()
+            session = db_mod.get_session()
+
+            SdModel = db_mod.SupportingDocument
+
+            meeting_dict = {"meeting_id": "9999", "meeting_date": "2026-05-07",
+                           "meeting_type": "Formal", "meeting_title": "Test",
+                           "source_url": "https://example.com"}
+            db_mod.create_or_get_meeting(session, "bos", meeting_dict)
+            db_mod.create_or_get_meeting(session, "pz", meeting_dict)
+            session.commit()
+
+            item = {"source_body": "BOS", "meeting_id": "9999", "meeting_date": "2026-05-07",
+                    "meeting_type": "Formal", "agenda_item_number": "1",
+                    "agenda_item_id": "9999-1-item", "agenda_item_title": "BOS Item",
+                    "agenda_item_text": "", "agenda_item_url": "", "vote_or_action": "",
+                    "source_url": "", "c_number": "", "c_number_base": "",
+                    "c_number_revision": None, "case_number": ""}
+
+            doc = {"agenda_item_id": 1, "agenda_item_number": 1,
+                   "document_title": "Report",
+                   "document_url": "https://example.com/doc.pdf",
+                   "document_type": "PDF", "file_name": "r.pdf", "file_extension": "pdf"}
+
+            # Persist BOS meeting with body='bos'
+            db_mod.persist_meeting(session, "bos", "9999", [item], [doc])
+
+            # Check BOS doc exists
+            bos_doc = session.execute(
+                db_mod.select(SdModel).where(
+                    SdModel.body == "bos", SdModel.meeting_id == "9999"
+                )
+            ).scalar_one_or_none()
+            self.assertIsNotNone(bos_doc)
+            self.assertEqual(bos_doc.body, "bos")
+
+            # PZ meeting with same meeting_id should have NO docs
+            pz_doc = session.execute(
+                db_mod.select(SdModel).where(
+                    SdModel.body == "pz", SdModel.meeting_id == "9999"
+                )
+            ).scalar_one_or_none()
+            self.assertIsNone(pz_doc, "PZ meeting should not inherit BOS docs")
+
+            session.close()
+        finally:
+            os.environ["DATABASE_URL"] = old_url or ""
+
+
 if __name__ == "__main__":
     unittest.main()
