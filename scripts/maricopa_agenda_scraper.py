@@ -7,15 +7,31 @@ import csv
 import datetime as dt
 import html
 import io
+import logging
 import random
 import re
 import sys
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Iterable, Optional
+
+
+log = logging.getLogger("maricopa")
+
+
+def setup_logger():
+    """Configure logging to stdout with timestamps and immediate flushing."""
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    )
+    handler.flush = sys.stdout.flush
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
 
 SOURCE_PAGE = "https://www.maricopa.gov/324/Board-of-Supervisors-Meeting-Information"
 SEARCH_BASE = "https://mccobagenda.databankcloud.com/AgendaOnline/Meetings/Search"
@@ -2743,7 +2759,10 @@ def parse_pz_agenda_pdf(filepath: str) -> list[dict]:
                 continue
             m = pattern.search(stripped)
             if m:
-                val = (m.group(1) or m.group(2) or "").strip()
+                val = m.group(1) if m.lastindex >= 1 else ""
+                if not val and m.lastindex >= 2:
+                    val = m.group(2)
+                val = (val or "").strip()
                 if val:
                     current[field] = val
                 break
@@ -2754,6 +2773,7 @@ def parse_pz_agenda_pdf(filepath: str) -> list[dict]:
     return items
 
 async def main() -> int:
+    setup_logger()
     args = parse_args()
 
     # Backward compatibility: --sync-pz with legacy --pz-* flags
@@ -3319,16 +3339,45 @@ async def main() -> int:
             return 0
 
         if not args.start_date or not args.end_date:
-            raise SystemExit("--start-date and --end-date (or --date) are required for --sync, or use --meeting-id")
-        start_date = parse_date(args.start_date)
-        end_date = parse_date(args.end_date)
-        if end_date < start_date:
-            raise SystemExit("--end-date must be on or after --start-date")
-
-        search_url = build_search_url(start_date, end_date)
-        print(f"Agenda Online search URL: {search_url}")
+            if not args.retry_failed:
+                raise SystemExit("--start-date and --end-date (or --date) are required for --sync, or use --meeting-id")
+            # --retry-failed without dates: fetch meetings from DB by status
+            log.info("[retry] mode started")
+            from db import get_session, init_db, get_meetings_by_status
+            init_db()
+            session = get_session()
+            retry_statuses = ["failed", "partial", "pending"]
+            if args.include_manual_review:
+                retry_statuses.append("manual_review")
+            db_meetings = get_meetings_by_status(session, args.source, retry_statuses, force=False)
+            session.close()
+            if not db_meetings:
+                log.info("[retry] no failed agendas found")
+                return 0
+            log.info("[retry] found %d failed agendas", len(db_meetings))
+            meetings = [
+                Meeting(
+                    meeting_date=m.meeting_date or "",
+                    meeting_time="",
+                    meeting_title=m.meeting_title or "",
+                    meeting_type=m.meeting_type,
+                    body=m.body or args.source,
+                    row_text="",
+                    detail_url="",
+                    agenda_url=m.source_url,
+                )
+                for m in db_meetings
+            ]
+        else:
+            start_date = parse_date(args.start_date)
+            end_date = parse_date(args.end_date)
+            if end_date < start_date:
+                raise SystemExit("--end-date must be on or after --start-date")
+            search_url = build_search_url(start_date, end_date)
+            print(f"Agenda Online search URL: {search_url}")
 
         from db import get_session, init_db, persist_meeting, get_meetings_by_date_range
+        from db import create_or_get_meeting, update_sync_status, replace_meeting_data_safe
 
         init_db()
         async_playwright = get_async_playwright()
@@ -3337,55 +3386,46 @@ async def main() -> int:
             page = await browser.new_page()
             page.set_default_timeout(60000)
             try:
-                await page.goto(SOURCE_PAGE, wait_until="domcontentloaded")
-                await page.goto(search_url, wait_until="domcontentloaded")
-                # Search for meetings in the date range
-                search_meetings = await extract_meetings(page, search_url)
+                # When --retry-failed was used without dates, meetings is already
+                # populated from the database — skip the search.
+                if 'meetings' not in dir() or not meetings:
+                    await page.goto(SOURCE_PAGE, wait_until="domcontentloaded")
+                    await page.goto(search_url, wait_until="domcontentloaded")
+                    search_meetings = await extract_meetings(page, search_url)
 
-                from db import create_or_get_meeting, update_sync_status, replace_meeting_data_safe
-
-                session = get_session()
-
-                # When --force is used, also pull known meetings from DB to
-                # compensate for search pagination (Agenda Online only returns
-                # one page of results per request)
-                if args.force:
-                    db_meetings = get_meetings_by_date_range(
-                        session,
-                        args.source,
-                        start_date.isoformat(),
-                        end_date.isoformat(),
-                    )
-                    # Merge: search results get priority for metadata (dates, types),
-                    # DB entries fill in gaps for meetings the search missed
-                    seen_ids: set[str] = set()
-                    merged: list[Meeting] = []
-                    # Add search results first (they have richer metadata)
-                    for m in search_meetings:
-                        if m.meeting_id not in seen_ids:
-                            seen_ids.add(m.meeting_id)
-                            merged.append(m)
-                    for db_m in db_meetings:
-                        mid = db_m.meeting_id
-                        if mid not in seen_ids:
-                            seen_ids.add(mid)
-                            # Create a Meeting-like object from DB row
-                            merged.append(Meeting(
-                                meeting_date=db_m.meeting_date,
-                                meeting_time="",
-                                meeting_title=db_m.meeting_title,
-                                meeting_type=db_m.meeting_type,
-                                body=db_m.body if hasattr(db_m, 'body') and db_m.body else "bos",
-                                row_text="",
-                                detail_url="",
-                                agenda_url=db_m.source_url,
-                            ))
-                    meetings = merged
-                else:
-                    meetings = search_meetings
+                    if args.force:
+                        db_meetings = get_meetings_by_date_range(
+                            session,
+                            args.source,
+                            start_date.isoformat(),
+                            end_date.isoformat(),
+                        )
+                        seen_ids: set[str] = set()
+                        merged: list[Meeting] = []
+                        for m in search_meetings:
+                            if m.meeting_id not in seen_ids:
+                                seen_ids.add(m.meeting_id)
+                                merged.append(m)
+                        for db_m in db_meetings:
+                            mid = db_m.meeting_id
+                            if mid not in seen_ids:
+                                seen_ids.add(mid)
+                                merged.append(Meeting(
+                                    meeting_date=db_m.meeting_date,
+                                    meeting_time="",
+                                    meeting_title=db_m.meeting_title,
+                                    meeting_type=db_m.meeting_type,
+                                    body=db_m.body if hasattr(db_m, 'body') and db_m.body else "bos",
+                                    row_text="",
+                                    detail_url="",
+                                    agenda_url=db_m.source_url,
+                                ))
+                        meetings = merged
+                    else:
+                        meetings = search_meetings
 
                 if not meetings:
-                    print(f"No meetings found for {start_date.isoformat()} through {end_date.isoformat()}")
+                    print("No meetings found.")
                     return 0
 
                 if args.limit is not None:
@@ -3393,7 +3433,18 @@ async def main() -> int:
                 total = 0
                 errors = 0
                 skipped = 0
-                for meeting in meetings:
+                session = get_session()
+                meeting_count = len(meetings)
+                for idx, meeting in enumerate(meetings, 1):
+                    meeting_prefix = f"[{idx}/{meeting_count}]"
+                    meeting_t0 = time.monotonic()
+                    meeting_type_str = meeting.meeting_type or ""
+                    meeting_title_str = (meeting.meeting_title or meeting_type_str)[:40]
+                    log.info(
+                        "%s meeting_id=%s date=%s type=%s",
+                        meeting_prefix, meeting.meeting_id, meeting.meeting_date, meeting_title_str,
+                    )
+
                     meeting_dict = {
                         "meeting_id": meeting.meeting_id,
                         "meeting_date": meeting.meeting_date,
@@ -3425,6 +3476,7 @@ async def main() -> int:
                     # When neither, skip complete
                     if not args.force and args.retry_failed:
                         if db_meeting.sync_status not in retry_statuses:
+                            log.info("%s skip reason=already_complete elapsed=%.1fs", meeting_prefix, time.monotonic() - meeting_t0)
                             skipped += 1
                             continue
                     elif not args.force and db_meeting.sync_status == "complete":
@@ -3435,16 +3487,30 @@ async def main() -> int:
                         continue
 
                     try:
+                        log.info("%s phase=load_cached_agenda started", meeting_prefix)
+                        _phase_t0 = time.monotonic()
+                        # page already loaded with SOURCE_PAGE + search_url or
+                        # we navigate to the meeting's agenda_url directly
                         items = await extract_agenda_items_for_meeting(page, extract_meeting)
+                        log.info(
+                            "%s phase=parse_agenda_items done items=%d elapsed=%.1fs",
+                            meeting_prefix, len(items), time.monotonic() - _phase_t0,
+                        )
                         if not items:
                             if await is_image_based_agenda(page):
                                 status = "manual_review"
                                 error = "Unsupported agenda format: page loaded but no parseable agenda items found; possible image/scanned agenda"
-                                print(f"  {meeting.meeting_id} {meeting.meeting_date}: 0 items (image/scanned - manual review)")
+                                log.warning(
+                                    "%s phase=parse_agenda_items result=image_scanned status=%s",
+                                    meeting_prefix, status,
+                                )
                             else:
                                 status = "failed"
                                 error = "No agenda items found"
-                                print(f"  {meeting.meeting_id} {meeting.meeting_date}: 0 items ({status})")
+                                log.warning(
+                                    "%s phase=parse_agenda_items result=no_items status=%s",
+                                    meeting_prefix, status,
+                                )
                             update_sync_status(
                                 session, args.source, meeting.meeting_id, status,
                                 error=error,
@@ -3454,26 +3520,38 @@ async def main() -> int:
                                 errors += 1
                             continue
 
+                        log.info("%s phase=discover_documents started", meeting_prefix)
+                        _doc_t0 = time.monotonic()
                         docs = await extract_supporting_documents_dynamic(
                             page, items, meeting.agenda_url
                         )
-
-                        status_line = f"  {meeting.meeting_id} {meeting.meeting_date}: {len(items)} items, {len(docs)} supporting doc(s)"
+                        log.info(
+                            "%s phase=discover_documents done item_docs=%d elapsed=%.1fs",
+                            meeting_prefix, len(docs), time.monotonic() - _doc_t0,
+                        )
 
                         try:
+                            log.info("%s phase=persist started", meeting_prefix)
+                            _persist_t0 = time.monotonic()
                             replace_meeting_data_safe(
                                 session, args.source, meeting.meeting_id, meeting_dict, items,
                                 supporting_doc_dicts=docs,
                             )
                             total += len(items)
-                            print(f"{status_line}")
+                            log.info(
+                                "%s complete items=%d docs=%d elapsed=%.1fs",
+                                meeting_prefix, len(items), len(docs), time.monotonic() - meeting_t0,
+                            )
                         except Exception as e:
                             update_sync_status(
                                 session, args.source, meeting.meeting_id, "failed",
                                 error=str(e)[:500],
                             )
                             session.commit()
-                            print(f"{status_line}: FAILED - {e}")
+                            log.error(
+                                "%s persist failed error=%s elapsed=%.1fs",
+                                meeting_prefix, str(e)[:200], time.monotonic() - meeting_t0,
+                            )
                             errors += 1
                     except Exception as e:
                         # Pre-extraction failure

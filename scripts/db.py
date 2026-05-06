@@ -5,9 +5,13 @@ Uses SQLAlchemy to store meetings and agenda items.
 Defaults to SQLite; set DATABASE_URL to switch to Postgres.
 """
 
+import logging
 import os
 import re
 from datetime import date, datetime, timezone
+
+
+log = logging.getLogger(__name__)
 from typing import Optional
 
 from sqlalchemy import (
@@ -863,12 +867,22 @@ def persist_meeting(
         )
     )
 
+    seen_item_ids: set[str] = set()
     for item_dict in agenda_item_dicts:
+        aii = item_dict.get("agenda_item_id", "")
+        if aii:
+            if aii in seen_item_ids:
+                log.warning(
+                    "duplicate agenda_item_id %s for meeting %s — skipping",
+                    aii, meeting_id,
+                )
+                continue
+            seen_item_ids.add(aii)
         item = AgendaItem(
             body=body,
             meeting_id=meeting_id,
             agenda_item_number=int(item_dict.get("agenda_item_number", 0)),
-            agenda_item_id=item_dict.get("agenda_item_id", ""),
+            agenda_item_id=aii,
             agenda_item_title=item_dict.get("agenda_item_title", ""),
             agenda_item_text=item_dict.get("agenda_item_text", ""),
             agenda_item_url=item_dict.get("agenda_item_url", ""),
@@ -882,11 +896,6 @@ def persist_meeting(
         )
         session.add(item)
         inserted_item_count += 1
-
-    if inserted_item_count != expected_count:
-        raise ValueError(
-            f"Inserted {inserted_item_count} items but expected {expected_count}"
-        )
 
     if supporting_doc_dicts:
         for doc_dict in supporting_doc_dicts:

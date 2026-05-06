@@ -91,10 +91,12 @@ def index():
     return redirect("/meetings")
 
 
-def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_date=None):
-    """Query meetings with optional filters. Returns list of dicts."""
+def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_date=None, page=1, per_page=25):
+    """Query meetings with optional filters and pagination. Returns (meetings_list, total_count, page, total_pages)."""
     session = get_session()
-    q = select(
+
+    # Build base query (no LIMIT/OFFSET yet)
+    base_q = select(
         Meeting.body,
         Meeting.meeting_id,
         Meeting.meeting_date,
@@ -109,23 +111,27 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
 
     if body and body.lower() != "all":
         if body.lower() in ("bz", "pz", "planning"):
-            q = q.where(Meeting.body == "pz")
+            base_q = base_q.where(Meeting.body == "pz")
         else:
-            q = q.where(Meeting.body == "bos")
+            base_q = base_q.where(Meeting.body == "bos")
 
     if meeting_type and meeting_type.lower() != "all":
-        # Exact match: dropdown sends "Formal", "Informal", etc.
-        # Map "Planning" to stored value "Planning & Zoning"
         type_map = {"planning": "Planning & Zoning"}
         match_type = type_map.get(meeting_type.lower(), meeting_type)
-        q = q.where(Meeting.meeting_type == match_type)
+        base_q = base_q.where(Meeting.meeting_type == match_type)
 
     if start_date:
-        q = q.where(Meeting.meeting_date >= start_date)
+        base_q = base_q.where(Meeting.meeting_date >= start_date)
     if end_date:
-        q = q.where(Meeting.meeting_date <= end_date)
+        base_q = base_q.where(Meeting.meeting_date <= end_date)
 
-    q = q.order_by(Meeting.meeting_date.desc(), Meeting.meeting_id.desc())
+    # Get total count
+    count_q = select(func.count()).select_from(base_q.subquery())
+    total_count = session.execute(count_q).scalar() or 0
+
+    # Apply pagination
+    q = base_q.order_by(Meeting.meeting_date.desc(), Meeting.meeting_id.desc())
+    q = q.offset((page - 1) * per_page).limit(per_page)
     rows = session.execute(q).all()
 
     meetings_list = []
@@ -145,7 +151,9 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             "doc_count": row.doc_count,
         })
     session.close()
-    return meetings_list
+
+    total_pages = max(1, (total_count + per_page - 1) // per_page)
+    return meetings_list, total_count, page, total_pages
 
 
 @app.route("/meetings")
@@ -155,11 +163,27 @@ def meetings():
     start_date = request.args.get("start_date", "")
     end_date = request.args.get("end_date", "")
 
-    meetings_list = get_filtered_meetings(
+    try:
+        page = int(request.args.get("page", "1"))
+    except ValueError:
+        page = 1
+    if page < 1:
+        page = 1
+
+    try:
+        per_page = int(request.args.get("per_page", "25"))
+    except ValueError:
+        per_page = 25
+    # Clamp to reasonable range
+    per_page = max(10, min(100, per_page))
+
+    meetings_list, total_count, current_page, total_pages = get_filtered_meetings(
         body=body or None,
         meeting_type=meeting_type or None,
         start_date=start_date or None,
         end_date=end_date or None,
+        page=page,
+        per_page=per_page,
     )
 
     return render_template(
@@ -169,6 +193,10 @@ def meetings():
         filter_type=meeting_type,
         filter_start=start_date,
         filter_end=end_date,
+        page=current_page,
+        per_page=per_page,
+        total_count=total_count,
+        total_pages=total_pages,
     )
 
 
