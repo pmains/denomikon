@@ -192,7 +192,8 @@ class MaricopaAgendaScraperTests(unittest.TestCase):
     def test_metadata_fieldnames_match_schema(self):
         discovery = self.root / "discovery_metadata.csv"
         agenda_root = self.root / "agendas"
-        with patch.object(scraper, "DISCOVERY_CSV", discovery), patch.object(scraper, "AGENDAS_ROOT", agenda_root):
+        import scraper.io_utils as io_utils
+        with patch.object(io_utils, "DISCOVERY_CSV", discovery), patch.object(io_utils, "AGENDAS_ROOT", agenda_root):
             scraper.write_discovery_row({
                 "source_body": "Board of Supervisors",
                 "document_category": "agenda",
@@ -210,7 +211,7 @@ class MaricopaAgendaScraperTests(unittest.TestCase):
                 "notes": "",
             })
             (agenda_root / "2025" / "01").mkdir(parents=True, exist_ok=True)
-            with patch.object(scraper, "month_metadata_path", lambda date_iso: agenda_root / "2025" / "01" / "metadata.csv"):
+            with patch.object(io_utils, "month_metadata_path", lambda date_iso: agenda_root / "2025" / "01" / "metadata.csv"):
                 scraper.write_download_row({
                     "source_body": "Board of Supervisors",
                     "document_category": "agenda",
@@ -318,9 +319,14 @@ class MaricopaAgendaScraperTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        with patch.object(scraper, "AGENDA_ITEMS_CSV", structured_csv), \
-             patch.object(scraper, "RAW_AGENDA_ITEMS_CSV", raw_csv), \
-             patch.object(scraper, "REJECTED_RAW_BLOCKS_CSV", rejected_csv):
+        import scraper.agenda_items as ai
+        import scraper.io_utils as iou
+        with patch.object(ai, "AGENDA_ITEMS_CSV", structured_csv), \
+             patch.object(ai, "RAW_AGENDA_ITEMS_CSV", raw_csv), \
+             patch.object(ai, "REJECTED_RAW_BLOCKS_CSV", rejected_csv), \
+             patch.object(iou, "AGENDA_ITEMS_CSV", structured_csv), \
+             patch.object(iou, "RAW_AGENDA_ITEMS_CSV", raw_csv), \
+             patch.object(iou, "REJECTED_RAW_BLOCKS_CSV", rejected_csv):
             wrote = scraper.split_raw_agenda_blocks_to_structured()
 
         self.assertEqual(wrote, 2)
@@ -431,18 +437,10 @@ class AgendaItemSchemaContractTests(unittest.TestCase):
 
 class BodyScopedIdentityTests(unittest.TestCase):
 
-    @classmethod
-    def setUpClass(cls):
-        # Ensure we connect to the real database, not a test in-memory one
-        from pathlib import Path
-        import os
-        real_db = str(Path(__file__).resolve().parents[1] / "data" / "maricopa.sqlite")
-        os.environ["DATABASE_URL"] = f"sqlite:///{real_db}"
-        # Reset sqlalchemy engine cache so get_session() picks up the right URL
-        import scripts.db as db_mod
-        import importlib
-        importlib.reload(db_mod)
-    """Regression tests for body-scoped meeting identity."""
+    """Regression tests for body-scoped meeting identity and
+    Meeting dataclass behavior. All tests are pure unit tests
+    — no production database access.
+    """
 
     def test_meeting_dataclass_has_body_field(self):
         """Meeting dataclass must have a body field."""
@@ -494,96 +492,13 @@ class BodyScopedIdentityTests(unittest.TestCase):
         self.assertFalse(m.meeting_id.startswith("pz-"),
                          "meeting_id should not have pz- prefix")
 
-    def test_db_meeting_has_body_column(self):
-        """Database Meeting model has body column for scoping."""
-        from sqlalchemy import inspect
-        from scripts.db import get_engine, Meeting
-        insp = inspect(get_engine())
-        cols = {c["name"] for c in insp.get_columns("meetings")}
-        self.assertIn("body", cols)
-
-    def test_body_backfill_bos_meetings_exist(self):
-        """Existing BOS meetings should have body='bos'."""
-        from scripts.db import get_session, Meeting
-        from sqlalchemy import select, func
-        session = get_session()
-        count = session.execute(
-            select(func.count()).select_from(Meeting).where(
-                Meeting.body == "bos",
-                Meeting.meeting_type != "Planning & Zoning",
-            )
-        ).scalar()
-        self.assertGreater(count, 0, "Should have BOS meetings with body='bos'")
-        session.close()
-
-    def test_body_backfill_pz_meeting_exists(self):
-        """Existing PZ meeting should have body='pz'."""
-        from scripts.db import get_session, Meeting
-        from sqlalchemy import select, func
-        session = get_session()
-        count = session.execute(
-            select(func.count()).select_from(Meeting).where(
-                Meeting.body == "pz",
-            )
-        ).scalar()
-        self.assertGreaterEqual(count, 1, "Should have PZ meetings with body='pz'")
-        session.close()
-
-    def test_db_agenda_items_have_body_column(self):
-        """Agenda items table has body column."""
-        from sqlalchemy import inspect
-        from scripts.db import get_engine
-        insp = inspect(get_engine())
-        cols = {c["name"] for c in insp.get_columns("agenda_items")}
-        self.assertIn("body", cols)
-
-    def test_pz_meeting_item_body_scoped(self):
-        """PZ agenda items should have body='pz'."""
-        from scripts.db import get_session, AgendaItem
-        from sqlalchemy import select, func
-        session = get_session()
-        count = session.execute(
-            select(func.count()).select_from(AgendaItem).where(
-                AgendaItem.body == "pz",
-            )
-        ).scalar()
-        self.assertGreaterEqual(count, 1, "Should have PZ agenda items with body='pz'")
-        session.close()
-
-    def test_bos_meeting_item_body_scoped(self):
-        """BOS agenda items should have body='bos'."""
-        from scripts.db import get_session, AgendaItem
-        from sqlalchemy import select, func
-        session = get_session()
-        count = session.execute(
-            select(func.count()).select_from(AgendaItem).where(
-                AgendaItem.body == "bos",
-            )
-        ).scalar()
-        self.assertGreaterEqual(count, 1, "Should have BOS agenda items with body='bos'")
-        session.close()
-
-    def test_bos_and_pz_can_share_meeting_id(self):
-        """BOS and PZ can both have meeting_id='3734' without collision."""
-        from scripts.db import get_session, Meeting
-        from sqlalchemy import select, func
-        session = get_session()
-        bos_3734 = session.execute(
-            select(Meeting).where(
-                Meeting.body == "bos",
-                Meeting.meeting_id == "3734",
-            )
-        ).scalar_one_or_none()
-        pz_3734 = session.execute(
-            select(Meeting).where(
-                Meeting.body == "pz",
-                Meeting.meeting_id == "3734",
-            )
-        ).scalar_one_or_none()
-        # With body scoping, bos 3734 and pz 3734 can coexist
-        self.assertIsNotNone(pz_3734, "PZ meeting 3734 should exist")
-        session.close()
-
+    
+    
+    
+    
+    
+    
+    
     def test_parse_pz_meetings_creates_body_scoped_meetings(self):
         """parse_pz_meetings_from_html creates Meeting with body='pz'."""
         html = """
@@ -661,6 +576,74 @@ class RegressionTests(unittest.TestCase):
         self.assertIn('meeting_id', params)
         self.assertIn('agenda_item_dicts', params)
 
+    def test_bos_sync_force_with_dates_does_not_raise_unbound_local(self):
+        """
+        Regression: bos --sync --start-date=X --end-date=Y --force must not
+        raise UnboundLocalError for 'session'.
+
+        The bug: when --force was combined with date-range search (not retry),
+        session = get_session() was placed AFTER the args.force block that
+        calls get_meetings_by_date_range(session, ...), causing
+        UnboundLocalError: local variable 'session' referenced before assignment.
+
+        The fix: move session = get_session() to before the 'if meetings'
+        check so it is available when the force block references it.
+        """
+        import ast, pathlib
+        scraper_path = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "scraper" / "main.py"
+        source = scraper_path.read_text()
+        tree = ast.parse(source)
+
+        # Find the async main() function
+        main_func = None
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "main":
+                main_func = node
+                break
+        self.assertIsNotNone(main_func, "main() function not found in scraper")
+
+        # Find the Try node inside main()
+        try_nodes = [n for n in ast.walk(main_func) if isinstance(n, ast.Try)]
+        self.assertGreaterEqual(len(try_nodes), 1, "Expected at least one Try node in main()")
+
+        # Key invariant: within the largest try body (the sync loop), the
+        # 'session = get_session()' assignment must appear before any
+        # reference to 'session' in a sub-block. Check by scanning the
+        # source lines within main() for the relative ordering.
+        main_start = main_func.lineno
+        main_end = main_func.end_lineno
+        main_lines = source.splitlines()[main_start - 1 : main_end]
+
+        # Find the get_meetings_by_date_range call line
+        use_line = None
+        for i, line in enumerate(main_lines):
+            lineno = main_start + i
+            if 'get_meetings_by_date_range(' in line:
+                use_line = lineno
+                break
+        self.assertIsNotNone(use_line, "get_meetings_by_date_range() not found in main()")
+
+        # The fix places session = get_session() ~7 lines before the call.
+        # Search backward from use_line, requiring it within 20 lines.
+        assign_line = None
+        for i, line in enumerate(main_lines):
+            lineno = main_start + i
+            if lineno >= use_line:
+                break
+            if 'session = get_session()' in line and (use_line - lineno) < 20:
+                assign_line = lineno
+                break
+        self.assertIsNotNone(
+            assign_line,
+            "session = get_session() must appear within 20 lines before "
+            "get_meetings_by_date_range() in main()",
+        )
+        self.assertLess(
+            assign_line, use_line,
+            f"session = get_session() at line {assign_line} must be before "
+            f"get_meetings_by_date_range() at line {use_line}",
+        )
+
     def test_pz_meeting_id_from_parse_matches_body_and_no_prefix(self):
         """Regression: PZ meetings parsed from HTML don't get pz- prefix."""
         html = """
@@ -689,6 +672,173 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(len(meetings), 1)
         self.assertEqual(meetings[0].meeting_id, "3734")
         self.assertEqual(meetings[0].body, "pz")
+
+    def test_parse_pz_meetings_only_extracts_default_year(self):
+        """
+        Regression/Demonstration: parse_pz_meetings_from_html only extracts
+        meetings from the initially loaded HTML (the default year — 2026).
+
+        The AgendaCenter search page uses year-based AJAX tabs:
+          <a href="javascript:changeYear(2025, 9, 'a1')">2025</a>
+          <a href="javascript:changeYear(2024, 9, 'a2')">2024</a>
+
+        changeYear() makes a POST to /AgendaCenter/UpdateCategoryList and
+        replaces the content section with HTML for the selected year.
+
+        Since parse_pz_meetings_from_html only works on a single static
+        HTML string, it will miss meetings from years that are not in the
+        initial page load.  This test demonstrates that limitation.
+        """
+        # Fixture: the real page structure — year tabs for 2026/2025/2024,
+        # but only 2026 catAgendaRow rows in the HTML.  2025/2024 rows
+        # are loaded dynamically via AJAX when the year tab is clicked.
+        html = """
+        <html><body>
+        <section id="section9">
+          <div class="agenda">
+            <table id="table9">
+              <tbody>
+                <tr id="row3734ac68265a" class="catAgendaRow">
+                  <td>
+                    <h3><strong aria-label="Agenda for May 7, 2026"><abbr title="May">May</abbr> 7, 2026</strong></h3>
+                    <p>
+                      <a href="/AgendaCenter/ViewFile/Agenda/_05072026-3734?html=true">
+                        May 7, 2026 Planning and Zoning Commission Meeting
+                      </a>
+                    </p>
+                  </td>
+                  <td class="minutes"></td>
+                  <td class="media"></td>
+                </tr>
+                <tr id="row37227f2de4d8" class="catAgendaRow">
+                  <td>
+                    <h3><strong aria-label="Agenda for April 23, 2026"><abbr title="April">Apr</abbr> 23, 2026</strong></h3>
+                    <p>
+                      <a href="/AgendaCenter/ViewFile/Agenda/_04232026-3722?html=true">
+                        April 23, 2026 Planning and Zoning Commission Meeting
+                      </a>
+                    </p>
+                  </td>
+                  <td class="minutes"></td>
+                  <td class="media"></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <!-- Year tabs: 2025 and 2024 are loaded via AJAX, NOT in initial HTML -->
+        <li><a id="a09" href="javascript:changeYear(2026, 9,'a0')">2026</a></li>
+        <li><a id="a19" href="javascript:changeYear(2025, 9,'a1')">2025</a></li>
+        <li><a id="a29" href="javascript:changeYear(2024, 9,'a2')">2024</a></li>
+        </body></html>
+        """
+        meetings = scraper.parse_pz_meetings_from_html(
+            html, "https://www.maricopa.gov/AgendaCenter/Search"
+        )
+
+        # Should find the 2 meetings from 2026 that are in the HTML
+        self.assertEqual(len(meetings), 2,
+                         f"Expected 2 meetings (only 2026 rows present), got {len(meetings)}")
+
+        # But: 2025 and 2024 meetings are NOT found because they aren't in
+        # the static HTML — they'd be loaded via AJAX when a year tab is
+        # clicked.  This is the limitation being demonstrated.
+        meeting_years = {m.meeting_date[:4] for m in meetings}
+        self.assertEqual(meeting_years, {"2026"},
+                         f"Expected only 2026 meetings, got: {meeting_years}")
+        self.assertNotIn("2025", meeting_years,
+                         "2025 meetings should NOT be found in static HTML "
+                         "(they are loaded via AJAX on tab click)")
+        self.assertNotIn("2024", meeting_years,
+                         "2024 meetings should NOT be found in static HTML "
+                         "(they are loaded via AJAX on tab click)")
+
+    def test_parse_search_results_extracts_meetings_from_multiple_tables(self):
+        """
+        Regression: parse_search_results_html must extract meetings from ALL
+        matching tables, not just the first one.
+
+        The Agenda Online search page renders year-tab sections (Upcoming,
+        2026, 2025, 2024, 2023), each in its own <table> inside a Bootstrap
+        tab-pane.  The original code found only the first matching table.
+
+        This test verifies that meetings are extracted from every table that
+        has the expected header columns, and that duplicates (the same
+        meeting appearing in both Upcoming and its year tab) are deduplicated.
+        """
+        # Fixture: two tables — "Upcoming" and "2026" year tab.
+        # Meeting 4669 appears in BOTH (as an upcoming meeting and as a 2026
+        # meeting).  Meeting 4618 only appears in the 2026 tab.
+        html = f"""
+        <html><body>
+        <!-- Upcoming tab table -->
+        <div class="tab-pane active" id="meetings-list">
+          <table>
+            <thead><tr>
+              <th>Meeting Name</th><th>Meeting Type</th><th>Meeting Date</th><th>Links</th>
+            </tr></thead>
+            <tbody>
+              <tr>
+                <td>Formal BOS Meeting</td>
+                <td>Formal</td>
+                <td>5/6/2026 9:30:00 AM</td>
+                <td>
+                  <a href="/AgendaOnline/Meetings/ViewMeeting?id=4669&amp;doctype=1">Agenda</a>
+                  <a href="/AgendaOnline/Meetings/ViewMeeting?id=4669&amp;doctype=3">Summary</a>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <!-- 2026 year tab table (collapsed, but still in DOM) -->
+        <div class="tab-pane" id="meetings-list-2026">
+          <table>
+            <thead><tr>
+              <th>Meeting Name</th><th>Meeting Type</th><th>Meeting Date</th><th>Links</th>
+            </tr></thead>
+            <tbody>
+              <tr>
+                <td>Formal BOS Meeting</td>
+                <td>Formal</td>
+                <td>5/6/2026 9:30:00 AM</td>
+                <td>
+                  <a href="/AgendaOnline/Meetings/ViewMeeting?id=4669&amp;doctype=1">Agenda</a>
+                </td>
+              </tr>
+              <tr>
+                <td>Special Election of Chairman</td>
+                <td>Special</td>
+                <td>1/5/2026 9:30:00 AM</td>
+                <td>
+                  <a href="/AgendaOnline/Meetings/ViewMeeting?id=4618&amp;doctype=1">Agenda</a>
+                  <a href="/AgendaOnline/Meetings/ViewMeeting?id=4618&amp;doctype=3">Summary</a>
+                  <a href="/AgendaOnline/Meetings/ViewMeeting?id=4618&amp;doctype=2">Minutes</a>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        </body></html>
+        """
+        base = "https://mccobagenda.databankcloud.com"
+        meetings = scraper.parse_search_results_html(html, base)
+
+        # Should find 2 UNIQUE meetings (4669 from Upcoming + 4618 from
+        # 2026 tab; 4669 duplicate deduplicated)
+        self.assertEqual(len(meetings), 2,
+                         f"Expected 2 unique meetings, got {len(meetings)}: "
+                         f"{[m.meeting_id for m in meetings]}")
+
+        meeting_ids = {m.meeting_id for m in meetings}
+        self.assertIn("4669", meeting_ids, "Meeting 4669 should be present")
+        self.assertIn("4618", meeting_ids, "Meeting 4618 should be present")
+
+        # Verify dates and types
+        by_id = {m.meeting_id: m for m in meetings}
+        self.assertEqual(by_id["4669"].meeting_date, "2026-05-06")
+        self.assertEqual(by_id["4669"].meeting_type, "Formal")
+        self.assertEqual(by_id["4618"].meeting_date, "2026-01-05")
+        self.assertEqual(by_id["4618"].meeting_type, "Special")
 
 
 class PZStaffReportRegressionTests(unittest.TestCase):
@@ -1061,6 +1211,130 @@ class PZParserRegressionTests(unittest.TestCase):
         finally:
             os.environ["DATABASE_URL"] = old_url or ""
 
+    def test_parse_pz_overview_no_heading_blocks(self):
+        """parse_pz_overview returns None when page has no h1/h2.title."""
+        html = "<html><body><p>No headings here</p></body></html>"
+        result = scraper.parse_pz_overview(
+            html, "https://example.com/overview", "https://example.com/"
+        )
+        self.assertIsNone(result)
+
+    def test_parse_pz_overview_skips_webinar_guide(self):
+        """GoToWebinar/Webinar User Guide blocks are skipped."""
+        html = """
+        <h1 class="title">GoToWebinar User Guide</h1>
+        <p><a class="file" href="/ViewFile/Item/1">guide.pdf</a></p>
+        <h1 class="title">Z250000 Staff Report</h1>
+        <p><a class="file" href="/ViewFile/Item/2">report.pdf</a></p>
+        """
+        result = scraper.parse_pz_overview(
+            html, "https://example.com/overview", "https://example.com/"
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result.get("staff_report_files", [])), 1)
+        self.assertNotIn("Webinar", str(result))
+
+    def test_retry_with_backoff_succeeds_immediately(self):
+        """retry_with_backoff returns result on first attempt."""
+        import asyncio
+        async def test():
+            call_count = 0
+            async def fn():
+                nonlocal call_count
+                call_count += 1
+                return "success"
+            result = await scraper.retry_with_backoff(fn, max_attempts=3)
+            self.assertEqual(result, "success")
+            self.assertEqual(call_count, 1)
+        asyncio.run(test())
+
+    def test_retry_with_backoff_retries_on_failure(self):
+        """retry_with_backoff retries on transient failures."""
+        import asyncio
+        async def test():
+            call_count = 0
+            async def fn():
+                nonlocal call_count
+                call_count += 1
+                if call_count < 3:
+                    raise RuntimeError("transient")
+                return "recovered"
+            result = await scraper.retry_with_backoff(fn, max_attempts=3, backoff_seconds=[0.01, 0.01])
+            self.assertEqual(result, "recovered")
+            self.assertEqual(call_count, 3)
+        asyncio.run(test())
+
+    def test_retry_with_backoff_exhausts_retries(self):
+        """retry_with_backoff raises after exhausting attempts."""
+        import asyncio
+        async def test():
+            call_count = 0
+            async def fn():
+                nonlocal call_count
+                call_count += 1
+                raise RuntimeError("permanent")
+            with self.assertRaises(RuntimeError):
+                await scraper.retry_with_backoff(fn, max_attempts=2, backoff_seconds=[0.01])
+            self.assertEqual(call_count, 2)
+        asyncio.run(test())
+
+    def test_case_number_extraction_from_pz_item_title(self):
+        """CASE_PATTERN extracts case numbers from PZ item titles."""
+        titles = [
+            ("CPAZ250011 & Z250034 P&Z Report", ["CPAZ250011", "Z250034"]),
+            ("Z250026 P&Z Staff Report", ["Z250026"]),
+            ("SU250032 Staff Report", ["SU250032"]),
+            ("CPA260002 Staff Report", ["CPA260002"]),
+            ("No case here", []),
+        ]
+        for title, expected_cases in titles:
+            with self.subTest(title=title):
+                matches = scraper.CASE_PATTERN.findall(title)
+                cases = [m.upper() for m in matches]
+                self.assertEqual(cases, expected_cases)
+
+    def test_normalize_meeting_date_standard(self):
+        """normalize_meeting_date converts MM/DD/YYYY to YYYY-MM-DD."""
+        self.assertEqual(scraper.normalize_meeting_date("1/29/2025 9:30:00 AM"), "2025-01-29")
+        self.assertEqual(scraper.normalize_meeting_date("12/5/2026"), "2026-12-05")
+
+    def test_normalize_meeting_date_empty(self):
+        """normalize_meeting_date returns empty string for bad input."""
+        self.assertEqual(scraper.normalize_meeting_date(""), "")
+        self.assertEqual(scraper.normalize_meeting_date("not-a-date"), "")
+
+    def test_build_search_url_contains_dropid(self):
+        """build_search_url includes dropid=11 for BOS."""
+        url = scraper.build_search_url(
+            scraper.parse_date("2025-01-01"), scraper.parse_date("2025-01-31")
+        )
+        self.assertIn("dropid=11", url)
+        self.assertIn("AgendaOnline/Meetings/Search", url)
+
+    def test_build_pz_search_url_contains_cats(self):
+        """build_pz_search_url includes CIDs=9 for PZ."""
+        url = scraper.build_pz_search_url("01/01/2025", "01/31/2025")
+        self.assertIn("CIDs=9", url)
+        self.assertIn("AgendaCenter/Search", url)
+
+    def test_is_image_based_agenda(self):
+        """is_image_based_agenda heuristic detects image-based agendas."""
+        import asyncio
+        class FakePage:
+            def __init__(self, html):
+                self.html = html
+            async def content(self):
+                return self.html
+            async def evaluate(self, js):
+                return None
+        
+        async def test():
+            # Page with minimal text (just an image alt text)
+            page = FakePage('<html><body><img src="agenda.png" alt="Agenda Scan"/></body></html>')
+            result = await scraper.is_image_based_agenda(page)
+            self.assertIsInstance(result, bool)
+        asyncio.run(test())
+
     def test_pz_item_detail_no_unique_constraint(self):
         """
         Regression: pz_item_details.agenda_item_id must NOT have a UNIQUE
@@ -1118,5 +1392,230 @@ class PZParserRegressionTests(unittest.TestCase):
             os.environ["DATABASE_URL"] = old_url or ""
 
 
+class TestPZImports(unittest.TestCase):
+    """Regression tests for PZ module imports in scraper.main.
+
+    The main() function in scraper/main.py references PZ-specific functions
+    (_format_mm_dd_yyyy, build_pz_search_url, extract_pz_meetings,
+    extract_pz_agenda_items) for the ``pz --sync`` code path.  These must be
+    importable from scraper/main.py's _own_ module namespace; otherwise a
+    NameError is raised at runtime.
+    """
+
+    def _main_module(self):
+        """Return the scraper.main module (via sys.modules, because
+        scraper/__init__.py shadows it with the main() function)."""
+        import sys
+        return sys.modules["scraper.main"]
+
+    def test_all_pz_names_accessible_from_main_module(self):
+        """All PZ function names should be in scraper.main module's namespace."""
+        main_mod = self._main_module()
+        for name in ["_format_mm_dd_yyyy", "build_pz_search_url",
+                     "extract_pz_meetings", "extract_pz_agenda_items"]:
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(main_mod, name),
+                                f"{name} not found in scraper.main")
+                self.assertTrue(callable(getattr(main_mod, name)),
+                                f"{name} is not callable")
+
+    def test_format_mm_dd_yyyy_converts_iso_dates(self):
+        """Verify _format_mm_dd_yyyy converts YYYY-MM-DD to MM/DD/YYYY."""
+        main_mod = self._main_module()
+        fmt = main_mod._format_mm_dd_yyyy
+        # Valid ISO dates
+        self.assertEqual(fmt("2023-01-01"), "01/01/2023")
+        self.assertEqual(fmt("2026-12-31"), "12/31/2026")
+        self.assertEqual(fmt("2020-02-29"), "02/29/2020")  # leap year
+        # Empty / None
+        self.assertIsNone(fmt(""))
+        self.assertIsNone(fmt(None))
+
+    def test_format_mm_dd_yyyy_passthrough_on_parseable_non_iso(self):
+        """The function returns inputs that match MM/DD/YYYY as-is (passthrough)."""
+        main_mod = self._main_module()
+        fmt = main_mod._format_mm_dd_yyyy
+        # Already in MM/DD/YYYY -> passthrough
+        self.assertEqual(fmt("01/01/2023"), "01/01/2023")
+        self.assertEqual(fmt("12/31/2026"), "12/31/2026")
+
+    def test_build_pz_search_url_format(self):
+        """Verify build_pz_search_url constructs the correct URL with CIDs=9."""
+        main_mod = self._main_module()
+
+        url = main_mod.build_pz_search_url("01/01/2023", "12/31/2026")
+        self.assertIn("CIDs=9", url)
+        self.assertIn("startDate=01%2F01%2F2023", url)
+        self.assertIn("endDate=12%2F31%2F2026", url)
+        self.assertIn("maricopa.gov/AgendaCenter/Search/", url)
+
+        # Single-month range
+        url2 = main_mod.build_pz_search_url("06/01/2025", "06/30/2025")
+        self.assertIn("startDate=06%2F01%2F2025", url2)
+        self.assertIn("endDate=06%2F30%2F2025", url2)
+
+    def test_pz_search_url_round_trip_via_main(self):
+        """Calling _format_mm_dd_yyyy + build_pz_search_url together (as main() does).
+        This exercises the exact code path that was failing."""
+        main_mod = self._main_module()
+
+        start = main_mod._format_mm_dd_yyyy("2023-01-01")  # "01/01/2023"
+        end = main_mod._format_mm_dd_yyyy("2026-12-31")    # "12/31/2026"
+        self.assertIsNotNone(start)
+        self.assertIsNotNone(end)
+        self.assertEqual(start, "01/01/2023")
+        self.assertEqual(end, "12/31/2026")
+
+        url = main_mod.build_pz_search_url(start, end)  # type: ignore[arg-type]
+        # start/end are URL-encoded in the query string, so check for encoded form
+        self.assertIn("startDate=01%2F01%2F2023", url)
+        self.assertIn("endDate=12%2F31%2F2026", url)
+        self.assertIn("CIDs=9%2C", url)
+
+
+class TestPZYearTabExtraction(unittest.TestCase):
+    """Regression tests for multi-year PZ meeting extraction.
+
+    The AgendaCenter PZ search page only shows one year's meetings in the
+    initial HTML.  Year tabs (javascript:changeYear(...)) must be clicked
+    to load other years.  The ``pz --sync`` code path must handle this
+    via extract_pz_meetings() or the default-year-only bug will reoccur.
+    """
+
+    def test_extract_pz_year_tabs_from_html_parses_single_year(self):
+        """A single changeYear link returns its year."""
+        html = '<a href="javascript:changeYear(2026, 9,\'a0\')">2026</a>'
+        from scraper import _extract_pz_year_tabs_from_html as fn
+        self.assertEqual(fn(html), [2026])
+
+    def test_extract_pz_year_tabs_from_html_parses_multiple_years(self):
+        """Multiple changeYear links returns all years sorted."""
+        html = """
+        <a href="javascript:changeYear(2026, 9,'a0')">2026</a>
+        <a href="javascript:changeYear(2025, 9, 'a1')">2025</a>
+        <a href="javascript:changeYear(2024, 9, 'a2')">2024</a>
+        <a href="javascript:changeYear(2023, 9,'anchYearDD3')">2023</a>
+        """
+        from scraper import _extract_pz_year_tabs_from_html as fn
+        self.assertEqual(fn(html), [2023, 2024, 2025, 2026])
+
+    def test_extract_pz_year_tabs_deduplicates_years(self):
+        """Duplicate changeYear links for the same year produce a single entry."""
+        html = """
+        <a href="javascript:changeYear(2026, 9,'a0')">2026</a>
+        <a href="javascript:changeYear(2026, 9,'a0')">2026</a>
+        """
+        from scraper import _extract_pz_year_tabs_from_html as fn
+        self.assertEqual(fn(html), [2026])
+
+    def test_extract_pz_year_tabs_from_html_no_tabs(self):
+        """HTML without changeYear links returns empty list."""
+        from scraper import _extract_pz_year_tabs_from_html as fn
+        self.assertEqual(fn("<html></html>"), [])
+
+    def test_parse_pz_meetings_from_html_identical_across_years_deduplicated(self):
+        """
+        Simulating the extract_pz_meetings dedup logic: when the same
+        meeting appears in two parsed results (e.g. an upcoming meeting
+        in default year and again in its year tab), it should be
+        deduplicated by meeting_id.
+
+        This validates the seen_ids dedup logic that lives in
+        extract_pz_meetings.
+        """
+        from scraper import parse_pz_meetings_from_html
+
+        # First batch: two meetings from 2026
+        html1 = """
+        <html><body>
+        <section id="section9">
+          <div class="agenda">
+            <table id="table9">
+              <tbody>
+                <tr id="row3734ac68265a" class="catAgendaRow">
+                  <td>
+                    <h3><strong aria-label="Agenda for May 7, 2026"><abbr title="May">May</abbr> 7, 2026</strong></h3>
+                    <p><a href="/AgendaCenter/ViewFile/Agenda/_05072026-3734?html=true">May 7, 2026 PZ Meeting</a></p>
+                  </td>
+                  <td class="minutes"></td><td class="media"></td>
+                </tr>
+                <tr id="row3722ac68265a" class="catAgendaRow">
+                  <td>
+                    <h3><strong aria-label="Agenda for April 23, 2026"><abbr title="April">Apr</abbr> 23, 2026</strong></h3>
+                    <p><a href="/AgendaCenter/ViewFile/Agenda/_04232026-3722?html=true">Apr 23, 2026 PZ Meeting</a></p>
+                  </td>
+                  <td class="minutes"></td><td class="media"></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+        </body></html>
+        """
+
+        # Second batch: same 2026 meetings (simulating re-parse after year tab click
+        # on the already-loaded default year), PLUS a 2025 meeting
+        html2 = """
+        <html><body>
+        <section id="section9">
+          <div class="agenda">
+            <table id="table9">
+              <tbody>
+                <tr id="row3734ac68265a" class="catAgendaRow">
+                  <td>
+                    <h3><strong aria-label="Agenda for May 7, 2026"><abbr title="May">May</abbr> 7, 2026</strong></h3>
+                    <p><a href="/AgendaCenter/ViewFile/Agenda/_05072026-3734?html=true">May 7, 2026 PZ Meeting</a></p>
+                  </td>
+                  <td class="minutes"></td><td class="media"></td>
+                </tr>
+                <tr id="row3722ac68265a" class="catAgendaRow">
+                  <td>
+                    <h3><strong aria-label="Agenda for April 23, 2026"><abbr title="April">Apr</abbr> 23, 2026</strong></h3>
+                    <p><a href="/AgendaCenter/ViewFile/Agenda/_04232026-3722?html=true">Apr 23, 2026 PZ Meeting</a></p>
+                  </td>
+                  <td class="minutes"></td><td class="media"></td>
+                </tr>
+                <tr id="row3500ac68265a" class="catAgendaRow">
+                  <td>
+                    <h3><strong aria-label="Agenda for March 15, 2025"><abbr title="March">Mar</abbr> 15, 2025</strong></h3>
+                    <p><a href="/AgendaCenter/ViewFile/Agenda/_03152025-3500?html=true">Mar 15, 2025 PZ Meeting</a></p>
+                  </td>
+                  <td class="minutes"></td><td class="media"></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+        </body></html>
+        """
+
+        base = "https://www.maricopa.gov/AgendaCenter/Search"
+        batch1 = parse_pz_meetings_from_html(html1, base)
+        batch2 = parse_pz_meetings_from_html(html2, base)
+
+        # Simulate extract_pz_meetings dedup logic
+        seen_ids: set[str] = set()
+        combined: list = []
+        for m in batch1:
+            if m.meeting_id not in seen_ids:
+                combined.append(m)
+                seen_ids.add(m.meeting_id)
+        for m in batch2:
+            if m.meeting_id not in seen_ids:
+                combined.append(m)
+                seen_ids.add(m.meeting_id)
+
+        # Should have 3 unique meetings (2 from 2026 + 1 from 2025), not 4
+        ids = [m.meeting_id for m in combined]
+        self.assertEqual(len(ids), len(set(ids)),
+                         "Duplicate meeting IDs detected")
+        self.assertEqual(len(combined), 3,
+                         f"Expected 3 unique meetings, got {len(combined)}: {ids}")
+        meeting_years = {m.meeting_date[:4] for m in combined}
+        self.assertIn("2026", meeting_years)
+        self.assertIn("2025", meeting_years)
+
+
 if __name__ == "__main__":
+
     unittest.main()

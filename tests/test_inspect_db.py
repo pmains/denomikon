@@ -10,8 +10,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_tiers import integration_test
 
+_orig_db_url = os.environ.pop("DATABASE_URL", None)
 _test_db = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
 os.environ["DATABASE_URL"] = f"sqlite:///{_test_db.name}"
+
+import db as _db_mod
+_db_mod._engine = None
+_db_mod._SessionLocal = None
 
 from db import init_db, get_session, Meeting, AgendaItem, SupportingDocument
 
@@ -48,7 +53,7 @@ def _populate_db():
         ("4668", "2026-05-04", "Informal", "Special Session"),
         ("4669", "2026-05-06", "Formal", "Formal Meeting"),
     ]:
-        session.add(Meeting(meeting_id=mid, meeting_date=date, meeting_type=mtype, meeting_title=title))
+        session.add(Meeting(body="bos", meeting_id=mid, meeting_date=date, meeting_type=mtype, meeting_title=title))
     session.commit()
 
     for mid, num, title, cnum in [
@@ -58,6 +63,7 @@ def _populate_db():
         ("4669", 1, "CALL TO ORDER", ""),
     ]:
         session.add(AgendaItem(
+            body="bos",
             meeting_id=mid,
             agenda_item_number=num,
             agenda_item_id=f"{mid}-{num}-item",
@@ -72,6 +78,7 @@ def _populate_db():
     session.commit()
 
     session.add(SupportingDocument(
+        body="bos",
         meeting_id="4667", agenda_item_number=3,
         agenda_item_id=3,
         c_number="C-86-26-001-X-00",
@@ -89,6 +96,16 @@ class TestInspectDbMeetings(unittest.TestCase):
     def setUpClass(cls):
         init_db()
         _populate_db()
+
+    @classmethod
+    def tearDownClass(cls):
+        """Restore environment and engine cache for downstream tests."""
+        os.environ.pop("DATABASE_URL", None)
+        if _orig_db_url:
+            os.environ["DATABASE_URL"] = _orig_db_url
+        import db as _db_mod
+        _db_mod._engine = None
+        _db_mod._SessionLocal = None
 
     def test_meetings_output(self):
         out = _capture_output(["meetings"])
