@@ -1,0 +1,302 @@
+{% extends "base.html" %}
+{% block title %}Meeting {{ meeting_id }} — Poliscopic Meetings{% endblock %}
+{% block content %}
+
+<a href="/meetings" class="btn btn-outline-secondary btn-sm mb-3">&larr; Back to meetings</a>
+
+{% if meeting %}
+
+{# ─── Meeting header card ─── #}
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-start">
+            <div>
+                <h3 class="card-title mb-1">
+                    Meeting {{ meeting.meeting_id }}
+                    <span class="badge bg-{{ badge_class }} fs-6">{{ meeting.sync_status }}</span>
+                </h3>
+                <p class="text-muted mb-0">
+                    {{ meeting.meeting_date or '' }} &middot; {{ meeting.meeting_type or '' }}
+                </p>
+            </div>
+            <div class="text-end text-muted small">
+                {% if meeting.item_count_actual is not none %}
+                Items: <strong>{{ meeting.item_count_actual }}</strong>{% if meeting.item_count_expected %} / {{ meeting.item_count_expected }}{% endif %}<br>
+                {% endif %}
+                {% if meeting.supporting_doc_count %}
+                Docs: <strong>{{ meeting.supporting_doc_count }}</strong><br>
+                {% endif %}
+                {% if vote_count %}
+                Votes: <strong>{{ vote_count }}</strong><br>
+                {% endif %}
+            </div>
+        </div>
+
+        {% if meeting.meeting_title and meeting.meeting_title != meeting.meeting_id %}
+        <p class="mt-2 mb-0">{{ meeting.meeting_title }}</p>
+        {% endif %}
+
+        {% if meeting.source_url %}
+        <p class="mt-1 mb-0 small">
+            <a href="{{ meeting.source_url }}" target="_blank" rel="noopener">
+                {%- if is_pz -%}
+                View on Maricopa.gov &nearr;
+                {%- else -%}
+                View on Agenda Online &nearr;
+                {%- endif -%}
+            </a>
+        </p>
+        {% endif %}
+
+        {% if meeting.last_synced_at or meeting.last_attempted_at or meeting.last_error %}
+        <hr class="my-2">
+        <div class="small text-muted">
+            {% if meeting.last_synced_at %}
+            Synced: {{ meeting.last_synced_at.strftime('%Y-%m-%d %H:%M UTC') }}<br>
+            {% endif %}
+            {% if meeting.last_attempted_at and (not meeting.last_synced_at or meeting.last_attempted_at != meeting.last_synced_at) %}
+            Last attempted: {{ meeting.last_attempted_at.strftime('%Y-%m-%d %H:%M UTC') }}<br>
+            {% endif %}
+            {% if meeting.retry_count %}
+            Retries: {{ meeting.retry_count }}<br>
+            {% endif %}
+            {% if meeting.last_error %}
+            <span class="text-danger">Last error: {{ meeting.last_error }}</span>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{# ─── Agenda items accordion ─── #}
+{% if items %}
+<div class="accordion" id="agendaAccordion">
+    {% for item in items %}
+    {% set item_docs = docs_by_item.get(item.agenda_item_number, []) %}
+    {% set item_vote = votes_by_item.get(item.agenda_item_number, {}) %}
+    <div class="accordion-item">
+        <h2 class="accordion-header" id="heading{{ item.agenda_item_number }}">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+                    data-bs-target="#collapse{{ item.agenda_item_number }}"
+                    aria-expanded="false" aria-controls="collapse{{ item.agenda_item_number }}">
+                <span class="fw-bold me-2">{{ item.agenda_item_number }}.</span>
+                <span class="flex-grow-1">{{ item.agenda_item_title }}</span>
+                {% if item_vote.get('motion_result') %}
+                <span class="badge bg-{% if item_vote.motion_result in ('approved',) %}success{% elif item_vote.motion_result in ('denied',) %}danger{% else %}secondary{% endif %} ms-2 me-1">
+                    {{ item_vote.motion_result }}
+                </span>
+                {% endif %}
+                {% if is_pz and item.case_number %}
+                <code class="small text-muted ms-2">{{ item.case_number }}</code>
+                {% elif item.c_number %}
+                <a href="/c-number/{{ item.c_number_base or item.c_number }}" class="text-decoration-none">
+                    <code class="small text-muted ms-2">{{ item.c_number }}</code>
+                </a>
+                {% endif %}
+            </button>
+        </h2>
+        <div id="collapse{{ item.agenda_item_number }}" class="accordion-collapse collapse"
+             aria-labelledby="heading{{ item.agenda_item_number }}" data-bs-parent="#agendaAccordion">
+            <div class="accordion-body">
+
+                {# PZ item detail fields from agenda PDF #}
+                {% set pz_d = pz_details.get(item.agenda_item_number, {}) %}
+                {% if is_pz and pz_d %}
+                <dl class="row small mb-2">
+                    {% if pz_d.project_name %}
+                    <dt class="col-sm-3">Project</dt>
+                    <dd class="col-sm-9"><strong>{{ pz_d.project_name }}</strong></dd>
+                    {% endif %}
+                    {% if pz_d.district %}
+                    <dt class="col-sm-3">District</dt>
+                    <dd class="col-sm-9">{{ pz_d.district }}</dd>
+                    {% endif %}
+                    {% if pz_d.applicant %}
+                    <dt class="col-sm-3">Applicant</dt>
+                    <dd class="col-sm-9">{{ pz_d.applicant }}</dd>
+                    {% endif %}
+                    {% if pz_d.case_number %}
+                    <dt class="col-sm-3">Case</dt>
+                    <dd class="col-sm-9"><code>{{ pz_d.case_number or item.case_number }}</code></dd>
+                    {% endif %}
+                    {% if pz_d.request %}
+                    <dt class="col-sm-3">Request</dt>
+                    <dd class="col-sm-9">{{ pz_d.request[:200] }}{% if pz_d.request|length > 200 %}...{% endif %}</dd>
+                    {% endif %}
+                    {% if pz_d.location %}
+                    <dt class="col-sm-3">Location</dt>
+                    <dd class="col-sm-9">{{ pz_d.location[:200] }}{% if pz_d.location|length > 200 %}...{% endif %}</dd>
+                    {% endif %}
+                    {% if pz_d.recommendation %}
+                    <dt class="col-sm-3">Recommendation</dt>
+                    <dd class="col-sm-9"><span class="badge bg-{% if 'approve' in pz_d.recommendation.lower() %}success{% elif 'deny' in pz_d.recommendation.lower() %}danger{% else %}secondary{% endif %}">{{ pz_d.recommendation }}</span></dd>
+                    {% endif %}
+                    {% if pz_d.presented_by %}
+                    <dt class="col-sm-3">Presented by</dt>
+                    <dd class="col-sm-9">{{ pz_d.presented_by }}</dd>
+                    {% endif %}
+                    {% if pz_d.staff_report_url %}
+                    <dt class="col-sm-3">Report</dt>
+                    <dd class="col-sm-9"><a href="{{ pz_d.staff_report_url }}" target="_blank" rel="noopener">Staff Report &nearr;</a></dd>
+                    {% endif %}
+                </dl>
+                <hr class="my-2">
+                {% endif %}
+
+                {# Case number / C-number metadata #}
+                {% if is_pz %}
+                    {% if item.case_number and not pz_d %}
+                    <dl class="row small mb-2">
+                        <dt class="col-sm-2">Case</dt>
+                        <dd class="col-sm-10"><code>{{ item.case_number }}</code></dd>
+                    </dl>
+                    <hr class="my-2">
+                    {% endif %}
+                {% else %}
+                    {% if item.c_number or item.c_number_base %}
+                    <dl class="row small mb-2">
+                        {% if item.c_number %}
+                        <dt class="col-sm-2">C-number</dt>
+                        <dd class="col-sm-10">
+                            <a href="/c-number/{{ item.c_number_base or item.c_number }}">
+                                <code>{{ item.c_number }}</code>
+                            </a>
+                            {% if item.c_number_base and item.c_number_base != item.c_number %}
+                            <span class="text-muted">(base: {{ item.c_number_base }})</span>
+                            {% endif %}
+                        </dd>
+                        {% endif %}
+                        {% if item.c_number_base and item.c_number_base != item.c_number %}
+                        <dt class="col-sm-2">Base</dt>
+                        <dd class="col-sm-10">
+                            <a href="/c-number/{{ item.c_number_base }}">
+                                <code>{{ item.c_number_base }}</code>
+                            </a>
+                        </dd>
+                        {% endif %}
+                        {% if item.c_number_revision %}
+                        <dt class="col-sm-2">Revision</dt>
+                        <dd class="col-sm-10">{{ item.c_number_revision }}</dd>
+                        {% endif %}
+                    </dl>
+                    <hr class="my-2">
+                    {% endif %}
+                {% endif %}
+
+                {# Vote detail — body-specific labels #}
+                {% if item_vote.get('supervisor_votes') or (is_pz and item_vote.get('supervisor_votes')) %}
+                <h6>Vote — {{ item_vote.motion_result or 'unknown' }}</h6>
+                <table class="table table-sm table-borderless small mb-2" style="width:auto">
+                    {% for sv in item_vote.supervisor_votes %}
+                    <tr>
+                        <td class="pe-3">{{ sv.name }}</td>
+                        <td>
+                            <span class="badge bg-{% if sv.vote == 'yes' %}success{% elif sv.vote == 'no' %}danger{% else %}secondary{% endif %}">
+                                {{ sv.vote }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </table>
+                {% if item_vote.vote_text %}
+                <pre class="small text-muted mb-2" style="max-height:6em; overflow-y:auto;">{{ item_vote.vote_text }}</pre>
+                {% endif %}
+                <hr class="my-2">
+                {% endif %}
+
+                {# P&Z cross-links for BOS items with case numbers #}
+                {% if not is_pz and item.case_number %}
+                {% set pz_events = related_pz.get(item.case_number, []) %}
+                {% if pz_events %}
+                <div class="mt-2">
+                    <h6 class="small text-muted">Related P&amp;Z hearings</h6>
+                    <ul class="list-unstyled small mb-0">
+                        {% for ev in pz_events %}
+                        <li>
+                            <a href="/meetings/{{ ev.meeting_id }}">{{ ev.meeting_date }}</a>
+                            &mdash; {{ ev.meeting_title[:40] }}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                <hr class="my-2">
+                {% endif %}
+                {% endif %}
+
+                {# BOS cross-links for PZ items #}
+                {% if is_pz and pz_d and pz_d.case_number %}
+                {% set bos_events = related_bos.get(pz_d.case_number, []) %}
+                {% if bos_events %}
+                <div class="mt-2">
+                    <h6 class="small text-muted">Related BOS items</h6>
+                    <ul class="list-unstyled small mb-0">
+                        {% for ev in bos_events %}
+                        <li>
+                            <a href="/meetings/{{ ev.meeting_id }}">{{ ev.meeting_date }}</a>
+                            &mdash; {{ ev.meeting_title[:40] }}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                <hr class="my-2">
+                {% endif %}
+                {% endif %}
+
+                {# Full agenda item text #}
+                {% if item.agenda_item_text %}
+                <h6>Item text</h6>
+                <div class="small" style="max-height:12em; overflow-y:auto;">
+                    {{ item.agenda_item_text|replace('\n', '<br>')|safe }}
+                </div>
+                <hr class="my-2">
+                {% endif %}
+
+                {# Supporting documents #}
+                <h6>Supporting documents{% if item_docs %} ({{ item_docs|length }}){% endif %}</h6>
+                {% if item_docs %}
+                <ul class="list-unstyled small mb-0">
+                    {% for doc in item_docs %}
+                    <li class="mb-1">
+                        <a href="{{ doc.document_url }}" target="_blank" rel="noopener">
+                            {{ doc.document_title or doc.file_name or 'Document' }}
+                        </a>
+                        {% if doc.file_extension %}
+                        <span class="badge bg-light text-dark">{{ doc.file_extension.upper() }}</span>
+                        {% endif %}
+                        {% if doc.c_number %}
+                        <code class="text-muted">{{ doc.c_number }}</code>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <p class="small text-muted mb-0">No supporting documents stored.</p>
+                {% endif %}
+
+                {# Source link #}
+                {% if item.source_url %}
+                <hr class="my-2">
+                <a href="{{ item.source_url }}" target="_blank" rel="noopener" class="small">
+                    {%- if is_pz -%}
+                    View on Maricopa.gov &nearr;
+                    {%- else -%}
+                    View on Agenda Online &nearr;
+                    {%- endif -%}
+                </a>
+                {% endif %}
+
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="alert alert-warning">No agenda items found for this meeting.</div>
+{% endif %}
+
+{% else %}
+<div class="alert alert-danger">Meeting <strong>{{ meeting_id }}</strong> not found.</div>
+{% endif %}
+
+<p class="text-muted small mt-3">{{ items|length }} item(s)</p>
+{% endblock %}

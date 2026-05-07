@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}C-number {{ c_number_base }} — Poliscopic Meetings{% endblock %}
+{% block content %}
+
+<a href="javascript:history.back()" class="btn btn-outline-secondary btn-sm mb-3">&larr; Back</a>
+
+<h3 class="mb-3">C-number: <code>{{ c_number_base }}</code></h3>
+
+{% if items %}
+<div class="table-responsive">
+    <table class="table table-striped table-hover align-middle small">
+        <thead class="table-dark">
+            <tr>
+                <th>Date</th>
+                <th>Source</th>
+                <th>Type</th>
+                <th>Item</th>
+                <th>C-number</th>
+                <th>Revision</th>
+                <th>Title</th>
+                <th>Vote</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in items %}
+            <tr>
+                <td><a href="/meetings/{{ item.meeting_id }}">{{ item.meeting_date }}</a></td>
+                <td>
+                    {% if item.meeting_type == 'Planning & Zoning' %}
+                    <span class="badge bg-secondary">PZ</span>
+                    {% else %}
+                    <span class="badge bg-primary">BOS</span>
+                    {% endif %}
+                </td>
+                <td>{{ item.meeting_type }}</td>
+                <td>
+                    <a href="/meetings/{{ item.meeting_id }}#item-{{ item.agenda_item_number }}">
+                        #{{ item.agenda_item_number }}
+                    </a>
+                </td>
+                <td><code>{{ item.c_number }}</code></td>
+                <td>{{ item.c_number_revision or '-' }}</td>
+                <td>{{ item.agenda_item_title[:60] }}{% if item.agenda_item_title|length > 60 %}...{% endif %}</td>
+                <td>{{ item.vote_or_action[:20] if item.vote_or_action else '' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+<p class="text-muted small">{{ items|length }} item(s) sharing C-number base <code>{{ c_number_base }}</code></p>
+{% else %}
+<div class="alert alert-info">No items found for C-number base <code>{{ c_number_base }}</code>.</div>
+{% endif %}
+{% endblock %}
