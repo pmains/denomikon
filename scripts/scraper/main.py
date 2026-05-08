@@ -49,6 +49,7 @@ from scraper.supporting_docs import (
 )
 from scraper.pz import (
     _format_mm_dd_yyyy,
+    _normalize_pz_meeting_title,
     build_pz_search_url,
     extract_pz_meetings,
     extract_pz_agenda_items,
@@ -262,11 +263,14 @@ async def main() -> int:
                 agenda_url = f"https://www.maricopa.gov/AgendaCenter/ViewFile/Agenda/{meeting_id}?html=true"
             db_session.close()
 
+            clean_title, clean_type = _normalize_pz_meeting_title(
+                meeting_title, "Planning & Zoning"
+            )
             pz_meetings = [Meeting(
                 meeting_date=meeting_date,
                 meeting_time="",
-                meeting_title=meeting_title,
-                meeting_type="Planning & Zoning",
+                meeting_title=clean_title,
+                meeting_type=clean_type,
                 body="pz",
                 row_text="",
                 detail_url="",
@@ -317,7 +321,7 @@ async def main() -> int:
                     meeting_dict = {
                         "meeting_id": meeting.meeting_id,
                         "meeting_date": meeting.meeting_date,
-                        "meeting_type": "Planning & Zoning",
+                        "meeting_type": meeting.meeting_type,
                         "meeting_title": meeting.meeting_title,
                         "source_url": meeting.agenda_url,
                     }

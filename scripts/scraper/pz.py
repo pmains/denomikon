@@ -169,12 +169,17 @@ def parse_pz_meetings_from_html(html: str, base_url: str) -> list[Meeting]:
         if not agenda_url:
             continue
 
+        # Normalize title — detect ZIPPOR subcommittee, strip redundant prefix
+        clean_title, clean_type = _normalize_pz_meeting_title(
+            meeting_title, "Planning & Zoning"
+        )
+
         # Note: meeting_id is extracted from agenda_url by the Meeting property
         meetings.append(Meeting(
             meeting_date=meeting_date,
             meeting_time="",
-            meeting_title=meeting_title,
-            meeting_type="Planning & Zoning",
+            meeting_title=clean_title,
+            meeting_type=clean_type,
             body="pz",
             row_text=_clean_html_text(_node_text(row)),
             detail_url=agenda_url,
@@ -452,6 +457,69 @@ def _extract_pz_year_tabs_from_html(html: str) -> list[int]:
     return sorted(seen)
 
 
+def _normalize_pz_meeting_title(title: str, meeting_type: str) -> tuple[str, str]:
+    """Normalize a PZ meeting title and detect subcommittee type.
+
+    For regular PZ Commission meetings the title is clean already:
+      "May 7, 2026 Planning and Zoning Commission Meeting"
+
+    ZIPPOR and other subcommittee titles may have a leading date prefix:
+      "February 19, 2026 - Zoning, Infrastructure,
+       Policy, Procedure, and Ordinance Review (ZIPPOR) Committee Meeting"
+    → becomes:  "Zoning, Infrastructure, Policy, Procedure, and Ordinance
+                 Review (ZIPPOR) Committee Meeting — Feb 19, 2026"
+        with meeting_type: "ZIPPOR"
+
+    Some ZIPPOR titles have a redundant "Planning & Zoning Meeting — DATE - "
+    prefix, which is also stripped.
+
+    Returns (normalized_title, normalized_meeting_type).
+    """
+    if not title:
+        return title, meeting_type
+
+    # Detect ZIPPOR meetings by title content
+    if re.search(r"ZIPPOR", title, re.I):
+        # Extract leading date if present (e.g., "February 19, 2026 - ")
+        date_prefix = re.match(
+            r"^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})\s*[-–—]\s*", title
+        )
+        if date_prefix:
+            month_name = date_prefix.group(1)
+            day = date_prefix.group(2)
+            year = date_prefix.group(3)
+            # Build abbreviated date: "Feb 19, 2026"
+            MONTH_ABBR = {
+                "january": "Jan", "february": "Feb", "march": "Mar",
+                "april": "Apr", "may": "May", "june": "Jun",
+                "july": "Jul", "august": "Aug", "september": "Sep",
+                "october": "Oct", "november": "Nov", "december": "Dec",
+            }
+            abbr = MONTH_ABBR.get(month_name.lower(), month_name[:3])
+            short_date = f"{abbr} {int(day)}, {year}"
+            body = title[date_prefix.end():].strip()
+            normalized = f"{body} — {short_date}"
+            return normalized, "ZIPPOR"
+
+        # Fallback: strip "Planning & Zoning Meeting — [date] - " prefix
+        normalized = re.sub(
+            r"^Planning\s*[&/]\s*Zoning\s+Meeting\s*—\s*[A-Za-z]+\s+\d{1,2},?\s+\d{4}\s*[-–—]\s*",
+            "", title
+        ).strip()
+        if not normalized:
+            normalized = title
+        return normalized, "ZIPPOR"
+
+    # Strip location/webinar suffix for all PZ titles
+    # e.g. " - BOS Auditorium & GoTo Webinar", " - BOS Auditorium & Go To Webinar"
+    title = re.sub(
+        r"\s*[-–—]\s*BOS\s+Auditorium\s*&?\s*(?:Go\s*To)?\s*Web\w*\s*$",
+        "", title
+    ).strip()
+
+    return title, meeting_type
+
+
 def _format_mm_dd_yyyy(date_iso: str) -> str | None:
     """Convert YYYY-MM-DD to MM/DD/YYYY. Returns None if input is empty."""
     if not date_iso:
@@ -510,10 +578,17 @@ def parse_pz_agenda_pdf(filepath: str) -> list[dict]:
         if re.match(r"^\s*(Continuance|Consent|Regular)\s+Agenda\s*$", stripped, re.I):
             continue
 
-        # Match items starting with "N. Case: ..." or "N. CASENUMBER ..." (ZIPPOR format)
+        # Match items starting with "N. Case: ...", "N. CASENUMBER ..." (ZIPPOR format),
+        # or "N. CategoryName: ..." (ZIPPOR items without case numbers, e.g. "Area Plan:")
         item_start = re.match(r"^\s*(\d+)\.?\s*Case\b", stripped, re.I)
         if not item_start:
             item_start = re.match(r"^\s*(\d+)\.\s+([A-Z]+-?\d{3,})", stripped)
+        if not item_start:
+            # ZIPPOR items with a category name but no case number
+            # e.g. "1. Area Plan: White Tank..."
+            item_start = re.match(
+                r"^\s*(\d+)\.\s+(?!Case\b)(?!case\b)[A-Z][a-zA-Z\s/]+:", stripped
+            )
         if item_start:
             if current:
                 items.append(current)
@@ -532,12 +607,45 @@ def parse_pz_agenda_pdf(filepath: str) -> list[dict]:
             case_m = re.search(r"([A-Z]+-?\d{3,})", rest)
             if case_m:
                 current["case_number"] = case_m.group(1)
+                # For ZIPPOR format (no "Case:" label), capture description after
+                # the case number as the project_name
+                if len(item_start.groups()) >= 2:
+                    cn_end = rest.index(case_m.group(1)) + len(case_m.group(1))
+                    desc = rest[cn_end:].strip().lstrip("-–— ").strip()
+                    if desc:
+                        current["project_name"] = desc
+            else:
+                # ZIPPOR items without a case number (e.g. "1. Area Plan: ...")
+                # — use the rest of the line as project_name
+                if rest and not current["project_name"]:
+                    current["project_name"] = rest
             dist_m = FIELD_PATTERNS["district"].search(rest)
             if dist_m:
                 current["district"] = f"District {dist_m.group(1)}"
             continue
 
         if current is None:
+            continue
+
+        # Check if this is a continuation line for ZIPPOR items:
+        # indented descriptive text that follows the case number line.
+        if not any(pattern.search(stripped) for pattern in FIELD_PATTERNS.values()):
+            pn = current.get("project_name")
+            if pn:
+                # Stop if we've already captured both project_name and presented_by
+                if current.get("presented_by"):
+                    pass  # item is complete, skip all trailing lines
+                elif re.match(r"^(Other\s+Matters|Call\s+to\s+Order|Roll\s+Call|Adjournment|Announcements)", stripped, re.I):
+                    pass  # section break
+                elif re.match(r"^(Regular|Consent|Continuance|Study|Public)\s+Agenda", stripped, re.I):
+                    pass  # section heading
+                elif re.match(r"^\w+\s+\d+,?\s+\d{4}\s+ZIPPOR\s+Agenda", stripped, re.I):
+                    pass  # page header/footer
+                elif re.match(r"^Page\s+\d+\s+of\s+\d+", stripped, re.I):
+                    pass  # page footer
+                else:
+                    # Remove trailing hyphens/em-dashes from previous text, then append
+                    current["project_name"] = pn.rstrip("-–—") + " " + stripped
             continue
 
         for field, pattern in FIELD_PATTERNS.items():

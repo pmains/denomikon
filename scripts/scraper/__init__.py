@@ -24,7 +24,7 @@ from scraper.html_utils import _clean_html_text, _closest_parent, _find_all, _ha
 from scraper.agenda_items import _build_item_url, _clean_line, _clean_lnk_title, _detect_vote_or_action, _extract_lnk_from_table, _find_item_tables, _looks_like_boilerplate, _looks_like_item_heading, _looks_like_section_heading, _raw_block_boilerplate_reason
 from scraper.utils import _extract_c_number
 from scraper.io_utils import _normalize_text_date
-from scraper.pz import _format_mm_dd_yyyy, _extract_pz_year_tabs_from_html
+from scraper.pz import _format_mm_dd_yyyy, _normalize_pz_meeting_title, _extract_pz_year_tabs_from_html
 from scraper.supporting_docs import _extract_supporting_docs_from_table
 
 __all__ = [
@@ -64,6 +64,7 @@ __all__ = [
     "_looks_like_item_heading",
     "_looks_like_section_heading",
     "_node_text",
+    "_normalize_pz_meeting_title",
     "_normalize_text_date",
     "_parse_html",
     "_raw_block_boilerplate_reason",

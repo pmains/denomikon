@@ -1616,6 +1616,228 @@ class TestPZYearTabExtraction(unittest.TestCase):
         self.assertIn("2025", meeting_years)
 
 
+class TestPZMeetingNormalization(unittest.TestCase):
+    """Tests for PZ meeting title normalization and subcommittee detection.
+
+    ZIPPOR and other subcommittee meetings have verbose titles that need
+    cleaning, and should get a differentiated meeting_type.
+    """
+
+    def test_regular_pz_commission_meeting_unchanged(self):
+        """Standard PZ Commission meetings should pass through unchanged."""
+        from scraper import _normalize_pz_meeting_title as fn
+        title = "May 7, 2026 Planning and Zoning Commission Meeting"
+        t, mt = fn(title, "Planning & Zoning")
+        self.assertEqual(t, title)
+        self.assertEqual(mt, "Planning & Zoning")
+
+    def test_zippor_meeting_title_shortened(self):
+        """ZIPPOR meeting title should strip the redundant prefix."""
+        from scraper import _normalize_pz_meeting_title as fn
+        raw = ("Planning & Zoning Meeting — February 19, 2026 - Zoning, Infrastructure, "
+               "Policy, Procedure, and Ordinance Review (ZIPPOR) Committee Meeting — Feb 19, 2026")
+        expected = ("Zoning, Infrastructure, Policy, Procedure, and Ordinance Review "
+                    "(ZIPPOR) Committee Meeting — Feb 19, 2026")
+        t, mt = fn(raw, "Planning & Zoning")
+        self.assertEqual(t, expected)
+        self.assertEqual(mt, "ZIPPOR")
+
+    def test_zippor_meeting_type_differentiates(self):
+        """ZIPPOR meetings should get a meeting_type that differs from regular PZ."""
+        from scraper import _normalize_pz_meeting_title as fn
+        _, mt = fn("Planning & Zoning Meeting — Feb 19, 2026 - ZIPPOR Committee Meeting",
+                   "Planning & Zoning")
+        self.assertIn("ZIPPOR", mt)
+        self.assertNotEqual(mt, "Planning & Zoning")
+
+    def test_zippor_meeting_parsed_by_parse_pz_meetings_from_html(self):
+        """When parse_pz_meetings_from_html encounters a ZIPPOR meeting,
+        the title should be normalized and the type should differ from
+        regular PZ."""
+        from scraper import parse_pz_meetings_from_html
+
+        # ZIPPOR meeting in a catAgendaRow
+        html = """
+        <html><body>
+        <section id="section9">
+          <div class="agenda">
+            <table id="table9">
+              <tbody>
+                <tr id="row3640aabbccdd" class="catAgendaRow">
+                  <td>
+                    <h3><strong aria-label="Agenda for February 19, 2026"><abbr title="February">Feb</abbr> 19, 2026</strong></h3>
+                    <p>
+                      <a href="/AgendaCenter/ViewFile/Agenda/_02192026-3640?html=true">
+                        Planning &amp; Zoning Meeting — February 19, 2026 - Zoning, Infrastructure, Policy, Procedure, and Ordinance Review (ZIPPOR) Committee Meeting — Feb 19, 2026
+                      </a>
+                    </p>
+                  </td>
+                  <td class="minutes"></td>
+                  <td class="media"></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+        </body></html>
+        """
+
+        meetings = parse_pz_meetings_from_html(
+            html, "https://www.maricopa.gov/AgendaCenter/Search"
+        )
+
+        self.assertEqual(len(meetings), 1)
+        m = meetings[0]
+
+        # Title should be cleaned up
+        expected_title = ("Zoning, Infrastructure, Policy, Procedure, and Ordinance "
+                          "Review (ZIPPOR) Committee Meeting — Feb 19, 2026")
+        self.assertEqual(m.meeting_title, expected_title)
+        self.assertEqual(m.meeting_type, "ZIPPOR")
+        self.assertIn("ZIPPOR", m.meeting_type)
+        self.assertNotEqual(m.meeting_type, "Planning & Zoning")
+
+    def test_regular_pz_strips_location_suffix(self):
+        """Regular PZ titles have a redundant " - BOS Auditorium & GoTo Webinar"
+        suffix that should be stripped."""
+        from scraper import _normalize_pz_meeting_title as fn
+        t, mt = fn(
+            "May 7, 2026 Planning and Zoning Commission Meeting - BOS Auditorium & GoTo Webinar",
+            "Planning & Zoning",
+        )
+        self.assertEqual(t, "May 7, 2026 Planning and Zoning Commission Meeting")
+        self.assertEqual(mt, "Planning & Zoning")
+
+    def test_regular_pz_strips_goto_variant_suffix(self):
+        """Some titles use "Go To" (with space) instead of "GoTo"."""
+        from scraper import _normalize_pz_meeting_title as fn
+        t, mt = fn(
+            "January 22, 2026 Planning and Zoning Commission Meeting - BOS Auditorium & Go To Webinar",
+            "Planning & Zoning",
+        )
+        self.assertEqual(t, "January 22, 2026 Planning and Zoning Commission Meeting")
+
+    def test_regular_pz_strips_gotowebinar_variant(self):
+        """Some older titles use "GoToWebinar" (no space)."""
+        from scraper import _normalize_pz_meeting_title as fn
+        t, mt = fn(
+            "March 6, 2025 - Planning & Zoning Commission - BOS Auditorium & GoToWebinar",
+            "Planning & Zoning",
+        )
+        self.assertEqual(t, "March 6, 2025 - Planning & Zoning Commission")
+
+    def test_empty_title_returns_unchanged(self):
+        """Empty or None title should not cause errors."""
+        from scraper import _normalize_pz_meeting_title as fn
+        t, mt = fn("", "Planning & Zoning")
+        self.assertEqual(t, "")
+        self.assertEqual(mt, "Planning & Zoning")
+
+        t, mt = fn(None, "Planning & Zoning")  # type: ignore[arg-type]
+        self.assertIsNone(t)
+        self.assertEqual(mt, "Planning & Zoning")
+
+
+class TestPZPDFParsing(unittest.TestCase):
+    """Tests for PZ PDF parsing, especially ZIPPOR format differences."""
+
+    def test_zippor_pdf_live_extraction(self):
+        """Live test: parse the actual ZIPPOR agenda PDF for meeting 3640.
+
+        Requires network access to fetch the PDF.
+        """
+        import urllib.request
+        from scraper.pz import parse_pz_agenda_pdf
+        from pathlib import Path
+
+        pdf_url = "https://www.maricopa.gov/AgendaCenter/ViewFile/Item/10153?fileID=99454"
+        pdf_path = Path("/tmp/pz_3640_real_regression.pdf")
+
+        try:
+            req = urllib.request.Request(pdf_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                pdf_path.write_bytes(resp.read())
+        except Exception:
+            self.skipTest("Could not download ZIPPOR agenda PDF")
+
+        result = parse_pz_agenda_pdf(str(pdf_path))
+
+        self.assertEqual(len(result), 1)
+        item = result[0]
+        self.assertEqual(item["agenda_item_number"], 1)
+        self.assertEqual(item["case_number"], "CPA260002")
+        self.assertIsNotNone(item["project_name"])
+        self.assertIn("Framework 2040", item["project_name"])
+        self.assertIn("Comprehensive Plan", item["project_name"])
+        self.assertIn("Rural Influence Areas", item["project_name"])
+        self.assertIn("urban development strategy", item["project_name"])
+        self.assertIsNotNone(item["presented_by"])
+        self.assertIn("Matt Klyszeiko", item["presented_by"])
+        self.assertIn("Michael Baker International", item["presented_by"])
+
+        # Verify no boilerplate leaked into project_name
+        pn = item["project_name"] or ""
+        self.assertNotIn("Other Matters", pn)
+        self.assertNotIn("Page 2 of 2", pn)
+        self.assertNotIn("Adjournment", pn)
+
+        pdf_path.unlink(missing_ok=True)
+
+    def test_zippor_pdf_with_area_plan_item(self):
+        """ZIPPOR PDF with items that have no case number (e.g. "Area Plan:")
+        should still be extracted.  Meeting 2971 has an Area Plan item."""
+        import urllib.request, re
+        from scraper.pz import parse_pz_agenda_pdf, parse_pz_overview
+        from pathlib import Path
+
+        # Fetch overview for meeting 2971
+        overview_url = "https://www.maricopa.gov/AgendaCenter/ViewFile/Agenda/_08312023-2971?html=true"
+        req = urllib.request.Request(overview_url, headers={"User-Agent": "Mozilla/5.0"})
+        try:
+            resp = urllib.request.urlopen(req, timeout=15)
+            html = resp.read().decode("utf-8", errors="replace")
+            base = "https://www.maricopa.gov/"
+            ov = parse_pz_overview(html, overview_url, base)
+        except Exception:
+            self.skipTest("Could not fetch meeting 2971 overview")
+
+        if not ov or not ov.get("agenda_pdf_url"):
+            self.skipTest("Could not find agenda PDF URL for meeting 2971")
+
+        pdf_path = Path("/tmp/pz_2971_area_plan_test.pdf")
+        try:
+            pdf_req = urllib.request.Request(ov["agenda_pdf_url"],
+                headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(pdf_req, timeout=15) as pdf_resp:
+                pdf_path.write_bytes(pdf_resp.read())
+        except Exception:
+            self.skipTest("Could not download meeting 2971 PDF")
+
+        result = parse_pz_agenda_pdf(str(pdf_path))
+        pdf_path.unlink(missing_ok=True)
+
+        self.assertGreaterEqual(len(result), 2,
+            f"Expected at least 2 items (Area Plan + Case), got {len(result)}")
+
+        # Item 1 should be the Area Plan (no case number)
+        item1 = next((it for it in result if it["agenda_item_number"] == 1), None)
+        self.assertIsNotNone(item1, "Item 1 (Area Plan) not found")
+        self.assertEqual(item1["case_number"], "",
+                         "Area Plan item should have no case number")
+        self.assertIsNotNone(item1["project_name"])
+        self.assertIn("White Tank", item1["project_name"],
+                      "Area Plan name should mention White Tank")
+        self.assertIn("Matt Holm", item1["presented_by"] or "",
+                      "Area Plan should have presented_by")
+
+        # Item 2 should be TA2023003 (has case number)
+        item2 = next((it for it in result if it["agenda_item_number"] == 2), None)
+        self.assertIsNotNone(item2, "Item 2 (TA2023003) not found")
+        self.assertEqual(item2["case_number"], "TA2023003")
+        self.assertIn("Darren Gerard", item2["presented_by"] or "",
+                      "Item 2 should have presented_by")
+
+
 if __name__ == "__main__":
 
     unittest.main()

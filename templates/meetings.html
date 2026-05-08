@@ -16,11 +16,9 @@
         <label class="form-label small" for="type">Type</label>
         <select name="type" id="type" class="form-select form-select-sm">
             <option value="" {% if not filter_type %}selected{% endif %}>All</option>
-            <option value="Formal" {% if filter_type == 'Formal' %}selected{% endif %}>Formal</option>
-            <option value="Informal" {% if filter_type == 'Informal' %}selected{% endif %}>Informal</option>
-            <option value="Special" {% if filter_type == 'Special' %}selected{% endif %}>Special</option>
-            <option value="Executive" {% if filter_type == 'Executive' %}selected{% endif %}>Executive</option>
-            <option value="Planning" {% if filter_type == 'Planning' %}selected{% endif %}>Planning &amp; Zoning</option>
+            {% for t in distinct_types %}
+            <option value="{{ t }}" {% if filter_type == t %}selected{% endif %}>{{ t }}</option>
+            {% endfor %}
         </select>
     </div>
     <div class="col-md-2">

@@ -91,6 +91,20 @@ def index():
     return redirect("/meetings")
 
 
+def get_distinct_meeting_types(body=None):
+    """Get all distinct meeting_type values from the database, optionally filtered by body."""
+    session = get_session()
+    q = select(Meeting.meeting_type).distinct().order_by(Meeting.meeting_type)
+    if body and body.lower() != "all":
+        if body.lower() in ("bz", "pz", "planning"):
+            q = q.where(Meeting.body == "pz")
+        else:
+            q = q.where(Meeting.body == "bos")
+    rows = session.execute(q).scalars().all()
+    session.close()
+    return [r for r in rows if r]
+
+
 def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_date=None, page=1, per_page=25):
     """Query meetings with optional filters and pagination. Returns (meetings_list, total_count, page, total_pages)."""
     session = get_session()
@@ -116,7 +130,13 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             base_q = base_q.where(Meeting.body == "bos")
 
     if meeting_type and meeting_type.lower() != "all":
-        type_map = {"planning": "Planning & Zoning"}
+        # Normalise the filter value: "planning" → "Planning & Zoning",
+        # but pass through actual meeting_type values like
+        # "Planning & Zoning - ZIPPOR Committee" exactly as-is.
+        type_map = {
+            "planning": "Planning & Zoning",
+            "zippor": "ZIPPOR",
+        }
         match_type = type_map.get(meeting_type.lower(), meeting_type)
         base_q = base_q.where(Meeting.meeting_type == match_type)
 
@@ -142,7 +162,7 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             "meeting_id": row.meeting_id,
             "meeting_date": row.meeting_date or "",
             "meeting_type": row.meeting_type or "",
-            "title": row.display_name or row.meeting_title or row.meeting_id,
+            "title": row.meeting_title or row.display_name or row.meeting_id,
             "source": "PZ" if is_pz else "BOS",
             "source_badge": "secondary" if is_pz else "primary",
             "sync_status": row.sync_status or "pending",
@@ -186,9 +206,12 @@ def meetings():
         per_page=per_page,
     )
 
+    distinct_types = get_distinct_meeting_types(body=body or None)
+
     return render_template(
         "meetings.html",
         meetings=meetings_list,
+        distinct_types=distinct_types,
         filter_body=body,
         filter_type=meeting_type,
         filter_start=start_date,
