@@ -10,6 +10,11 @@
             <option value="" {% if not filter_body %}selected{% endif %}>All</option>
             <option value="bos" {% if filter_body == 'bos' %}selected{% endif %}>BOS</option>
             <option value="pz" {% if filter_body == 'pz' %}selected{% endif %}>P&amp;Z</option>
+            <option value="adj" {% if filter_body == 'adj' %}selected{% endif %}>Adjustment</option>
+            <option value="drain" {% if filter_body == 'drain' %}selected{% endif %}>Drainage</option>
+            <option value="health" {% if filter_body == 'health' %}selected{% endif %}>Health</option>
+            <option value="tab" {% if filter_body == 'tab' %}selected{% endif %}>Transportation</option>
+            <option value="ida" {% if filter_body == 'ida' %}selected{% endif %}>IDA</option>
         </select>
     </div>
     <div class="col-md-2">

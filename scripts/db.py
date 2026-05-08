@@ -119,6 +119,14 @@ class AgendaItemVote(Base):
     motion_result = Column(String(64), nullable=True, default=None)
     vote_text = Column(Text, nullable=True, default=None)
     conditions = Column(Text, nullable=True, default=None)
+    is_split_vote = Column(Boolean, nullable=True, default=None,
+                           comment="True if members voted differently (not unanimous)")
+    unanimous = Column(Boolean, nullable=True, default=None,
+                       comment="True if all voting members voted the same way, excluding recusals/abstentions")
+    majority_position = Column(
+        String(16), nullable=True, default=None,
+        comment="yes|no|tie|unknown — the position taken by the majority of voting members"
+    )
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -138,6 +146,8 @@ class SupervisorVote(Base):
     supervisor_id = Column(Integer, nullable=False, index=True)
     vote = Column(String(32), nullable=False, default="unknown", index=True)
     raw_vote_text = Column(String(64), nullable=True, default=None)
+    is_dissent = Column(Boolean, nullable=True, default=None,
+                        comment="True if supervisor voted against the majority")
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -282,6 +292,127 @@ class AgendaItem(Base):
     __table_args__ = (
         None,
     )
+class PublicBodyMember(Base):
+    """Body-scoped membership roster for any public body (BOS, PZ, ADJ, DRAIN, HEALTH, TAB, IDA)."""
+    __tablename__ = "public_body_members"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    body = Column(String(16), nullable=False, default="", index=True)
+    name = Column(String(128), nullable=False, index=True)
+    normalized_name = Column(String(128), nullable=False, index=True)
+    title = Column(String(64), nullable=True, default=None)
+    district_or_seat = Column(String(32), nullable=True, default=None)
+    active_from = Column(Date, nullable=True, default=None)
+    active_to = Column(Date, nullable=True, default=None)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("body", "normalized_name", name="uq_public_body_member"),
+    )
+
+
+class MeetingAttendance(Base):
+    """Per-meeting attendance records for members of any public body."""
+    __tablename__ = "meeting_attendance"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    body = Column(String(16), nullable=False, default="", index=True)
+    meeting_id = Column(String(32), nullable=False, index=True)
+    member_id = Column(Integer, nullable=False, index=True)
+    attendance_status = Column(
+        String(24), nullable=False, default="unknown",
+        comment="present|absent|excused|late|left_early|unknown|inferred_absent"
+    )
+    source_text = Column(Text, nullable=True, default=None)
+    inference_method = Column(String(64), nullable=True, default=None,
+                              comment="e.g. 'other_members_voted_but_member_did_not'")
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("body", "meeting_id", "member_id", name="uq_meeting_attendance"),
+    )
+
+
+class MemberVote(Base):
+    """Generalized vote table for non-BOS bodies. Preserves supervisor_votes for BOS."""
+    __tablename__ = "member_votes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    body = Column(String(16), nullable=False, default="", index=True)
+    agenda_item_vote_id = Column(Integer, nullable=False, index=True)
+    member_id = Column(Integer, nullable=False, index=True)
+    vote = Column(String(32), nullable=False, default="unknown", index=True)
+    raw_vote_text = Column(String(64), nullable=True, default=None)
+    is_dissent = Column(Boolean, nullable=True, default=None,
+                        comment="True if member voted against the majority")
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("agenda_item_vote_id", "member_id", name="uq_member_vote"),
+    )
+
+
+class ExecutiveSessionParticipant(Base):
+    """BOS executive session advisors and attendees."""
+    __tablename__ = "executive_session_participants"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    body = Column(String(16), nullable=False, default="", index=True)
+    meeting_id = Column(String(32), nullable=False, index=True)
+    person_name = Column(String(128), nullable=False, index=True)
+    normalized_name = Column(String(128), nullable=False, index=True)
+    role_or_title = Column(String(128), nullable=True, default=None)
+    organization = Column(String(128), nullable=True, default=None)
+    participation_type = Column(
+        String(32), nullable=False, default="unknown",
+        comment="advised|attended|presented|legal_counsel|staff|outside_counsel|unknown"
+    )
+    agenda_item_number = Column(Integer, nullable=True, default=None)
+    source_text = Column(Text, nullable=True, default=None)
+    source_url = Column(String(512), nullable=True, default=None)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "body", "meeting_id", "normalized_name",
+            "agenda_item_number",
+            name="uq_exec_session_participant"
+        ),
+    )
+
+
 class SupportingDocument(Base):
     __tablename__ = "supporting_documents"
 
@@ -498,7 +629,15 @@ def init_db():
     _migrate_table("meeting_supervisors")
     _migrate_table("agenda_item_votes")
     _migrate_col(engine, "agenda_item_votes", "conditions", "TEXT DEFAULT NULL")
+    _migrate_col(engine, "agenda_item_votes", "is_split_vote", "BOOLEAN DEFAULT NULL")
+    _migrate_col(engine, "agenda_item_votes", "unanimous", "BOOLEAN DEFAULT NULL")
+    _migrate_col(engine, "agenda_item_votes", "majority_position", "VARCHAR(16) DEFAULT NULL")
     _migrate_table("supervisor_votes")
+    _migrate_col(engine, "supervisor_votes", "is_dissent", "BOOLEAN DEFAULT NULL")
+    _migrate_table("public_body_members")
+    _migrate_table("meeting_attendance")
+    _migrate_table("member_votes")
+    _migrate_table("executive_session_participants")
 
     # Resumable sync columns
     _migrate_col(engine, "meetings", "sync_status", "VARCHAR(32) NOT NULL DEFAULT 'pending'")
@@ -1083,6 +1222,62 @@ def replace_meeting_data_safe(
         raise
 
 
+def _detect_vote_attributes(aiv_list: list[AgendaItemVote]) -> None:
+    """Detect split_vote, unanimous, and majority_position on each AgendaItemVote.
+
+    This is called from persist_votes() after all votes are committed.
+    It examines supervisor_votes / member_votes in the DB to determine
+    vote-level attributes.
+    """
+    if not aiv_list:
+        return
+    session = Session.object_session(aiv_list[0])
+    if not session:
+        return
+    for aiv in aiv_list:
+        # Gather supervisor votes for this aiv
+        sv_rows = session.execute(
+            select(SupervisorVote).where(
+                SupervisorVote.agenda_item_vote_id == aiv.id
+            )
+        ).scalars().all()
+        if not sv_rows:
+            continue
+
+        # Determine the set of distinct substantive votes (yes/no)
+        # excluding abstain/recused/absent/not_voting
+        substantive = [sv.vote for sv in sv_rows if sv.vote in ("yes", "no")]
+        if not substantive:
+            # All abstentions/recusals — not split, not unanimous
+            aiv.unanimous = None
+            aiv.is_split_vote = False
+            aiv.majority_position = "unknown"
+            continue
+
+        vote_set = set(substantive)
+        aiv.is_split_vote = len(vote_set) > 1
+        aiv.unanimous = len(vote_set) == 1
+
+        # Determine majority position
+        yes_count = sum(1 for v in substantive if v == "yes")
+        no_count = sum(1 for v in substantive if v == "no")
+        if yes_count > no_count:
+            aiv.majority_position = "yes"
+        elif no_count > yes_count:
+            aiv.majority_position = "no"
+        else:
+            aiv.majority_position = "tie"
+
+        # Flag dissenting supervisor votes
+        if aiv.majority_position and aiv.majority_position not in ("tie", "unknown"):
+            for sv in sv_rows:
+                if (
+                    sv.vote in ("yes", "no")
+                    and sv.vote != aiv.majority_position
+                ):
+                    sv.is_dissent = True
+
+
 def persist_votes(
     session: Session,
     body: str,
@@ -1183,11 +1378,16 @@ def persist_votes(
         # Look up the actual AgendaItem database row for FK reference
         db_agenda_item = session.execute(
             select(AgendaItem).where(
+                AgendaItem.body == body,
                 AgendaItem.meeting_id == meeting_id,
                 AgendaItem.agenda_item_number == item_number,
             )
         ).scalar_one_or_none()
-        db_agenda_item_id = db_agenda_item.id if db_agenda_item else item_number
+        if db_agenda_item:
+            db_agenda_item_id = db_agenda_item.id
+        else:
+            # No matching agenda item — use a synthetic ID to avoid UNIQUE constraint collisions
+            db_agenda_item_id = -1 * hash(f"{body}:{meeting_id}:{item_number}") % (2**31)
         if db_agenda_item_id in seen_item_db_ids:
             # Duplicate item number (e.g., agenda has two #2 entries for
             # different sub-items). Skip rather than violate the unique
@@ -1241,6 +1441,114 @@ def persist_votes(
 
         vote_count += 1
 
-    # 5. Commit
+    # 5. Flush to get AIV IDs, then detect vote attributes
+    session.flush()
+    # Reload AIVs to get their IDs for attribute detection
+    aiv_rows = session.execute(
+        select(AgendaItemVote).where(
+            AgendaItemVote.body == body,
+            AgendaItemVote.meeting_id == meeting_id,
+        )
+    ).scalars().all()
+    _detect_vote_attributes(aiv_rows)
+
+    # 6. Commit
     session.commit()
     return vote_count
+
+
+def infer_absence_for_meeting(
+    session: Session,
+    body: str,
+    meeting_id: str,
+    known_member_ids: list[int],
+    voting_member_ids: list[int],
+) -> list["MeetingAttendance"]:
+    """Infer absence for members who did not vote while others voted.
+
+    Args:
+        session: DB session
+        body: Body scope
+        meeting_id: Meeting identifier
+        known_member_ids: All member IDs known to be active for this body
+        voting_member_ids: Member IDs who actually voted on any item
+
+    Returns:
+        List of new MeetingAttendance records (not yet committed)
+    """
+    inferred: list[MeetingAttendance] = []
+    voting_set = set(voting_member_ids)
+    for mid in known_member_ids:
+        if mid not in voting_set:
+            att = MeetingAttendance(
+                body=body,
+                meeting_id=meeting_id,
+                member_id=mid,
+                attendance_status="inferred_absent",
+                source_text="Member did not vote while others voted on agenda items",
+                inference_method="missing_vote_when_others_voted",
+            )
+            session.add(att)
+            inferred.append(att)
+    return inferred
+
+
+def get_meeting_attendance(
+    session: Session,
+    body: str,
+    meeting_id: str,
+) -> list["MeetingAttendance"]:
+    """Get attendance records for a meeting."""
+    rows = session.execute(
+        select(MeetingAttendance).where(
+            MeetingAttendance.body == body,
+            MeetingAttendance.meeting_id == meeting_id,
+        )
+    ).scalars().all()
+    return list(rows)
+
+
+def get_executive_session_participants(
+    session: Session,
+    body: Optional[str] = None,
+    meeting_id: Optional[str] = None,
+    person_name: Optional[str] = None,
+) -> list["ExecutiveSessionParticipant"]:
+    """Get executive session participation records."""
+    q = select(ExecutiveSessionParticipant)
+    if body:
+        q = q.where(ExecutiveSessionParticipant.body == body)
+    if meeting_id:
+        q = q.where(ExecutiveSessionParticipant.meeting_id == meeting_id)
+    if person_name:
+        q = q.where(ExecutiveSessionParticipant.normalized_name == person_name.lower())
+    q = q.order_by(ExecutiveSessionParticipant.meeting_id)
+    rows = session.execute(q).scalars().all()
+    return list(rows)
+
+
+def get_split_votes(
+    session: Session,
+    body: Optional[str] = None,
+) -> list["AgendaItemVote"]:
+    """Get all split votes, optionally filtered by body."""
+    q = select(AgendaItemVote).where(AgendaItemVote.is_split_vote == True)
+    if body and body.lower() != "all":
+        q = q.where(AgendaItemVote.body == body)
+    q = q.order_by(AgendaItemVote.meeting_id, AgendaItemVote.agenda_item_number)
+    rows = session.execute(q).scalars().all()
+    return list(rows)
+
+
+def get_dissenting_votes(
+    session: Session,
+    member_name: Optional[str] = None,
+) -> list["SupervisorVote"]:
+    """Get dissent votes, optionally filtered by member name."""
+    q = select(SupervisorVote).where(SupervisorVote.is_dissent == True)
+    if member_name:
+        norm = member_name.lower()
+        from sqlalchemy import join as sa_join
+        from sqlalchemy.orm import joinedload
+    rows = session.execute(q).scalars().all()
+    return list(rows)

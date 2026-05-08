@@ -668,6 +668,78 @@ def cmd_votes_search(args):
     if len(rows) >= args.limit:
         print(f"\n[Reached limit of {args.limit}]")
 
+def cmd_split_votes(args):
+    """List split votes."""
+    from db import get_split_votes, get_session
+    session = get_session()
+    votes = get_split_votes(session, args.body)
+    session.close()
+    print(f"Split votes: {len(votes)}")
+    for v in votes:
+        print(f"  {v.meeting_id} item {v.agenda_item_number}: majority={v.majority_position}")
+
+
+def cmd_dissent(args):
+    """Search dissenting votes."""
+    from db import get_dissenting_votes, get_session
+    session = get_session()
+    votes = get_dissenting_votes(session, args.member)
+    session.close()
+    print(f"Dissenting votes: {len(votes)}")
+
+
+def cmd_member_votes(args):
+    """Show votes for a member."""
+    print(f"Member votes for '{args.name}': feature scaffold")
+
+
+def cmd_no_vote(args):
+    """Search members who did not vote."""
+    print(f"No-vote search for '{args.name}': feature scaffold")
+
+
+def cmd_attendance(args):
+    """Show attendance for a member."""
+    print(f"Attendance for '{args.name}': feature scaffold")
+
+
+def cmd_meeting_attendance(args):
+    """Show attendance for a meeting."""
+    from db import get_meeting_attendance, get_session
+    session = get_session()
+    records = get_meeting_attendance(session, args.body or "all", args.meeting_id)
+    session.close()
+    print(f"Attendance for meeting {args.meeting_id}: {len(records)} records")
+    for r in records:
+        print(f"  member_id={r.member_id} status={r.attendance_status}")
+
+
+def cmd_executive_participants(args):
+    """List executive session participants."""
+    from db import get_executive_session_participants, get_session
+    session = get_session()
+    participants = get_executive_session_participants(
+        session, body=args.body, meeting_id=args.meeting_id
+    )
+    session.close()
+    print(f"Executive session participants: {len(participants)}")
+    for p in participants:
+        print(f"  {p.person_name} ({p.role_or_title}) — {p.participation_type}")
+
+
+def cmd_advisor(args):
+    """Search for an executive session advisor."""
+    from db import get_executive_session_participants, get_session
+    session = get_session()
+    participants = get_executive_session_participants(
+        session, person_name=args.name
+    )
+    session.close()
+    print(f"Advisor '{args.name}': {len(participants)} meetings")
+    for p in participants:
+        print(f"  {p.meeting_id} — {p.role_or_title}")
+
+
 
 def cmd_cases(args):
     """List all cases with event counts."""
@@ -745,16 +817,16 @@ def parse_args(argv=None):
 
     # meetings
     ap_meetings = sub.add_parser("meetings", help="List all meetings with item counts")
-    ap_meetings.add_argument("--body", default="all", help="Filter by body: bos, pz, or all (default all)")
+    ap_meetings.add_argument("--body", default="all", help="Filter by body: bos, pz, adj, drain, health, tab, ida, or all (default all)")
 
     # counts
     ap_counts = sub.add_parser("counts", help="Show item counts per meeting")
-    ap_counts.add_argument("--body", default="all", help="Filter by body: bos, pz, or all (default all)")
+    ap_counts.add_argument("--body", default="all", help="Filter by body: bos, pz, adj, drain, health, tab, ida, or all (default all)")
 
     # agenda <meeting_id>
     ap_agenda = sub.add_parser("agenda", help="Show agenda items for a meeting")
     ap_agenda.add_argument("meeting_id", help="Meeting ID (e.g. 4667)")
-    ap_agenda.add_argument("--body", default=None, help="Body scope: bos or pz (default: auto-detect)")
+    ap_agenda.add_argument("--body", default=None, help="Body scope: bos, pz, adj, drain, health, tab, ida (default: auto-detect)")
 
     # search <query>
     ap_search = sub.add_parser("search", help="Search agenda item titles and text")
@@ -764,7 +836,7 @@ def parse_args(argv=None):
 
     # item <meeting_id> <agenda_item_number>
     ap_item = sub.add_parser("item", help="Show full record for one agenda item")
-    ap_item.add_argument("body", nargs="?", default=None, help="Body: bos or pz (optional, auto-detect)")
+    ap_item.add_argument("body", nargs="?", default=None, help="Body: bos, pz, adj, drain, health, tab, ida (optional, auto-detect)")
     ap_item.add_argument("meeting_id", help="Meeting ID")
     ap_item.add_argument("agenda_item_number", type=int, help="Item number")
 
@@ -779,12 +851,12 @@ def parse_args(argv=None):
     ap_docs = sub.add_parser("docs", help="List supporting documents for a meeting or item")
     ap_docs.add_argument("meeting_id", help="Meeting ID")
     ap_docs.add_argument("agenda_item_number", nargs="?", type=int, default=None, help="Optional item number")
-    ap_docs.add_argument("--body", default=None, help="Body scope: bos or pz (default: auto-detect)")
+    ap_docs.add_argument("--body", default=None, help="Body scope: bos, pz, adj, drain, health, tab, ida (default: auto-detect)")
 
     # meeting <meeting_id>
     ap_meeting = sub.add_parser("meeting", help="Show sync metadata for a meeting")
     ap_meeting.add_argument("meeting_id", help="Meeting ID")
-    ap_meeting.add_argument("--body", default=None, help="Body scope: bos or pz (default: auto-detect)")
+    ap_meeting.add_argument("--body", default=None, help="Body scope: bos, pz, adj, drain, health, tab, ida (default: auto-detect)")
 
     # status
     sub.add_parser("status", help="Show counts by sync_status and totals")
@@ -798,13 +870,13 @@ def parse_args(argv=None):
     # votes <meeting_id>
     ap_votes = sub.add_parser("votes", help="Show vote summary for all items in a meeting")
     ap_votes.add_argument("meeting_id", help="Meeting ID")
-    ap_votes.add_argument("--body", default=None, help="Body scope: bos or pz (default: auto-detect)")
+    ap_votes.add_argument("--body", default=None, help="Body scope: bos, pz, adj, drain, health, tab, ida (default: auto-detect)")
 
     # vote <meeting_id> <item_number>
     ap_vote = sub.add_parser("vote", help="Show vote detail for one item")
     ap_vote.add_argument("meeting_id", help="Meeting ID")
     ap_vote.add_argument("agenda_item_number", type=int, help="Item number")
-    ap_vote.add_argument("--body", default=None, help="Body scope: bos or pz (default: auto-detect)")
+    ap_vote.add_argument("--body", default=None, help="Body scope: bos, pz, adj, drain, health, tab, ida (default: auto-detect)")
 
     # votes-by-supervisor <name>
     ap_vbs = sub.add_parser("votes-by-supervisor", help="Show votes cast by a supervisor")
@@ -825,6 +897,40 @@ def parse_args(argv=None):
     # case-history <case_number>
     ap_case_hist = sub.add_parser("case-history", help="Show event history for a case (alias for case)")
     ap_case_hist.add_argument("case_number", help="Case number (e.g. CPA2024001)")
+
+    # split-votes
+    sp_sv = sub.add_parser("split-votes", help="List split votes")
+    sp_sv.add_argument("--body", default="all", help="Filter by body (default all)")
+
+    # dissent
+    sp_diss = sub.add_parser("dissent", help="Search dissenting votes")
+    sp_diss.add_argument("--member", default=None, help="Member name filter")
+
+    # member-votes
+    sp_mv = sub.add_parser("member-votes", help="Show votes for a member")
+    sp_mv.add_argument("name", help="Member name")
+
+    # no-vote
+    sp_nv = sub.add_parser("no-vote", help="Search members who did not vote")
+    sp_nv.add_argument("name", help="Member name")
+
+    # attendance
+    sp_att = sub.add_parser("attendance", help="Show attendance for a member")
+    sp_att.add_argument("name", help="Member name")
+
+    # meeting-attendance
+    sp_ma = sub.add_parser("meeting-attendance", help="Show attendance for a meeting")
+    sp_ma.add_argument("meeting_id", help="Meeting ID")
+    sp_ma.add_argument("--body", default=None, help="Body scope (default: auto-detect)")
+
+    # executive-participants
+    sp_ep = sub.add_parser("executive-participants", help="List executive session participants")
+    sp_ep.add_argument("--meeting-id", default=None, help="Filter by meeting ID")
+    sp_ep.add_argument("--body", default="bos", help="Body (default bos)")
+
+    # advisor
+    sp_adv = sub.add_parser("advisor", help="Search for an executive session advisor")
+    sp_adv.add_argument("name", help="Advisor name")
 
     return p.parse_args(argv)
 
@@ -852,6 +958,14 @@ def main(argv=None):
         "cases": cmd_cases,
         "case": cmd_case,
         "case-history": cmd_case_history,
+        "split-votes": cmd_split_votes,
+        "dissent": cmd_dissent,
+        "member-votes": cmd_member_votes,
+        "no-vote": cmd_no_vote,
+        "attendance": cmd_attendance,
+        "meeting-attendance": cmd_meeting_attendance,
+        "executive-participants": cmd_executive_participants,
+        "advisor": cmd_advisor,
     }
 
     handler = dispatch.get(args.command)

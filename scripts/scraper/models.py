@@ -26,6 +26,10 @@ class Meeting:
             m = re.search(r"[?&]ID=(\d+)", url or "", re.I)
             if m:
                 return m.group(1)
+            # Synthetic date-based ID: ?meeting=YYYY-MM-DD
+            m = re.search(r"[?&]meeting=(\d{4}-\d{2}-\d{2})", url or "")
+            if m:
+                return m.group(1)
             # PZ format: /Agenda/_04232026-3722?html=true  or  /Agenda/3734
             m = re.search(r"/Agenda/[^/]*-(\d{3,})", url or "")
             if m:

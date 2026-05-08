@@ -98,6 +98,16 @@ def get_distinct_meeting_types(body=None):
     if body and body.lower() != "all":
         if body.lower() in ("bz", "pz", "planning"):
             q = q.where(Meeting.body == "pz")
+        elif body.lower() in ("adj", "board of adjustment"):
+            q = q.where(Meeting.body == "adj")
+        elif body.lower() in ("drain", "drainage", "drb"):
+            q = q.where(Meeting.body == "drain")
+        elif body.lower() in ("health", "board of health", "boh"):
+            q = q.where(Meeting.body == "health")
+        elif body.lower() in ("tab", "transportation advisory board"):
+            q = q.where(Meeting.body == "tab")
+        elif body.lower() in ("ida", "industrial development authority"):
+            q = q.where(Meeting.body == "ida")
         else:
             q = q.where(Meeting.body == "bos")
     rows = session.execute(q).scalars().all()
@@ -126,6 +136,16 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
     if body and body.lower() != "all":
         if body.lower() in ("bz", "pz", "planning"):
             base_q = base_q.where(Meeting.body == "pz")
+        elif body.lower() in ("adj", "board of adjustment"):
+            base_q = base_q.where(Meeting.body == "adj")
+        elif body.lower() in ("drain", "drainage", "drb"):
+            base_q = base_q.where(Meeting.body == "drain")
+        elif body.lower() in ("health", "board of health", "boh"):
+            base_q = base_q.where(Meeting.body == "health")
+        elif body.lower() in ("tab", "transportation advisory board"):
+            base_q = base_q.where(Meeting.body == "tab")
+        elif body.lower() in ("ida", "industrial development authority"):
+            base_q = base_q.where(Meeting.body == "ida")
         else:
             base_q = base_q.where(Meeting.body == "bos")
 
@@ -157,14 +177,19 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
     meetings_list = []
     for row in rows:
         is_pz = (row.body or "") == "pz"
+        is_adj = (row.body or "") == "adj"
+        is_drain = (row.body or "") == "drain"
+        is_health = (row.body or "") == "health"
+        is_tab = (row.body or "") == "tab"
+        is_ida = (row.body or "") == "ida"
         meetings_list.append({
             "body": row.body or "bos",
             "meeting_id": row.meeting_id,
             "meeting_date": row.meeting_date or "",
             "meeting_type": row.meeting_type or "",
             "title": row.meeting_title or row.display_name or row.meeting_id,
-            "source": "PZ" if is_pz else "BOS",
-            "source_badge": "secondary" if is_pz else "primary",
+            "source": "IDA" if is_ida else ("TAB" if is_tab else ("BOH" if is_health else ("DRB" if is_drain else ("ADJ" if is_adj else ("PZ" if is_pz else "BOS"))))),
+            "source_badge": "light" if is_ida else ("warning" if is_tab else ("success" if is_health else ("info" if is_drain else ("dark" if is_adj else ("secondary" if is_pz else "primary"))))),
             "sync_status": row.sync_status or "pending",
             "badge_class": SYNC_STATUS_BADGES.get((row.sync_status or "").lower(), "secondary"),
             "item_count": row.item_count,

@@ -333,3 +333,416 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
     return supervisors, votes
 
 
+# ────────────────────────────────────────────────────────────────────────
+# Synchronous vote analysis helpers (no Playwright dependency)
+# ────────────────────────────────────────────────────────────────────────
+
+
+def detect_split_vote(supervisor_votes: list[dict]) -> dict:
+    """Analyze a list of supervisor vote dicts and return vote attributes.
+
+    Returns a dict with:
+        is_split_vote (bool): True if ayes and nays both present
+        unanimous (bool): True if all substantive votes are the same
+        majority_position (str): "yes"|"no"|"tie"|"unknown"
+        dissenters (list[str]): names of members voting against the majority
+
+    Only "yes" and "no" votes are considered substantive.
+    "abstain", "recused", "absent", "not_voting" are excluded.
+    """
+    substantive = [
+        sv for sv in supervisor_votes
+        if sv.get("vote") in ("yes", "no")
+    ]
+    if not substantive:
+        return {
+            "is_split_vote": False,
+            "unanimous": None,
+            "majority_position": "unknown",
+            "dissenters": [],
+        }
+
+    vote_set = {sv["vote"] for sv in substantive}
+    is_split = len(vote_set) > 1
+    unanimous = len(vote_set) == 1
+
+    yes_count = sum(1 for sv in substantive if sv["vote"] == "yes")
+    no_count = sum(1 for sv in substantive if sv["vote"] == "no")
+
+    if yes_count > no_count:
+        majority = "yes"
+    elif no_count > yes_count:
+        majority = "no"
+    else:
+        majority = "tie"
+
+    dissenters = []
+    if majority not in ("tie", "unknown"):
+        for sv in substantive:
+            if sv["vote"] != majority:
+                name = sv.get("name", "") or sv.get("normalized_name", "")
+                if name:
+                    dissenters.append(name)
+
+    return {
+        "is_split_vote": is_split,
+        "unanimous": unanimous,
+        "majority_position": majority,
+        "dissenters": dissenters,
+    }
+
+
+def flag_dissent_in_votes(votes: list[dict]) -> list[dict]:
+    """Flag dissenting members in each vote's supervisor_votes sub-list.
+
+    Mutates each vote dict's supervisor_votes entries in-place, adding
+    'is_dissent': True/False to each supervisor_vote sub-dict.
+
+    Returns the same votes list for convenience.
+    """
+    for vote in votes:
+        sv_list = vote.get("supervisor_votes", [])
+        if not sv_list:
+            continue
+        analysis = detect_split_vote(sv_list)
+        majority = analysis["majority_position"]
+        if majority in ("tie", "unknown"):
+            continue
+        for sv in sv_list:
+            if sv.get("vote") in ("yes", "no") and sv["vote"] != majority:
+                sv["is_dissent"] = True
+            else:
+                sv.setdefault("is_dissent", False)
+    return votes
+
+
+def infer_absence(
+    known_members: list[dict],
+    vote_records_with_members: list[list[dict]],
+) -> list[dict]:
+    """Infer absences when known members never vote in a meeting.
+
+    Args:
+        known_members: List of dicts with 'normalized_name' key for all
+                       expected participants of a meeting.
+        vote_records_with_members: List of lists, each inner list being the
+                                   supervisor_votes for one agenda item.
+
+    Returns:
+        List of dicts:
+            {"normalized_name": str, "attendance_status": "inferred_absent",
+             "inference_method": "other_members_voted_but_member_did_not"}
+
+    IMPORTANT: Never present inferred absence as confirmed absence.
+    """
+    # Collect all members who cast a vote in ANY item
+    all_voted_normalized: set[str] = set()
+    for sv_list in vote_records_with_members:
+        for sv in sv_list:
+            nrm = sv.get("normalized_name", "")
+            if nrm:
+                all_voted_normalized.add(nrm)
+
+    absent: list[dict] = []
+    for member in known_members:
+        nrm = member.get("normalized_name", "")
+        if not nrm:
+            continue
+        if nrm not in all_voted_normalized:
+            absent.append({
+                "normalized_name": nrm,
+                "name": member.get("name", ""),
+                "attendance_status": "inferred_absent",
+                "inference_method": "other_members_voted_but_member_did_not",
+            })
+    return absent
+
+
+def classify_vote_result(votes: list[dict]) -> dict:
+    """Classify a meeting's vote results.
+
+    Returns aggregate stats:
+        total_items: int
+        split_items: int
+        unanimous_items: int
+        items_with_dissent: int
+        items_with_no_substantive_votes: int
+    """
+    total = len(votes)
+    split_count = 0
+    unanimous_count = 0
+    dissent_count = 0
+    no_vote_count = 0
+
+    for vote in votes:
+        sv_list = vote.get("supervisor_votes", [])
+        if not sv_list:
+            no_vote_count += 1
+            continue
+        analysis = detect_split_vote(sv_list)
+        if analysis["unanimous"]:
+            unanimous_count += 1
+        elif analysis["is_split_vote"]:
+            split_count += 1
+        if analysis["dissenters"]:
+            dissent_count += 1
+        if analysis["majority_position"] == "unknown":
+            no_vote_count += 1
+
+    return {
+        "total_items": total,
+        "split_items": split_count,
+        "unanimous_items": unanimous_count,
+        "items_with_dissent": dissent_count,
+        "items_with_no_substantive_votes": no_vote_count,
+    }
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Executive session participant extraction
+# ────────────────────────────────────────────────────────────────────────
+
+
+_KNOWN_EXECUTIVE_ADVISORS: dict[str, dict] = {
+    # Pattern: normalized_name -> (raw_name, role, organization, participation_type)
+    # Known from previous BOS Executive session data
+    "kory langhofer": ("Kory Langhofer", "Outside Counsel", "Brownstein Hyatt Farber Schreck", "outside_counsel"),
+    "kim miles": ("Kim Miles", "Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "justin ryan": ("Justin Ryan", "Senior Assistant County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "justin a. ryan": ("Justin A. Ryan", "Senior Assistant County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "justin andrew ryan": ("Justin Andrew Ryan", "Senior Assistant County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "john doe": ("John Doe", "Assistant County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "laura wright": ("Laura Wright", "Assistant County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "laura l. wright": ("Laura L. Wright", "Assistant County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "raymond sloan": ("Raymond Sloan", "Deputy County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "ray sloan": ("Ray Sloan", "Deputy County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "jennifer cox": ("Jennifer Cox", "Deputy County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "michelle willett": ("Michelle Willett", "Deputy County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "james johnson": ("James Johnson", "Assistant County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "james n. johnson": ("James N. Johnson", "Assistant County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "thomas hamilton": ("Thomas Hamilton", "Deputy County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "john k. davis": ("John K. Davis", "Deputy County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "josh d. hook": ("Josh D. Hook", "Deputy County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "josh hook": ("Josh Hook", "Deputy County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "william m. ring": ("William M. Ring", "Deputy County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "william ring": ("William Ring", "Deputy County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "bill ring": ("Bill Ring", "Deputy County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "michael k. goodwin": ("Michael K. Goodwin", "Outside Counsel", "Goodwin & Associates", "outside_counsel"),
+    "michael goodwin": ("Michael Goodwin", "Outside Counsel", "Goodwin & Associates", "outside_counsel"),
+    "thomas holmes": ("Thomas Holmes", "Outside Counsel", "Holmes & Associates", "outside_counsel"),
+    "jeffrey sanders": ("Jeffrey Sanders", "Assistant County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "christina golden": ("Christina Golden", "Assistant County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "stephen reed": ("Stephen Reed", "Deputy County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "rebecca mueller": ("Rebecca Mueller", "Assistant County Attorney", "Maricopa County Attorney's Office", "legal_counsel"),
+    "mark richardson": ("Mark Richardson", "Chief of Staff", "Board of Supervisors", "staff"),
+    "jerry johnson": ("Jerry Johnson", "County Manager", "Maricopa County", "staff"),
+    "david cook": ("David Cook", "County Manager", "Maricopa County", "staff"),
+    "kathleen o'neill": ("Kathleen O'Neill", "Deputy County Manager", "Maricopa County", "staff"),
+    "jennifer larson": ("Jennifer Larson", "Chief Financial Officer", "Maricopa County", "staff"),
+}
+
+# Pattern: (raw_label_string, participation_type) for common role indicators
+_EXECUTIVE_ROLE_PATTERNS: list[tuple[str, str]] = [
+    (r"Attorney(?: for| of)?:?", "legal_counsel"),
+    (r"Counsel(?: for| of)?:?", "legal_counsel"),
+    (r"Legal Counsel", "legal_counsel"),
+    (r"Assistant County Attorney", "legal_counsel"),
+    (r"Deputy County Attorney", "legal_counsel"),
+    (r"Outside Counsel", "outside_counsel"),
+    (r"Special Counsel", "outside_counsel"),
+    (r"Present(?:ed)? (?:by|By):?", "presented"),
+    (r"Presenting", "presented"),
+    (r"Staff(?: Advisor)?:?", "staff"),
+    (r"Advisor:?", "advised"),
+    (r"Advising", "advised"),
+    (r"County Manager", "staff"),
+    (r"Deputy County Manager", "staff"),
+    (r"Chief of Staff", "staff"),
+]
+
+
+def extract_executive_session_participants(
+    agenda_items: list[dict],
+    meeting_id: str,
+    source_url: str = "",
+    body: str = "bos",
+) -> list[dict]:
+    """Extract executive session participants from BOS Executive meeting agenda items.
+
+    Scans all agenda items for known advisor names and role patterns.
+    Applies a known-name lookup for frequently-encountered attorneys and staff,
+    then falls back to regex-based extraction for unknown names.
+
+    Args:
+        agenda_items: List of agenda item dicts with "agenda_item_text" and
+                     "agenda_item_number" keys.
+        meeting_id: The meeting ID.
+        source_url: The meeting source URL.
+        body: Body identifier (default "bos").
+
+    Returns:
+        List of dicts suitable for inserting into executive_session_participants.
+    """
+    participants: list[dict] = []
+    seen: set[str] = set()
+
+    for item in agenda_items:
+        item_num = item.get("agenda_item_number")
+        text = item.get("agenda_item_text", "") or item.get("agenda_item_title", "") or ""
+        if not text:
+            continue
+
+        item_participants = _extract_participants_from_text(
+            text, item_num, source_url
+        )
+        for p in item_participants:
+            # Deduplicate by normalized_name within this meeting
+            norm = p["normalized_name"]
+            key = f"{norm}:{item_num or ''}"
+            if key not in seen:
+                seen.add(key)
+                participants.append({
+                    "body": body,
+                    "meeting_id": meeting_id,
+                    "person_name": p["person_name"],
+                    "normalized_name": norm,
+                    "role_or_title": p.get("role_or_title"),
+                    "organization": p.get("organization"),
+                    "participation_type": p.get("participation_type", "unknown"),
+                    "agenda_item_number": item_num,
+                    "source_text": p.get("source_text", "")[:500],
+                    "source_url": source_url,
+                })
+
+    return participants
+
+
+def _extract_participants_from_text(
+    text: str,
+    item_number: int | None = None,
+    source_url: str = "",
+) -> list[dict]:
+    """Extract participants from a single block of text."""
+    participants: list[dict] = []
+    seen_names: set[str] = set()
+
+    # First pass: match known advisors by name
+    for norm, (raw_name, role, org, ptype) in _KNOWN_EXECUTIVE_ADVISORS.items():
+        # Check if the name appears in the text
+        for variant in [raw_name, norm.title(), norm]:
+            pattern = re.escape(variant)
+            m = re.search(pattern, text, re.I)
+            if m:
+                if norm not in seen_names:
+                    seen_names.add(norm)
+                    context_start = max(0, m.start() - 60)
+                    context_end = min(len(text), m.end() + 60)
+                    context = text[context_start:context_end].strip()
+                    participants.append({
+                        "person_name": raw_name,
+                        "normalized_name": norm,
+                        "role_or_title": role,
+                        "organization": org,
+                        "participation_type": ptype,
+                        "source_text": context,
+                    })
+                break
+
+    # Second pass: look for role-labeled names like "Attorney: John Smith"
+    # Only capture names NOT already found in the first pass
+    # Uses word-by-word extraction to avoid regex greedy-matching issues
+    # that cause the pattern to consume text past name boundaries.
+    #
+    # A "name candidate" is a sequence of words where each word starts
+    # with an uppercase letter followed by lowercase letters.
+    # The name must be preceded by a role pattern.
+
+    # Build a set of positions already covered by known-name extraction
+    covered_ranges: list[tuple[int, int]] = []
+    for p in participants:
+        norm = p["normalized_name"]
+        idx = text.lower().find(norm)
+        if idx >= 0:
+            covered_ranges.append((idx, idx + len(norm)))
+
+    def _is_covered(pos: int) -> bool:
+        for s, e in covered_ranges:
+            if s <= pos < e:
+                return True
+        return False
+
+    _name_word_re = re.compile(r"[A-Z][a-z']+")
+    _role_label = re.compile(
+        r"(" + "|".join(pattern for pattern, _ in _EXECUTIVE_ROLE_PATTERNS) + r")",
+        re.I
+    )
+
+    # Find all words that could be name words
+    all_matches = [(m.start(), m.end(), m.group()) for m in _name_word_re.finditer(text)]
+
+    # Check each word as a potential name start
+    for i in range(len(all_matches)):
+        word_start, word_end, word = all_matches[i]
+
+        # Skip if this word is inside an already-covered range (known name match)
+        if _is_covered(word_start):
+            continue
+
+        # Collect consecutive uppercase-starting words
+        name_span_end = word_end
+        j = i + 1
+        while j < len(all_matches):
+            between = text[name_span_end:all_matches[j][0]]
+            if re.match(r"^\s+$", between):
+                name_span_end = all_matches[j][1]
+                j += 1
+            else:
+                break
+
+        name_text = text[word_start:name_span_end].strip()
+        if not name_text:
+            continue
+        norm = re.sub(r"[^a-z0-9]+", " ", name_text.lower()).strip()
+        if not norm or len(norm) < 5 or norm in seen_names:
+            continue
+
+        # Check if a role label appears within ~50 chars before this name
+        search_start = max(0, word_start - 50)
+        before_text = text[search_start:word_start]
+        role_match = _role_label.search(before_text, re.I)
+        if not role_match:
+            continue
+
+        # Found a role-labeled name
+        role_label = role_match.group(0).strip()
+        seen_names.add(norm)
+
+        ptype = "unknown"
+        for pat, pt in _EXECUTIVE_ROLE_PATTERNS:
+            if re.search(pat, role_label, re.I):
+                ptype = pt
+                break
+
+        if norm in _KNOWN_EXECUTIVE_ADVISORS:
+            raw_name, role, org, known_ptype = _KNOWN_EXECUTIVE_ADVISORS[norm]
+            participants.append({
+                "person_name": raw_name,
+                "normalized_name": norm,
+                "role_or_title": role,
+                "organization": org,
+                "participation_type": known_ptype,
+                "source_text": text[search_start:name_span_end].strip()[:200],
+            })
+        else:
+            participants.append({
+                "person_name": name_text,
+                "normalized_name": norm,
+                "role_or_title": role_label,
+                "organization": None,
+                "participation_type": ptype,
+                "source_text": text[search_start:name_span_end].strip()[:200],
+            })
+
+    return participants
+
+

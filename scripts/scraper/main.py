@@ -230,10 +230,70 @@ async def main() -> int:
         print("Database tables created.")
         return 0
 
-    if args.source == "pz" and args.sync:
+    if args.source in ("pz", "adj", "drain", "health", "tab", "ida") and args.sync:
         from db import get_session, init_db, replace_meeting_data_safe
 
         init_db()
+
+        # Source-specific dispatch
+        if args.source == "pz":
+            CID = "9,"
+            source_body = "pz"
+            source_type = "Planning & Zoning"
+            source_label = "P&Z"
+            from scraper.pz import build_pz_search_url as build_search_url_fn
+            from scraper.pz import extract_pz_meetings as extract_meetings_fn
+            from scraper.pz import extract_pz_agenda_items as extract_items_fn
+            from scraper.pz import _format_mm_dd_yyyy as fmt_date_fn
+            from scraper.pz import _normalize_pz_meeting_title as normalize_title_fn
+        elif args.source == "adj":
+            CID = "3,"
+            source_body = "adj"
+            source_type = "Board of Adjustment"
+            source_label = "ADJ"
+            from scraper.adj import build_adj_search_url as build_search_url_fn
+            from scraper.adj import extract_adj_meetings as extract_meetings_fn
+            from scraper.adj import extract_adj_agenda_items as extract_items_fn
+            from scraper.adj import _format_mm_dd_yyyy as fmt_date_fn
+            from scraper.adj import _normalize_adj_meeting_title as normalize_title_fn
+        elif args.source == "drain":
+            CID = "19,"
+            source_body = "drain"
+            source_type = "Drainage Review Board"
+            source_label = "DRB"
+            from scraper.drain import build_drain_search_url as build_search_url_fn
+            from scraper.drain import extract_drain_meetings as extract_meetings_fn
+            from scraper.drain import extract_drain_agenda_items as extract_items_fn
+            from scraper.drain import _format_mm_dd_yyyy as fmt_date_fn
+        elif args.source == "health":
+            CID = "13,"
+            source_body = "health"
+            source_type = "Board of Health"
+            source_label = "BOH"
+            from scraper.health import build_health_search_url as build_search_url_fn
+            from scraper.health import extract_health_meetings as extract_meetings_fn
+            from scraper.health import extract_health_agenda_items as extract_items_fn
+            from scraper.health import _format_mm_dd_yyyy as fmt_date_fn
+        elif args.source == "tab":
+            CID = "11,"
+            source_body = "tab"
+            source_type = "Transportation Advisory Board"
+            source_label = "TAB"
+            from scraper.tab import build_tab_search_url as build_search_url_fn
+            from scraper.tab import extract_tab_meetings as extract_meetings_fn
+            from scraper.tab import extract_tab_agenda_items as extract_items_fn
+            from scraper.tab import _format_mm_dd_yyyy as fmt_date_fn
+        elif args.source == "ida":
+            CID = ""
+            source_body = "ida"
+            source_type = "Industrial Development Authority"
+            source_label = "IDA"
+            from scraper.ida import extract_ida_meetings as extract_meetings_fn
+            from scraper.ida import extract_ida_agenda_items as extract_items_fn
+
+            # IDA is a static page — no search URL or date formatting needed
+            def fmt_date_fn(x): return x
+            def build_search_url_fn(start, end): return "https://mcida.com/about-us/public-meetings/"
 
         # If --meeting-id is provided, bypass search and use direct meeting URL
         if args.meeting_id:
@@ -244,7 +304,7 @@ async def main() -> int:
             db_session = get_session()
             existing = db_session.execute(
                 select(MeetingModel).where(
-                    MeetingModel.body == "pz",
+                    MeetingModel.body == source_body,
                     MeetingModel.meeting_id == meeting_id,
                 )
             ).scalar_one_or_none()
@@ -256,42 +316,55 @@ async def main() -> int:
                 agenda_url = existing.source_url
                 meeting_date = existing.meeting_date or ""
                 meeting_title = existing.meeting_title or ""
-                print(f"Found existing P&Z meeting {meeting_id} in database")
+                print(f"Found existing {source_label} meeting {meeting_id} in database")
             else:
                 # Construct a best-guess URL. Agenda Center HTML pages use
                 # ViewFile/Agenda/<id>?html=true
-                agenda_url = f"https://www.maricopa.gov/AgendaCenter/ViewFile/Agenda/{meeting_id}?html=true"
+                if source_body in ("drain", "health", "tab"):
+                    agenda_url = f"https://mcdot.maricopa.gov/AgendaCenter/ViewFile/Agenda/{meeting_id}?html=true"
+                elif source_body == "ida":
+                    agenda_url = ""  # IDA uses date-based IDs; agenda_url comes from re-fetching the page
+                else:
+                    agenda_url = f"https://www.maricopa.gov/AgendaCenter/ViewFile/Agenda/{meeting_id}?html=true"
             db_session.close()
 
-            clean_title, clean_type = _normalize_pz_meeting_title(
-                meeting_title, "Planning & Zoning"
-            )
+            if args.source == "pz":
+                clean_title, clean_type = normalize_title_fn(
+                    meeting_title, source_type
+                )
+            elif args.source == "adj":
+                clean_title = normalize_title_fn(meeting_title)
+                clean_type = source_type
+            else:
+                clean_title = meeting_title
+                clean_type = source_type
+
             pz_meetings = [Meeting(
                 meeting_date=meeting_date,
                 meeting_time="",
                 meeting_title=clean_title,
                 meeting_type=clean_type,
-                body="pz",
+                body=source_body,
                 row_text="",
                 detail_url="",
                 agenda_url=agenda_url,
             )]
-            print(f"Syncing P&Z meeting {meeting_id}...")
+            print(f"Syncing {source_label} meeting {meeting_id}...")
         else:
             now = dt.date.today()
             if args.start_date:
-                pz_start = _format_mm_dd_yyyy(args.start_date) or f"{now.month:02d}/01/{now.year}"
+                pz_start = fmt_date_fn(args.start_date) or f"{now.month:02d}/01/{now.year}"
             else:
                 three_months_ago = now - dt.timedelta(days=90)
                 pz_start = f"{three_months_ago.month:02d}/01/{three_months_ago.year}"
 
             if args.end_date:
-                pz_end = _format_mm_dd_yyyy(args.end_date) or f"{now.month:02d}/{min(28, now.day):02d}/{now.year}"
+                pz_end = fmt_date_fn(args.end_date) or f"{now.month:02d}/{min(28, now.day):02d}/{now.year}"
             else:
                 pz_end = f"{now.month:02d}/{min(28, now.day):02d}/{now.year}"
 
-            search_url = build_pz_search_url(pz_start, pz_end)
-            print(f"P&Z search URL: {search_url}")
+            search_url = build_search_url_fn(pz_start, pz_end)
+            print(f"{source_label} search URL: {search_url}")
 
         async_playwright = get_async_playwright()
         async with async_playwright() as p:
@@ -303,16 +376,16 @@ async def main() -> int:
                     # Skip search when --meeting-id is provided; list already built above
                     pass
                 else:
-                    pz_meetings = await extract_pz_meetings(page, search_url)
+                    pz_meetings = await extract_meetings_fn(page, search_url)
 
                     if not pz_meetings:
-                        print(f"No P&Z meetings found.")
+                        print(f"No {source_label} meetings found.")
                         return 0
 
                 if args.limit:
                     pz_meetings = pz_meetings[:args.limit]
 
-                print(f"Found {len(pz_meetings)} P&Z meeting(s)")
+                print(f"Found {len(pz_meetings)} {source_label} meeting(s)")
 
                 session = get_session()
                 total = 0
@@ -327,7 +400,7 @@ async def main() -> int:
                         "source_url": meeting.agenda_url,
                     }
 
-                    items = await extract_pz_agenda_items(page, meeting.agenda_url)
+                    items = await extract_items_fn(page, meeting.agenda_url)
 
                     # extract_pz_agenda_items now returns real items from the PDF
                     # with supporting_doc_dicts already set. We just need to fix
@@ -348,175 +421,177 @@ async def main() -> int:
                             supporting_doc_dicts=docs,
                         )
 
-                        # Persist PZ item details to database
-                        from db import PZItemDetail, AgendaItem
-                        from sqlalchemy import select
-                        try:
-                            # Delete old details for this meeting
-                            session.execute(
-                                PZItemDetail.__table__.delete().where(
-                                    PZItemDetail.body == meeting.body,
-                                    PZItemDetail.meeting_id == meeting.meeting_id,
+                        # Persist item details (PZ-specific) to database
+                        if args.source == "pz":
+                            from db import PZItemDetail, AgendaItem
+                            from sqlalchemy import select
+                            try:
+                                # Delete old details for this meeting
+                                session.execute(
+                                    PZItemDetail.__table__.delete().where(
+                                        PZItemDetail.body == meeting.body,
+                                        PZItemDetail.meeting_id == meeting.meeting_id,
+                                    )
                                 )
-                            )
-                            # Look up agenda item DB IDs after persist
-                            db_items = {
-                                row.agenda_item_number: row.id
-                                for row in session.execute(
-                                    select(AgendaItem.id, AgendaItem.agenda_item_number)
-                                    .where(
-                                        AgendaItem.body == meeting.body,
-                                        AgendaItem.meeting_id == meeting.meeting_id,
-                                    )
-                                ).all()
-                            }
-                            # Insert new details
-                            for it in items:
-                                if it.get("pz_project_name"):
-                                    item_num = int(it.get("agenda_item_number", 0))
-                                    detail = PZItemDetail(
-                                        body=meeting.body,
-                                        agenda_item_id=db_items.get(item_num),
-                                        meeting_id=meeting.meeting_id,
-                                        agenda_item_number=item_num,
-                                        case_number=it.get("case_number", ""),
-                                        district=it.get("pz_district"),
-                                        project_name=it.get("pz_project_name"),
-                                        applicant=it.get("pz_applicant"),
-                                        request=it.get("pz_request"),
-                                        location=it.get("pz_location"),
-                                        recommendation=it.get("pz_recommendation"),
-                                        presented_by=it.get("pz_presented_by"),
-                                        staff_report_url=it.get("staff_report_url"),
-                                    )
-                                    session.add(detail)
-                            session.commit()
-                        except Exception as pz_err:
-                            print(f"    PZ detail persist skipped: {pz_err}")
-                            session.rollback()
+                                # Look up agenda item DB IDs after persist
+                                db_items = {
+                                    row.agenda_item_number: row.id
+                                    for row in session.execute(
+                                        select(AgendaItem.id, AgendaItem.agenda_item_number)
+                                        .where(
+                                            AgendaItem.body == meeting.body,
+                                            AgendaItem.meeting_id == meeting.meeting_id,
+                                        )
+                                    ).all()
+                                }
+                                # Insert new details
+                                for it in items:
+                                    if it.get("pz_project_name"):
+                                        item_num = int(it.get("agenda_item_number", 0))
+                                        detail = PZItemDetail(
+                                            body=meeting.body,
+                                            agenda_item_id=db_items.get(item_num),
+                                            meeting_id=meeting.meeting_id,
+                                            agenda_item_number=item_num,
+                                            case_number=it.get("case_number", ""),
+                                            district=it.get("pz_district"),
+                                            project_name=it.get("pz_project_name"),
+                                            applicant=it.get("pz_applicant"),
+                                            request=it.get("pz_request"),
+                                            location=it.get("pz_location"),
+                                            recommendation=it.get("pz_recommendation"),
+                                            presented_by=it.get("pz_presented_by"),
+                                            staff_report_url=it.get("staff_report_url"),
+                                        )
+                                        session.add(detail)
+                                session.commit()
+                            except Exception as pz_err:
+                                print(f"    PZ detail persist skipped: {pz_err}")
+                                session.rollback()
 
                         total += len(items)
                         doc_summary = f", {len(docs)} doc(s)" if docs else ""
 
-                        # ── PZ Minutes / Votes extraction ──
+                        # ── PZ Minutes / Votes extraction (PZ-specific only) ──
                         vote_summary = ""
-                        minutes_url = meeting.agenda_url.replace(
-                            "/Agenda/", "/Minutes/"
-                        ).replace("?html=true", "")
-                        try:
-                            import urllib.request
-                            from pathlib import Path
-                            from scraper.pz_minutes import parse_pz_minutes_pdf
-                            from db import persist_votes
+                        if args.source == "pz":
+                            minutes_url = meeting.agenda_url.replace(
+                                "/Agenda/", "/Minutes/"
+                            ).replace("?html=true", "")
+                            try:
+                                import urllib.request
+                                from pathlib import Path
+                                from scraper.pz_minutes import parse_pz_minutes_pdf
+                                from db import persist_votes
 
-                            pdf_req = urllib.request.Request(
-                                minutes_url,
-                                headers={"User-Agent":
-                                    "Mozilla/5.0 (compatible; MaricopaAgendaBot)"},
-                            )
-                            with urllib.request.urlopen(pdf_req, timeout=30) as pdf_resp:
-                                pdf_path = Path(f"/tmp/pz_min_{meeting.meeting_id}.pdf")
-                                pdf_path.write_bytes(pdf_resp.read())
+                                pdf_req = urllib.request.Request(
+                                    minutes_url,
+                                    headers={"User-Agent":
+                                        "Mozilla/5.0 (compatible; MaricopaAgendaBot)"},
+                                )
+                                with urllib.request.urlopen(pdf_req, timeout=30) as pdf_resp:
+                                    pdf_path = Path(f"/tmp/pz_min_{meeting.meeting_id}.pdf")
+                                    pdf_path.write_bytes(pdf_resp.read())
 
-                            minutes_data = parse_pz_minutes_pdf(str(pdf_path))
-                            pdf_path.unlink(missing_ok=True)
+                                minutes_data = parse_pz_minutes_pdf(str(pdf_path))
+                                pdf_path.unlink(missing_ok=True)
 
-                            if not minutes_data.get("votes"):
-                                vote_summary = ", votes=none"
-                            else:
-                                supervisors: list[dict] = [
-                                    {"name": name,
-                                     "normalized_name": name.lower(),
-                                     "present": True}
-                                    for name in minutes_data["members_present"]
-                                ]
-                                supervisors.extend([
-                                    {"name": name,
-                                     "normalized_name": name.lower(),
-                                     "present": False}
-                                    for name in minutes_data["members_absent"]
-                                ])
-
-                                votes_list: list[dict] = []
-                                aye_names_lower = set()
-                                nay_names_lower = set()
-
-                                for v in minutes_data["votes"]:
-                                    aye_names_lower = {
-                                        n.lower() for n in v.get("ayes", []) if n
-                                    }
-                                    nay_names_lower = {
-                                        n.lower() for n in v.get("nays", []) if n
-                                    }
-
-                                    for cn in v.get("c_numbers", []):
-                                        matched_num = 0
-                                        for it in items:
-                                            it_case = (
-                                                it.get("case_number") or
-                                                it.get("c_number") or ""
-                                            ).upper()
-                                            if it_case == cn.upper():
-                                                matched_num = int(
-                                                    it.get("agenda_item_number", 0)
-                                                )
-                                                break
-
-                                        if not matched_num:
-                                            continue
-
-                                        supervisor_votes = []
-                                        for sup in supervisors:
-                                            name_lower = sup["normalized_name"]
-                                            name_words = set(name_lower.split())
-                                            voted_aye = bool(name_words & aye_names_lower)
-                                            voted_nay = bool(name_words & nay_names_lower)
-                                            if voted_aye and not voted_nay:
-                                                supervisor_votes.append({
-                                                    "name": sup["name"],
-                                                    "vote": "aye",
-                                                })
-                                            elif voted_nay and not voted_aye:
-                                                supervisor_votes.append({
-                                                    "name": sup["name"],
-                                                    "vote": "nay",
-                                                })
-
-                                        votes_list.append({
-                                            "agenda_item_number": matched_num,
-                                            "c_number": cn,
-                                            "motion_result":
-                                                v.get("motion_result", "unknown"),
-                                            "vote_text": v.get("vote_text", ""),
-                                            "conditions": v.get("conditions"),
-                                            "supervisor_votes": supervisor_votes,
-                                        })
-
-                                if votes_list:
-                                    vote_session = get_session()
-                                    try:
-                                        vote_count = persist_votes(
-                                            vote_session, meeting.body,
-                                            meeting.meeting_id,
-                                            supervisors, votes_list,
-                                        )
-                                        vote_summary = f", votes={vote_count}"
-                                    finally:
-                                        vote_session.close()
+                                if not minutes_data.get("votes"):
+                                    vote_summary = ", votes=none"
                                 else:
-                                    vote_summary = ", votes=0(unmatched)"
-                        except urllib.error.HTTPError as e:
-                            vote_summary = ", votes=na" if e.code == 404 \
-                                else f", votes=error({e.code})"
-                        except Exception as ve:
-                            vote_summary = f", votes=error"
+                                    supervisors: list[dict] = [
+                                        {"name": name,
+                                         "normalized_name": name.lower(),
+                                         "present": True}
+                                        for name in minutes_data["members_present"]
+                                    ]
+                                    supervisors.extend([
+                                        {"name": name,
+                                         "normalized_name": name.lower(),
+                                         "present": False}
+                                        for name in minutes_data["members_absent"]
+                                    ])
+
+                                    votes_list: list[dict] = []
+                                    aye_names_lower = set()
+                                    nay_names_lower = set()
+
+                                    for v in minutes_data["votes"]:
+                                        aye_names_lower = {
+                                            n.lower() for n in v.get("ayes", []) if n
+                                        }
+                                        nay_names_lower = {
+                                            n.lower() for n in v.get("nays", []) if n
+                                        }
+
+                                        for cn in v.get("c_numbers", []):
+                                            matched_num = 0
+                                            for it in items:
+                                                it_case = (
+                                                    it.get("case_number") or
+                                                    it.get("c_number") or ""
+                                                ).upper()
+                                                if it_case == cn.upper():
+                                                    matched_num = int(
+                                                        it.get("agenda_item_number", 0)
+                                                    )
+                                                    break
+
+                                            if not matched_num:
+                                                continue
+
+                                            supervisor_votes = []
+                                            for sup in supervisors:
+                                                name_lower = sup["normalized_name"]
+                                                name_words = set(name_lower.split())
+                                                voted_aye = bool(name_words & aye_names_lower)
+                                                voted_nay = bool(name_words & nay_names_lower)
+                                                if voted_aye and not voted_nay:
+                                                    supervisor_votes.append({
+                                                        "name": sup["name"],
+                                                        "vote": "aye",
+                                                    })
+                                                elif voted_nay and not voted_aye:
+                                                    supervisor_votes.append({
+                                                        "name": sup["name"],
+                                                        "vote": "nay",
+                                                    })
+
+                                            votes_list.append({
+                                                "agenda_item_number": matched_num,
+                                                "c_number": cn,
+                                                "motion_result":
+                                                    v.get("motion_result", "unknown"),
+                                                "vote_text": v.get("vote_text", ""),
+                                                "conditions": v.get("conditions"),
+                                                "supervisor_votes": supervisor_votes,
+                                            })
+
+                                    if votes_list:
+                                        vote_session = get_session()
+                                        try:
+                                            vote_count = persist_votes(
+                                                vote_session, meeting.body,
+                                                meeting.meeting_id,
+                                                supervisors, votes_list,
+                                            )
+                                            vote_summary = f", votes={vote_count}"
+                                        finally:
+                                            vote_session.close()
+                                    else:
+                                        vote_summary = ", votes=0(unmatched)"
+                            except urllib.error.HTTPError as e:
+                                vote_summary = ", votes=na" if e.code == 404 \
+                                    else f", votes=error({e.code})"
+                            except Exception as ve:
+                                vote_summary = f", votes=error"
 
                         ts = time.strftime("%H:%M:%S")
                         print(f"{ts} [{idx}/{meeting_count}] {meeting.meeting_id} {meeting.meeting_date}: {len(items)} item(s){doc_summary}{vote_summary}")
 
                 session.close()
                 ts = time.strftime("%H:%M:%S")
-                print(f"{ts} Synced {total} P&Z agenda items across {len(pz_meetings)} meeting(s)")
+                print(f"{ts} Synced {total} {source_label} agenda items across {len(pz_meetings)} meeting(s)")
             finally:
                 await browser.close()
         return 0
@@ -613,8 +688,7 @@ async def main() -> int:
                 "https://mccobagenda.databankcloud.com/AgendaOnline/Meetings/ViewMeeting"
                 f"?id={meeting_id}&doctype=1"
             )
-            print(f"Syncing meeting {meeting_id}...")
-            print(f"  Agenda URL: {source_url}")
+            print(f"Syncing BOS meeting {meeting_id}...")
 
             meeting_dict = {
                 "meeting_id": meeting_id,
@@ -730,39 +804,37 @@ async def main() -> int:
                                 error="Supporting document extraction failed",
                             )
                             session.commit()
-                            print(f"  {meeting_id}: {len(items)} items synced (partial - no supporting docs)")
+                            print(f"  {meeting_id}: {len(items)} items (partial)")
                         else:
                             replace_meeting_data_safe(
                                 session, args.source, meeting_id, meeting_dict, items,
                                 supporting_doc_dicts=docs,
                             )
                             session.commit()
-                            print(f"  {meeting_id}: {len(items)} items, {len(docs)} supporting docs synced")
 
-                        # Extract and persist votes from the summary page
-                        try:
-                            summary_url = source_url.replace("doctype=1", "doctype=3")
-                            from db import persist_votes
-                            vote_items = [
-                                {"agenda_item_number": it.get("agenda_item_number", ""),
-                                 "c_number": it.get("c_number", "")}
-                                for it in items
-                            ]
-                            supervisors, votes = await extract_votes_from_summary(
-                                page, summary_url, vote_items
-                            )
-                            if votes:
-                                vote_count = persist_votes(session, args.source, meeting_id, supervisors, votes)
-                                session.commit()
-                                print(f"  {meeting_id}: {vote_count} vote(s) synced")
-                            elif supervisors:
-                                # Supervisors found but no item votes (display-only meeting)
-                                vote_count = persist_votes(session, args.source, meeting_id, supervisors, votes)
-                                session.commit()
-                                print(f"  {meeting_id}: {len(supervisors)} supervisor(s) present, no item votes")
-                        except Exception as ve:
-                            # Vote extraction is non-critical — don't fail the sync
-                            print(f"  {meeting_id}: vote extraction skipped ({ve})")
+                            # Build summary line
+                            summary_parts = [f"{len(items)} items", f"{len(docs)} docs"]
+
+                            # Extract and persist votes from the summary page
+                            try:
+                                summary_url = source_url.replace("doctype=1", "doctype=3")
+                                from db import persist_votes
+                                vote_items = [
+                                    {"agenda_item_number": it.get("agenda_item_number", ""),
+                                     "c_number": it.get("c_number", "")}
+                                    for it in items
+                                ]
+                                supervisors, votes = await extract_votes_from_summary(
+                                    page, summary_url, vote_items
+                                )
+                                if votes or supervisors:
+                                    vote_count = persist_votes(session, args.source, meeting_id, supervisors, votes)
+                                    session.commit()
+                                    summary_parts.append(f"{vote_count} votes")
+                            except Exception:
+                                pass
+
+                            print(f"  {meeting_id}: {', '.join(summary_parts)}")
 
                     except Exception as e:
                         # Items extraction failed
@@ -1093,6 +1165,37 @@ async def main() -> int:
                                 "%s complete items=%d docs=%d elapsed=%.1fs",
                                 meeting_prefix, len(items), len(docs), time.monotonic() - meeting_t0,
                             )
+
+                            # Extract votes from the summary page
+                            try:
+                                _vote_t0 = time.monotonic()
+                                summary_url = meeting.agenda_url.replace("doctype=1", "doctype=3")
+                                vote_items = [
+                                    {"agenda_item_number": it.get("agenda_item_number", ""),
+                                     "c_number": it.get("c_number", "")}
+                                    for it in items
+                                ]
+                                from db import persist_votes
+                                supervisors, votes = await extract_votes_from_summary(
+                                    page, summary_url, vote_items
+                                )
+                                if votes:
+                                    vote_count = persist_votes(session, args.source, meeting.meeting_id, supervisors, votes)
+                                    log.info(
+                                        "%s votes=%d elapsed=%.1fs",
+                                        meeting_prefix, vote_count, time.monotonic() - _vote_t0,
+                                    )
+                                elif supervisors:
+                                    vote_count = persist_votes(session, args.source, meeting.meeting_id, supervisors, votes)
+                                    log.info(
+                                        "%s no-item-votes supervisors=%d elapsed=%.1fs",
+                                        meeting_prefix, len(supervisors), time.monotonic() - _vote_t0,
+                                    )
+                            except Exception as ve:
+                                log.warning("%s vote-extraction skipped: %s", meeting_prefix, str(ve)[:200])
+                                # Roll back the session so the next meeting doesn't hit PendingRollbackError
+                                session.rollback()
+
                         except Exception as e:
                             update_sync_status(
                                 session, args.source, meeting.meeting_id, "failed",
@@ -1125,6 +1228,7 @@ async def main() -> int:
                 await browser.close()
         return 0
 
+    # Standalone --sync-votes: re-run vote extraction for already-synced meetings
     if args.sync_votes:
         from db import get_session, init_db, persist_votes
 
