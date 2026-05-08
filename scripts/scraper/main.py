@@ -316,8 +316,9 @@ async def main() -> int:
 
                 session = get_session()
                 total = 0
+                meeting_count = len(pz_meetings)
 
-                for meeting in pz_meetings:
+                for idx, meeting in enumerate(pz_meetings, 1):
                     meeting_dict = {
                         "meeting_id": meeting.meeting_id,
                         "meeting_date": meeting.meeting_date,
@@ -396,10 +397,126 @@ async def main() -> int:
 
                         total += len(items)
                         doc_summary = f", {len(docs)} doc(s)" if docs else ""
-                        print(f"  {meeting.meeting_id} {meeting.meeting_date}: {len(items)} item(s){doc_summary}")
+
+                        # ── PZ Minutes / Votes extraction ──
+                        vote_summary = ""
+                        minutes_url = meeting.agenda_url.replace(
+                            "/Agenda/", "/Minutes/"
+                        ).replace("?html=true", "")
+                        try:
+                            import urllib.request
+                            from pathlib import Path
+                            from scraper.pz_minutes import parse_pz_minutes_pdf
+                            from db import persist_votes
+
+                            pdf_req = urllib.request.Request(
+                                minutes_url,
+                                headers={"User-Agent":
+                                    "Mozilla/5.0 (compatible; MaricopaAgendaBot)"},
+                            )
+                            with urllib.request.urlopen(pdf_req, timeout=30) as pdf_resp:
+                                pdf_path = Path(f"/tmp/pz_min_{meeting.meeting_id}.pdf")
+                                pdf_path.write_bytes(pdf_resp.read())
+
+                            minutes_data = parse_pz_minutes_pdf(str(pdf_path))
+                            pdf_path.unlink(missing_ok=True)
+
+                            if not minutes_data.get("votes"):
+                                vote_summary = ", votes=none"
+                            else:
+                                supervisors: list[dict] = [
+                                    {"name": name,
+                                     "normalized_name": name.lower(),
+                                     "present": True}
+                                    for name in minutes_data["members_present"]
+                                ]
+                                supervisors.extend([
+                                    {"name": name,
+                                     "normalized_name": name.lower(),
+                                     "present": False}
+                                    for name in minutes_data["members_absent"]
+                                ])
+
+                                votes_list: list[dict] = []
+                                aye_names_lower = set()
+                                nay_names_lower = set()
+
+                                for v in minutes_data["votes"]:
+                                    aye_names_lower = {
+                                        n.lower() for n in v.get("ayes", []) if n
+                                    }
+                                    nay_names_lower = {
+                                        n.lower() for n in v.get("nays", []) if n
+                                    }
+
+                                    for cn in v.get("c_numbers", []):
+                                        matched_num = 0
+                                        for it in items:
+                                            it_case = (
+                                                it.get("case_number") or
+                                                it.get("c_number") or ""
+                                            ).upper()
+                                            if it_case == cn.upper():
+                                                matched_num = int(
+                                                    it.get("agenda_item_number", 0)
+                                                )
+                                                break
+
+                                        if not matched_num:
+                                            continue
+
+                                        supervisor_votes = []
+                                        for sup in supervisors:
+                                            name_lower = sup["normalized_name"]
+                                            name_words = set(name_lower.split())
+                                            voted_aye = bool(name_words & aye_names_lower)
+                                            voted_nay = bool(name_words & nay_names_lower)
+                                            if voted_aye and not voted_nay:
+                                                supervisor_votes.append({
+                                                    "name": sup["name"],
+                                                    "vote": "aye",
+                                                })
+                                            elif voted_nay and not voted_aye:
+                                                supervisor_votes.append({
+                                                    "name": sup["name"],
+                                                    "vote": "nay",
+                                                })
+
+                                        votes_list.append({
+                                            "agenda_item_number": matched_num,
+                                            "c_number": cn,
+                                            "motion_result":
+                                                v.get("motion_result", "unknown"),
+                                            "vote_text": v.get("vote_text", ""),
+                                            "conditions": v.get("conditions"),
+                                            "supervisor_votes": supervisor_votes,
+                                        })
+
+                                if votes_list:
+                                    vote_session = get_session()
+                                    try:
+                                        vote_count = persist_votes(
+                                            vote_session, meeting.body,
+                                            meeting.meeting_id,
+                                            supervisors, votes_list,
+                                        )
+                                        vote_summary = f", votes={vote_count}"
+                                    finally:
+                                        vote_session.close()
+                                else:
+                                    vote_summary = ", votes=0(unmatched)"
+                        except urllib.error.HTTPError as e:
+                            vote_summary = ", votes=na" if e.code == 404 \
+                                else f", votes=error({e.code})"
+                        except Exception as ve:
+                            vote_summary = f", votes=error"
+
+                        ts = time.strftime("%H:%M:%S")
+                        print(f"{ts} [{idx}/{meeting_count}] {meeting.meeting_id} {meeting.meeting_date}: {len(items)} item(s){doc_summary}{vote_summary}")
 
                 session.close()
-                print(f"Synced {total} P&Z agenda items across {len(pz_meetings)} meeting(s)")
+                ts = time.strftime("%H:%M:%S")
+                print(f"{ts} Synced {total} P&Z agenda items across {len(pz_meetings)} meeting(s)")
             finally:
                 await browser.close()
         return 0

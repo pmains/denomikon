@@ -5,6 +5,7 @@ from scraper.html_utils import *
 from scraper.cli import *
 from scraper.search import *
 from scraper.pz import *
+from scraper.pz_minutes import *
 from scraper.agenda_items import *
 from scraper.supporting_docs import *
 from scraper.votes import *

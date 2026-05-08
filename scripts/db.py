@@ -118,6 +118,7 @@ class AgendaItemVote(Base):
     c_number_base = Column(String(48), nullable=True, default=None, index=True)
     motion_result = Column(String(64), nullable=True, default=None)
     vote_text = Column(Text, nullable=True, default=None)
+    conditions = Column(Text, nullable=True, default=None)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -221,12 +222,12 @@ class PZItemDetail(Base):
     agenda_item_number = Column(Integer, nullable=False)
     case_number = Column(String(32), nullable=False, default="", index=True)
     district = Column(String(32), nullable=True, default=None)
-    project_name = Column(String(256), nullable=True, default=None)
-    applicant = Column(String(256), nullable=True, default=None)
+    project_name = Column(Text, nullable=True, default=None)
+    applicant = Column(Text, nullable=True, default=None)
     request = Column(Text, nullable=True, default=None)
     location = Column(Text, nullable=True, default=None)
-    recommendation = Column(String(256), nullable=True, default=None)
-    presented_by = Column(String(128), nullable=True, default=None)
+    recommendation = Column(Text, nullable=True, default=None)
+    presented_by = Column(Text, nullable=True, default=None)
     staff_report_url = Column(String(512), nullable=True, default=None)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
@@ -496,6 +497,7 @@ def init_db():
     _migrate_table("supervisors")
     _migrate_table("meeting_supervisors")
     _migrate_table("agenda_item_votes")
+    _migrate_col(engine, "agenda_item_votes", "conditions", "TEXT DEFAULT NULL")
     _migrate_table("supervisor_votes")
 
     # Resumable sync columns
@@ -1088,6 +1090,10 @@ def persist_votes(
     supervisors: list[dict],
     votes: list[dict],
 ) -> int:
+    # Suppress identity-map warning from SQLite reusing PK IDs after DELETE
+    import warnings
+    from sqlalchemy import exc as sa_exc
+    warnings.filterwarnings("ignore", category=sa_exc.SAWarning, module="db")
     """Persist supervisor info and vote results for a meeting.
 
     1. Upsert supervisor records (by normalized_name).
@@ -1151,8 +1157,8 @@ def persist_votes(
         )
     )
     session.flush()
-    session.expire_all()
-
+    # Skip expire_all — it causes identity map conflicts when called
+    # from within an active transaction (e.g. PZ sync loop).
     vote_count = 0
 
     # 3. Insert meeting_supervisor records

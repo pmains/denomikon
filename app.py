@@ -290,6 +290,7 @@ def meeting_detail(meeting_id, body=None):
         votes_by_item[av.agenda_item_number] = {
             "motion_result": av.motion_result,
             "vote_text": (av.vote_text or "")[:500],
+            "conditions": av.conditions,
             "supervisor_votes": supervisor_votes_by_vote.get(av.id, []),
         }
 

@@ -183,23 +183,32 @@
                     {% endif %}
                 {% endif %}
 
-                {# Vote detail — body-specific labels #}
-                {% if item_vote.get('supervisor_votes') or (is_pz and item_vote.get('supervisor_votes')) %}
+                {# Vote detail #}
+                {% if item_vote.get('motion_result') or item_vote.get('supervisor_votes') %}
                 <h6>Vote — {{ item_vote.motion_result or 'unknown' }}</h6>
+                {% if item_vote.supervisor_votes %}
                 <table class="table table-sm table-borderless small mb-2" style="width:auto">
                     {% for sv in item_vote.supervisor_votes %}
                     <tr>
                         <td class="pe-3">{{ sv.name }}</td>
                         <td>
-                            <span class="badge bg-{% if sv.vote == 'yes' %}success{% elif sv.vote == 'no' %}danger{% else %}secondary{% endif %}">
+                            {% set v = sv.vote.lower() %}
+                            <span class="badge bg-{% if v in ('yes', 'aye') %}success{% elif v in ('no', 'nay') %}danger{% else %}secondary{% endif %}">
                                 {{ sv.vote }}
                             </span>
                         </td>
                     </tr>
                     {% endfor %}
                 </table>
+                {% endif %}
                 {% if item_vote.vote_text %}
                 <pre class="small text-muted mb-2" style="max-height:6em; overflow-y:auto;">{{ item_vote.vote_text }}</pre>
+                {% endif %}
+                {% if item_vote.conditions %}
+                <details class="small mb-2">
+                    <summary class="text-muted">Conditions</summary>
+                    <pre style="max-height:12em; overflow-y:auto; font-size:0.85em;">{{ item_vote.conditions }}</pre>
+                </details>
                 {% endif %}
                 <hr class="my-2">
                 {% endif %}

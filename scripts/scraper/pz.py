@@ -272,7 +272,7 @@ async def extract_pz_agenda_items(page, meeting_url: str) -> list[dict]:
             "meeting_type": "Planning & Zoning",
             "agenda_item_number": str(item_num),
             "agenda_item_id": "",
-            "agenda_item_title": title[:200],
+            "agenda_item_title": title,
             "agenda_item_text": f"Case: {case_number}" if case_number else "",
             "agenda_item_url": meeting_url,
             "vote_or_action": "",
