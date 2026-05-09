@@ -688,7 +688,8 @@ async def main() -> int:
                 "https://mccobagenda.databankcloud.com/AgendaOnline/Meetings/ViewMeeting"
                 f"?id={meeting_id}&doctype=1"
             )
-            print(f"Syncing BOS meeting {meeting_id}...")
+            log.info(f"Syncing BOS meeting {meeting_id}...")
+            meeting_prefix = f"BOS meeting_id={meeting_id}"
 
             meeting_dict = {
                 "meeting_id": meeting_id,
@@ -717,7 +718,7 @@ async def main() -> int:
 
                 # Check if we should skip complete
                 if args.skip_complete and meeting.sync_status == "complete":
-                    print(f"  {meeting_id}: status=complete, skipping (use --force to re-sync)")
+                    log.info("%s status=complete skipping", meeting_prefix)
                     session.close()
                     return 0
 
@@ -760,11 +761,11 @@ async def main() -> int:
                             if await is_image_based_agenda(page):
                                 status = "manual_review"
                                 error = "Unsupported agenda format: page loaded but no parseable agenda items found; possible image/scanned agenda"
-                                print(f"  {meeting_id}: 0 items (image/scanned agenda - manual review)")
+                                log.warning("%s items=0 image_scanned", meeting_prefix)
                             else:
                                 status = "failed"
                                 error = "No agenda items found on page"
-                                print(f"  {meeting_id}: 0 items (no agenda items found)")
+                                log.warning("%s items=0 not_found", meeting_prefix)
                             update_sync_status(
                                 session, args.source, meeting_id, status,
                                 error=error,
@@ -786,7 +787,7 @@ async def main() -> int:
                             )
                         except Exception as e:
                             docs_ok = False
-                            print(f"  {meeting_id}: supporting doc extraction failed: {e}")
+                            log.warning("%s docs_extraction_failed error=%s", meeting_prefix, str(e)[:200])
 
                         if not docs_ok:
                             # Items succeeded but docs failed - partial
@@ -804,7 +805,7 @@ async def main() -> int:
                                 error="Supporting document extraction failed",
                             )
                             session.commit()
-                            print(f"  {meeting_id}: {len(items)} items (partial)")
+                            log.info("%s items=%d docs=partial", meeting_prefix, len(items))
                         else:
                             replace_meeting_data_safe(
                                 session, args.source, meeting_id, meeting_dict, items,
@@ -834,7 +835,7 @@ async def main() -> int:
                             except Exception:
                                 pass
 
-                            print(f"  {meeting_id}: {', '.join(summary_parts)}")
+                            log.info("%s %s", meeting_prefix, ", ".join(summary_parts))
 
                     except Exception as e:
                         # Items extraction failed
@@ -843,7 +844,7 @@ async def main() -> int:
                             error=str(e)[:500],
                         )
                         session.commit()
-                        print(f"  {meeting_id}: FAILED - {e}")
+                        log.error("%s failed error=%s", meeting_prefix, str(e)[:500])
                         return 1
                     finally:
                         await browser.close()

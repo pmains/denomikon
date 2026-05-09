@@ -124,32 +124,43 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
     # spaces or double spaces as separators
     lines = text_normalized.split("\n")
 
-    # Find all line positions where a numbered item starts.
-    # Use finditer to catch multiple items per line (common when normalization
-    # doesn't split them onto their own line).
-    item_boundaries: list[tuple[int, int, str, str]] = []
-    for i, line in enumerate(lines):
-        for m in re.finditer(r"(?:^|\D)(\d{1,3})\.\s*([A-Z])", line):
-            num = m.group(1)
-            # Skip numbers that look like dates or other non-items
-            if len(num) > 3 and num not in item_cnumber_map:
-                continue
-            # Use character position within the line for section ordering
-            pos = m.start()
-            rest = line[pos:].lstrip()
-            rest = re.sub(r"^\d+\.\s*", "", rest)
-            c_m = re.search(r"\(([A-Z]-\d{2}-\d{2}-\d{3}(?:-[A-Z0-9]{1,3}){1,3})\)", rest)
-            c_num = c_m.group(1) if c_m else item_cnumber_map.get(num, "")
-            item_boundaries.append((i, pos, num, c_num))
+    # Build item boundaries using the full text (may be single-line)
+    # Use character positions for splitting, since all items may share one line.
+    full_text = "\n".join(lines) if len(lines) > 1 else lines[0] if lines else ""
+    
+    item_boundaries: list[tuple[int, str, str]] = []
+    seen_nums: set[int] = set()
+    valid_item_nums = {int(a.get("agenda_item_number", 0)) for a in agenda_items if a.get("agenda_item_number")}
+    for m in re.finditer(r"(?:\xa0|[^\w\'\u2019\u2018])(\d{1,3})\.(?=\s*[A-Z0-9])", full_text):
+        num = m.group(1)
+        num_int = int(num)
+        if num_int in seen_nums:
+            continue
+        seen_nums.add(num_int)
+        # Filter spurious matches (dollar amounts, subsection numbers) early
+        if valid_item_nums and num_int not in valid_item_nums:
+            continue
+        if len(num) > 3 and num not in item_cnumber_map:
+            continue
+        pos = m.start()
+        rest = full_text[pos:].lstrip()
+        rest = re.sub(r"^\d+\.\s*", "", rest)
+        c_m = re.search(r"\(([A-Z]-\d{2}-\d{2}-\d{3}(?:-[A-Z0-9]{1,3}){1,3})\)", rest)
+        c_num = c_m.group(1) if c_m else item_cnumber_map.get(num, "")
+        item_boundaries.append((pos, num, c_num))
 
     # Use a counter for unique agenda_item_id within this batch
     agenda_item_counter = 0
 
-    # Parse each item's section for vote information
-    for idx, (start_line, _start_pos, item_num, c_num) in enumerate(item_boundaries):
-        end_line = item_boundaries[idx + 1][0] if idx + 1 < len(item_boundaries) else len(lines)
-        section_lines = lines[start_line:end_line]
-        section_text = " ".join(line.strip() for line in section_lines)
+    # Parse each item's section
+    valid_item_nums = {int(a.get("agenda_item_number", 0)) for a in agenda_items if a.get("agenda_item_number")}
+    for idx, (start_pos, item_num, c_num) in enumerate(item_boundaries):
+        num = int(item_num)
+        # Skip items that aren't in the known agenda_items range (false positives from regex)
+        if valid_item_nums and num not in valid_item_nums:
+            continue
+        end_pos = item_boundaries[idx + 1][0] if idx + 1 < len(item_boundaries) else len(full_text)
+        section_text = full_text[start_pos:end_pos].strip()
         section_text = re.sub(r"\s+", " ", section_text).strip()
 
         # Check for "withdrawn" 
@@ -161,7 +172,7 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
                 "c_number": c_num if c_num else None,
                 "c_number_base": c_num[:-4] if c_num and len(c_num) > 4 else c_num if c_num else None,
                 "motion_result": "withdrawn",
-                "vote_text": section_text[:2000],
+                "vote_text": section_text,
                 "supervisor_votes": [],
             })
             continue
@@ -326,7 +337,7 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
                 "c_number": c_num if c_num else None,
                 "c_number_base": c_num[:-4] if c_num and len(c_num) > 4 else c_num if c_num else None,
                 "motion_result": motion_result or "unknown",
-                "vote_text": section_text[:2000],
+                "vote_text": section_text,
                 "supervisor_votes": supervisor_votes,
             })
 
