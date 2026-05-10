@@ -76,8 +76,20 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
         )
     if sup_match:
         sup_text = sup_match.group(1)
+
+        # Separate the "Absent:" section from the present section so names
+        # in the absent list aren't double-counted as present.
+        present_text = sup_text
+        absent_text = ""
+        absent_match = re.search(r"\.\s*Absent:\s*(.*?)(?=\d+\.|\s*Also present|\.\s*Motion|$)", sup_text, re.I | re.DOTALL)
+        if absent_match:
+            absent_text = absent_match.group(1).strip()
+            # Remove the Absent section from present_text so the loop below
+            # doesn't treat absent supervisors as present.
+            present_text = sup_text[:absent_match.start()]
+
         # Split by semicolons
-        for part in re.split(r";\s*", sup_text):
+        for part in re.split(r";\s*", present_text):
             part = part.strip().rstrip(";,.")
             if not part:
                 continue
@@ -108,6 +120,33 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
                         "role": role if role else None,
                         "present": True,
                     })
+
+        # Parse the "Absent:" section (e.g. ". Absent: Debbie Lesko, Supervisor, District 4")
+        if absent_match:
+            absent_text = absent_match.group(1).strip()
+            for part in re.split(r";\s*", absent_text):
+                part = part.strip().rstrip(";,.")
+                if not part:
+                    continue
+                part = re.sub(r"\s*\([^)]*\)", "", part).strip()
+                m = re.match(
+                    r"([A-Za-z]+(?:\s+[A-Za-z']+)+)"
+                    r"(?:,\s*(?:Chairman|Chair|Vice Chair|Supervisor))?"
+                    r"(?:,\s*District\s+(\d+))?",
+                    part,
+                    re.I,
+                )
+                if m:
+                    name = m.group(1).strip()
+                    district = m.group(2)
+                    if name:
+                        supervisors.append({
+                            "name": name,
+                            "normalized_name": re.sub(r"[^a-z0-9]+", " ", name.lower()).strip(),
+                            "district": district,
+                            "role": None,
+                            "present": False,
+                        })
 
     # --- Build a lookup from item number to C-number from agenda_items ---
     item_cnumber_map: dict[str, str] = {}
@@ -177,8 +216,11 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
         section_text = full_text[start_pos:end_pos].strip()
         section_text = re.sub(r"\s+", " ", section_text).strip()
 
-        # Check for "withdrawn" 
-        if re.search(r"\bwithdrawn\b", section_text, re.I):
+        # Check for "withdrawn" referring to THIS item.
+        # Match "the item was withdrawn" or "this item was withdrawn" (singular
+        # definite reference), but NOT "items [other_numbers] were withdrawn"
+        # which refers to different items in the same section.
+        if re.search(r"\b(the|this)\s+item\s+was\s+withdrawn\b", section_text, re.I):
             agenda_item_counter += 1
             votes.append({
                 "agenda_item_id": agenda_item_counter,

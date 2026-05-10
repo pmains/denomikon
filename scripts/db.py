@@ -1490,8 +1490,19 @@ def persist_votes(
     #    this meeting against the total number of AIVs.
     #    -  0 votes for this meeting  → supervisor was absent (update MeetingSupervisor.present)
     #    -  >0 but < total AIVs       → supervisor abstained on the missing items
+    #
+    #    Only infer on items where a vote was actually taken.  Skip:
+    #    -  Items with motion_result="withdrawn" (no vote was taken)
+    #    -  Items whose vote_text lacks "Ayes:" or "Nay:" (informational
+    #       presentations, proclamations, etc. where no roll call occurred)
     if aiv_rows:
-        aiv_ids = [aiv.id for aiv in aiv_rows]
+        votable_aivs = [
+            aiv for aiv in aiv_rows
+            if aiv.motion_result != "withdrawn"
+            and aiv.vote_text
+            and ("Ayes:" in aiv.vote_text or "Nay:" in aiv.vote_text)
+        ]
+        aiv_ids = [aiv.id for aiv in votable_aivs]
         aiv_count = len(aiv_ids)
         # Load all MeetingSupervisor rows for this meeting
         ms_rows = session.execute(

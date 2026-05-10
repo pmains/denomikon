@@ -345,6 +345,224 @@ class TestBOSVoteParsing(unittest.TestCase):
         ])
         self.assertEqual(errs, [], "\n".join(errs))
 
+    # ── Pattern 5: Non-vote items (presentation, withdrawal) ──────────────
+
+    def test_withdrawn_item_should_not_extract_votes(self):
+        """When vote_text says 'the item was withdrawn', no votes should be parsed."""
+        vt = (
+            "47.GRANT FUNDS FROM DEPARTMENT OF JUSTICE FOR MARICOPA COUNTY "
+            "ATTORNEY\'S OFFICE DIGITAL EVIDENCE MANAGEMENT SOLUTION PROJECT "
+            "Approve the application and acceptance of grant funds... "
+            "(C-XX-25-XXX-X-00) The Clerk noted the item was withdrawn. "
+            "No action was taken on the item."
+        )
+        errs = parse_test_case(vt, expected_ayes=[], expected_nays=[])
+        self.assertEqual(errs, [], "\n".join(errs))
+
+    def test_presentation_item_no_vote(self):
+        """Informational presentation has no Ayes/Nays — no votes should be parsed."""
+        vt = (
+            "4.PET SHOWCASE BY MARICOPA COUNTY ANIMAL CARE AND CONTROL "
+            "- PRESENTACIÓN DE ANIMALES DOMESTICOS POR EL DEPARTAMENTO "
+            "DE CONTROL Y CUIDADO DE ANIMALES "
+            "~ Supervisor Gallardo entered the meeting ~ "
+            "The Clerk announced items 47,71 and 72 were withdrawn. "
+            "PLANNING AND ZONING HEARINGS"
+        )
+        errs = parse_test_case(vt, expected_ayes=[], expected_nays=[])
+        self.assertEqual(errs, [], "\n".join(errs))
+
+    def test_withdrawn_referring_to_other_items(self):
+        """When 'withdrawn' in text refers to OTHER items, this item should
+        NOT be treated as withdrawn."""
+        vt = (
+            "4.PET SHOWCASE BY MARICOPA COUNTY ANIMAL CARE AND CONTROL "
+            "- PRESENTACIÓN DE ANIMALES DOMESTICOS... "
+            "The Clerk announced items 47,71 and 72 were withdrawn. "
+            "PLANNING AND ZONING HEARINGS"
+        )
+        # Parse with item_number context: the withdrawn text refers to
+        # items 47, 71, 72 — not to item 4 itself.
+        # Just checking that no votes are extracted (no Ayes/Nays).
+        errs = parse_test_case(vt, expected_ayes=[], expected_nays=[])
+        self.assertEqual(errs, [], "\n".join(errs))
+
+    def test_item_with_subitem_withdrawn_other_votes_captured(self):
+        """Item has 3 sub-items with Ayes and 1 sub-item withdrawn. The
+        Ayes from the first sub-item should still be captured."""
+        vt = (
+            "13.ROAD FILE DECLARATIONS - DECLARACIONES DE CARRETERA "
+            "a. ROAD FILE 6036... Motion to approve by Supervisor Debbie Lesko, "
+            "seconded by Supervisor Steve Gallardo "
+            "Ayes: Kate Brophy McGee, Debbie Lesko, Mark Stewart, "
+            "Thomas Galvin, Steve Gallardo "
+            "b. ROAD FILE 6033... The Clerk noted the item was withdrawn. "
+            "No action was taken on item 13.b. "
+            "BOARD OF SUPERVISORS CONSENT AGENDA "
+        )
+        errs = parse_test_case(vt, expected_ayes=[
+            "Kate Brophy McGee", "Debbie Lesko", "Mark Stewart",
+            "Thomas Galvin", "Steve Gallardo"
+        ])
+        self.assertEqual(errs, [], "\n".join(errs))
+
+
+# ── Test absent-section parsing ───────────────────────────────────────────
+
+SUPERVISOR_NAMES = {
+    "kate brophy mcgee": "Kate Brophy McGee",
+    "debbie lesko": "Debbie Lesko",
+    "mark stewart": "Mark Stewart",
+    "thomas galvin": "Thomas Galvin",
+    "steve gallardo": "Steve Gallardo",
+}
+
+
+def _normalize(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+
+
+def extract_supervisors_from_members_section(text: str) -> list[dict]:
+    """Simulates the supervisor extraction from the members-present section.
+
+    This mirrors the logic in votes.py's extract_votes_from_summary.
+    """
+    supervisors: list[dict] = []
+
+    # Separate Absent section so supervisors aren't double-counted
+    present_text = text
+    absent_text = ""
+    absent_match = re.search(
+        r"\.\s*Absent:\s*(.*?)(?=\d+\.|\s*Also present|\.\s*Motion|$)",
+        text, re.I | re.DOTALL
+    )
+    if absent_match:
+        absent_text = absent_match.group(1).strip()
+        present_text = text[:absent_match.start()]
+
+    # Parse present section (from text before "Absent:")
+    for part in re.split(r";\s*", present_text):
+        part = part.strip().rstrip(";,.").strip()
+        if not part:
+            continue
+        part = re.sub(r"\s*\([^)]*\)", "", part).strip()
+        m = re.match(
+            r"([A-Za-z]+(?:\s+[A-Za-z']+)+)"
+            r"(?:,\s*(?:Chairman|Chair|Vice Chair|Supervisor))?"
+            r"(?:,\s*District\s+(\d+))?",
+            part, re.I,
+        )
+        if m:
+            name = m.group(1).strip()
+            district = m.group(2)
+            role = ""
+            if re.search(r"\bChair\b", part, re.I) and not re.search(r"Vice", part, re.I):
+                role = "Chair"
+            elif re.search(r"Vice Chair", part, re.I):
+                role = "Vice Chair"
+            if name:
+                supervisors.append({
+                    "name": name,
+                    "normalized_name": _normalize(name),
+                    "district": district,
+                    "role": role if role else None,
+                    "present": True,
+                })
+
+    # Parse Absent section (text already extracted above)
+    if absent_text:
+        for part in re.split(r";\s*", absent_text):
+            part = part.strip().rstrip(";,.").strip()
+            if not part:
+                continue
+            part = re.sub(r"\s*\([^)]*\)", "", part).strip()
+            m = re.match(
+                r"([A-Za-z]+(?:\s+[A-Za-z']+)+)"
+                r"(?:,\s*(?:Chairman|Chair|Vice Chair|Supervisor))?"
+                r"(?:,\s*District\s+(\d+))?",
+                part, re.I,
+            )
+            if m:
+                name = m.group(1).strip()
+                district = m.group(2)
+                if name:
+                    supervisors.append({
+                        "name": name,
+                        "normalized_name": _normalize(name),
+                        "district": district,
+                        "role": None,
+                        "present": False,
+                    })
+
+    return supervisors
+
+
+class TestSupervisorExtraction(unittest.TestCase):
+    """Tests for extracting supervisor presence (present + absent) from the
+    "members present" section of meeting summaries."""
+
+    def test_present_and_absent_supervisors(self):
+        """Meeting 4478: 4 present, 1 absent (Debbie Lesko)."""
+        text = (
+            "Thomas Galvin, Chairman, District 2; "
+            "Kate Brophy McGee, Vice Chair, District 3; "
+            "Mark Stewart, Supervisor, District 1; "
+            "Steve Gallardo, Supervisor, District 5 (entered meeting late). "
+            "Absent: Debbie Lesko, Supervisor, District 4"
+        )
+        sups = extract_supervisors_from_members_section(text)
+        names = {s["name"]: s["present"] for s in sups}
+        self.assertEqual(names["Thomas Galvin"], True)
+        self.assertEqual(names["Kate Brophy McGee"], True)
+        self.assertEqual(names["Mark Stewart"], True)
+        self.assertEqual(names["Steve Gallardo"], True)
+        self.assertEqual(names["Debbie Lesko"], False)
+        self.assertEqual(len(sups), 5)
+
+    def test_all_present_no_absent(self):
+        """When no Absent section exists, all are present."""
+        text = (
+            "Kate Brophy McGee, Chair, District 3; "
+            "Debbie Lesko, Vice Chair, District 4; "
+            "Mark Stewart, Supervisor, District 1; "
+            "Thomas Galvin, Supervisor, District 2; "
+            "Steve Gallardo, Supervisor, District 5"
+        )
+        sups = extract_supervisors_from_members_section(text)
+        self.assertEqual(len(sups), 5)
+        for s in sups:
+            self.assertEqual(s["present"], True)
+
+    def test_all_present_with_remote_notices(self):
+        """Supervisors with (remote) notices are still present."""
+        text = (
+            "Kate Brophy McGee, Chair, District 3 (remote); "
+            "Debbie Lesko, Vice Chair, District 4; "
+            "Mark Stewart, Supervisor, District 1 (remote); "
+            "Thomas Galvin, Supervisor, District 2; "
+            "Steve Gallardo, Supervisor, District 5 (remote)"
+        )
+        sups = extract_supervisors_from_members_section(text)
+        self.assertEqual(len(sups), 5)
+        for s in sups:
+            self.assertEqual(s["present"], True)
+
+    def test_absent_multiple_supervisors(self):
+        """Multiple supervisors absent."""
+        text = (
+            "Kate Brophy McGee, Chair, District 3; "
+            "Thomas Galvin, Supervisor, District 2. "
+            "Absent: Debbie Lesko, Supervisor, District 4; "
+            "Steve Gallardo, Supervisor, District 5"
+        )
+        sups = extract_supervisors_from_members_section(text)
+        by_name = {s["name"]: s for s in sups}
+        self.assertEqual(by_name["Kate Brophy McGee"]["present"], True)
+        self.assertEqual(by_name["Thomas Galvin"]["present"], True)
+        self.assertEqual(by_name["Debbie Lesko"]["present"], False)
+        self.assertEqual(by_name["Steve Gallardo"]["present"], False)
+        self.assertEqual(len(sups), 4)
+
 
 if __name__ == "__main__":
     unittest.main()
