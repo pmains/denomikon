@@ -83,10 +83,11 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
                 continue
             # Remove parenthetical comments like "(entered the meeting late)"
             part = re.sub(r"\s*\([^)]*\)", "", part).strip()
-            # Match "Thomas Galvin, Chairman, District 2" or "Thomas Galvin, District 2"
+            # Match "Thomas Galvin, Chairman, District 2", "Kate Brophy McGee, Chair, District 3",
+            # or "Thomas Galvin, District 2"
             m = re.match(
                 r"([A-Za-z]+(?:\s+[A-Za-z']+)+)"
-                r"(?:,\s*(?:Chairman|Vice Chair|Supervisor))?"
+                r"(?:,\s*(?:Chairman|Chair|Vice Chair|Supervisor))?"
                 r"(?:,\s*District\s+(\d+))?",
                 part,
                 re.I,
@@ -95,8 +96,8 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
                 name = m.group(1).strip()
                 district = m.group(2)
                 role = ""
-                if re.search(r"Chairman\b", part, re.I) and not re.search(r"Vice", part, re.I):
-                    role = "Chairman"
+                if re.search(r"\bChair\b", part, re.I) and not re.search(r"Vice", part, re.I):
+                    role = "Chair"
                 elif re.search(r"Vice Chair", part, re.I):
                     role = "Vice Chair"
                 if name:
@@ -199,6 +200,8 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
 
         # Build a set of known supervisor normalized names for filtering
         known_supervisor_names = {s["normalized_name"] for s in supervisors}
+        # Map normalized → canonical name for the extraction blocks below
+        norm_to_name = {s["normalized_name"]: s["name"] for s in supervisors}
         # Also match partial names (first + last)
         def is_known_supervisor(name: str) -> bool:
             """Check if a name matches a known supervisor."""
@@ -224,16 +227,36 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
                 c = re.sub(r"\s*-\s*[A-Z].*$", "", c).strip()
                 # Remove trailing Spanish section names (ALL CAPS)
                 c = re.sub(r"\s+[A-ZÁÉÍÓÚÑ\s]{10,}$", "", c).strip()
-                # Remove trailing text after role markers
-                c = re.sub(r"\s+(County|Human|Public|Parks|Transportation|Elections|Risk|Finance|Real Estate|Library|Planning).*$", "", c, flags=re.I).strip()
+                # Remove trailing text after role/section markers.
+                # Be specific with "County" — match only when followed by a
+                # known department or role name (not arbitrary text like
+                # "COUNTY 2026 AGREEMENT" in location names).
+                c = re.sub(r"\s+(County\s+(Attorney|Engineer|Supervisor|Manager|Recorder|School|Treasurer|Sheriff|Department|Office|Human|Transportation)|Human\s+Services|Public\s+|Parks|Transportation|Elections|Risk\s+Management|Finance|Real\s+Estate|Library|Planning).*$", "", c, flags=re.I).strip()
                 # Remove trailing text after specific section names
                 c = re.sub(r"\s+STATUTORY.*$", "", c, flags=re.I).strip()
                 c = re.sub(r"\s+AUDIENCIAS.*$", "", c, flags=re.I).strip()
-                c = re.sub(r"\s+BOARD.*$", "", c, flags=re.I).strip()
+                c = re.sub(r"\s+BOARD\s+.*$", "", c, flags=re.I).strip()
                 c = re.sub(r"\s+CALL TO.*$", "", c, flags=re.I).strip()
                 c = re.sub(r"\s+LIBRARY.*$", "", c, flags=re.I).strip()
                 c = c.rstrip(",;.:").strip()
-                if not c or len(c) < 3 or len(c) > 60:
+                if not c or len(c) < 3:
+                    continue
+                # If this candidate is too long to be a single name, try to
+                # extract known supervisor names from it.  This handles cases
+                # where a name at the end of the Ayes list is not followed by
+                # a comma before trailing text (e.g. "..., Debbie Lesko OPEN
+                # SESSION...").
+                # Threshold of 20: longest BOS supervisor name is 17 chars
+                # (Kate Brophy McGee), so anything > 20 has trailing content.
+                if len(c) > 20 and norm_to_name:
+                    extracted = [n for n in norm_to_name if n in c.lower()]
+                    if extracted:
+                        for name in extracted:
+                            proper = norm_to_name.get(name, name.title())
+                            if proper not in ayes:
+                                ayes.append(proper)
+                        continue
+                if len(c) > 60:
                     continue
                 if not re.match(r"^[A-Za-zÁÉÍÓÚÜÑ'][A-Za-zÁÉÍÓÚÜÑ'\s\.-]+$", c):
                     continue
@@ -242,8 +265,10 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
                 if c not in ayes:
                     ayes.append(c)
 
-        # Filter ayes against known supervisors when we have them
-        if known_supervisor_names and len(ayes) > len(supervisors):
+        # Filter ayes against known supervisors when we have them.
+        # Applied regardless of count, so "..., Debbie Lesko OPEN SESSION..."
+        # extracted via the known-name heuristic above gets confirmed here.
+        if known_supervisor_names and ayes:
             filtered = [n for n in ayes if is_known_supervisor(n)]
             if filtered:
                 ayes = filtered
@@ -258,7 +283,18 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
                 c = re.sub(r"\s*-\s*[A-Z].*$", "", c).strip()
                 c = re.sub(r"\s+[A-ZÁÉÍÓÚÑ\s]{10,}$", "", c).strip()
                 c = c.rstrip(",;.:").strip()
-                if not c or len(c) < 3 or len(c) > 60:
+                if not c or len(c) < 3:
+                    continue
+                # Extract known supervisor names from trailing-context blobs
+                if len(c) > 20 and norm_to_name:
+                    extracted = [n for n in norm_to_name if n in c.lower()]
+                    if extracted:
+                        for name in extracted:
+                            proper = norm_to_name.get(name, name.title())
+                            if proper not in nays:
+                                nays.append(proper)
+                        continue
+                if len(c) > 60:
                     continue
                 if not re.match(r"^[A-Za-zÁÉÍÓÚÜÑ'][A-Za-zÁÉÍÓÚÜÑ'\s\.-]+$", c):
                     continue

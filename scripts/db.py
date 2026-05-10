@@ -1332,7 +1332,12 @@ def persist_votes(
             ).scalar_one_or_none()
         if existing:
             existing.name = sup.get("name", existing.name)
-            existing.district = sup.get("district", existing.district)
+            # Only update district when the new value is not None — a
+            # subsequent meeting with a truncated or unparseable summary
+            # should not erase a previously captured district.
+            new_district = sup.get("district")
+            if new_district is not None:
+                existing.district = new_district
             existing.updated_at = datetime.now(timezone.utc)
             supervisor_map[norm] = existing.id
         else:
@@ -1480,7 +1485,52 @@ def persist_votes(
     ).scalars().all()
     _detect_vote_attributes(aiv_rows)
 
-    # 6. Commit
+    # 6. Infer absences and abstentions from missing votes
+    #    After all explicit votes are stored, check each supervisor present at
+    #    this meeting against the total number of AIVs.
+    #    -  0 votes for this meeting  → supervisor was absent (update MeetingSupervisor.present)
+    #    -  >0 but < total AIVs       → supervisor abstained on the missing items
+    if aiv_rows:
+        aiv_ids = [aiv.id for aiv in aiv_rows]
+        aiv_count = len(aiv_ids)
+        # Load all MeetingSupervisor rows for this meeting
+        ms_rows = session.execute(
+            select(MeetingSupervisor).where(
+                MeetingSupervisor.body == body,
+                MeetingSupervisor.meeting_id == meeting_id,
+            )
+        ).scalars().all()
+        for ms in ms_rows:
+            sv_count = session.execute(
+                select(func.count()).select_from(SupervisorVote).where(
+                    SupervisorVote.supervisor_id == ms.supervisor_id,
+                    SupervisorVote.agenda_item_vote_id.in_(aiv_ids),
+                )
+            ).scalar()
+            if sv_count == 0:
+                # Supervisor was listed as present but never voted — mark absent
+                ms.present = False
+            elif sv_count < aiv_count:
+                # Supervisor voted on some items but not all — abstain on the rest
+                existing_aiv_ids = set(
+                    row[0] for row in session.execute(
+                        select(SupervisorVote.agenda_item_vote_id).where(
+                            SupervisorVote.supervisor_id == ms.supervisor_id,
+                            SupervisorVote.agenda_item_vote_id.in_(aiv_ids),
+                        )
+                    ).all()
+                )
+                for aiv_id in aiv_ids:
+                    if aiv_id not in existing_aiv_ids:
+                        session.add(SupervisorVote(
+                            agenda_item_vote_id=aiv_id,
+                            supervisor_id=ms.supervisor_id,
+                            vote="abstain",
+                            raw_vote_text="inferred abstention — no vote recorded on this item",
+                        ))
+                        vote_count += 1
+
+    # 7. Commit
     session.commit()
     return vote_count
 
@@ -2062,6 +2112,7 @@ def get_supervisor_full_voting_record(
     sql = sa_text("""
         SELECT
             sv.vote,
+            sv.raw_vote_text,
             sv.agenda_item_vote_id,
             aiv.meeting_id,
             aiv.agenda_item_number,
@@ -2132,6 +2183,7 @@ def get_supervisor_full_voting_record(
         if maj and split_flag and sup_nv in ("yes", "no") and maj not in ("tie", "unknown"):
             with_maj = "with_majority" if sup_nv == maj else "against_majority"
 
+        is_inferred = bool(r.raw_vote_text and r.raw_vote_text.startswith("inferred"))
         results.append({
             "meeting_id": r.meeting_id,
             "meeting_date": r.meeting_date,
@@ -2140,6 +2192,7 @@ def get_supervisor_full_voting_record(
             "agenda_item_title": r.agenda_item_title,
             "c_number": r.c_number or "",
             "vote": sup_nv,
+            "is_inferred": is_inferred,
             "motion_result": r.motion_result or "",
             "is_split_vote": split_flag,
             "majority_position": maj,

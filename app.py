@@ -324,7 +324,8 @@ def meeting_detail(meeting_id, body=None):
         for sv, sname, snorm in sv_rows:
             slug = snorm.replace(" ", "-") if snorm else ""
             supervisor_votes_by_vote.setdefault(sv.agenda_item_vote_id, []).append(
-                {"name": sname, "vote": sv.vote, "slug": slug}
+                {"name": sname, "vote": sv.vote, "slug": slug,
+                 "is_inferred": sv.raw_vote_text and sv.raw_vote_text.startswith("inferred abstention")}
             )
 
     for av in item_votes:
@@ -611,6 +612,7 @@ def member_votes_api(slug):
                 "vote": r["vote"],
                 "motion_result": r["motion_result"],
                 "is_split_vote": r["is_split_vote"],
+                "is_inferred": r["is_inferred"],
                 "majority_position": r["majority_position"],
                 "with_or_against_majority": r["with_or_against_majority"],
             }
@@ -663,6 +665,58 @@ def member_detail(slug):
         full_record_api_url=f"/api/members/{slug_out}/votes",
         vote_badges=VOTE_BADGE_CLASSES,
         majority_badges=MAJORITY_BADGE_CLASSES,
+    )
+
+
+@app.route("/debug/inferred-abstentions")
+def debug_inferred_abstentions():
+    """Review page for parser-gap detection.
+
+    Lists all inferred abstentions grouped by meeting, so humans can
+    quickly check whether the vote was truly abstained or the parser
+    missed an explicit Yes/No from the summary.
+    """
+    session = get_session()
+
+    from sqlalchemy import text as sa_text
+    # Joining AgendaItemVote → Meeting for meeting_date
+    rows = session.execute(
+        sa_text("""
+            SELECT
+                aiv.meeting_id,
+                m.meeting_date,
+                aiv.agenda_item_number,
+                aiv.vote_text,
+                sv.supervisor_id,
+                sup.name,
+                sup.normalized_name
+            FROM supervisor_votes sv
+            JOIN agenda_item_votes aiv ON aiv.id = sv.agenda_item_vote_id
+            JOIN supervisors sup ON sup.id = sv.supervisor_id
+            LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id
+            WHERE sv.raw_vote_text LIKE :prefix
+              AND aiv.body = :body
+            ORDER BY aiv.meeting_id, aiv.agenda_item_number
+        """)
+        .bindparams(prefix="inferred%", body="bos")
+    ).all()
+    session.close()
+
+    # Group by meeting
+    by_meeting: dict[str, list] = {}
+    for r in rows:
+        mid = r.meeting_id
+        by_meeting.setdefault(mid, []).append({
+            "meeting_date": r.meeting_date,
+            "agenda_item_number": r.agenda_item_number,
+            "vote_text": (r.vote_text or "")[:200],
+            "supervisor_name": r.name,
+            "supervisor_slug": r.normalized_name.replace(" ", "-"),
+        })
+
+    return render_template(
+        "debug_inferred.html",
+        by_meeting=sorted(by_meeting.items(), key=lambda kv: kv[0]),
     )
 
 

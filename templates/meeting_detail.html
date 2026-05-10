@@ -199,8 +199,11 @@
                         </td>
                         <td>
                             {% set v = sv.vote.lower() %}
+                            {% if sv.is_inferred %}
+                            <span class="badge bg-info text-dark" title="Inferred — vote not found in meeting summary. May indicate a parser gap.">
+                                {{ sv.vote }}&thinsp;?{% else %}
                             <span class="badge bg-{% if v in ('yes', 'aye') %}success{% elif v in ('no', 'nay') %}danger{% else %}secondary{% endif %}">
-                                {{ sv.vote }}
+                                {{ sv.vote }}{% endif %}
                             </span>
                         </td>
                     </tr>
