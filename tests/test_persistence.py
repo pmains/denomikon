@@ -33,6 +33,16 @@ from db import (
 )
 
 
+def _reset_db_engine():
+    """Dispose and reset the global DB engine so the next get_engine()
+    creates a fresh connection with whatever DATABASE_URL is current."""
+    import db as _dm
+    if _dm._engine:
+        _dm._engine.dispose()
+    _dm._engine = None
+    _dm._SessionLocal = None
+
+
 @integration_test
 class TestInitDbIdempotent(unittest.TestCase):
     def test_double_init_is_idempotent(self):

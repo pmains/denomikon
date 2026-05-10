@@ -11,14 +11,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_tiers import integration_test
 
 _orig_db_url = os.environ.pop("DATABASE_URL", None)
-_test_db = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
-os.environ["DATABASE_URL"] = f"sqlite:///{_test_db.name}"
+_test_db_path = None  # set by _make_fresh_db()
 
 import db as _db_mod
+if _db_mod._engine:
+    _db_mod._engine.dispose()
 _db_mod._engine = None
 _db_mod._SessionLocal = None
 
 from db import init_db, get_session, Meeting, AgendaItem, SupportingDocument
+
+
+def _make_fresh_db():
+    """Create a new temp database, delete old one, reset engine."""
+    global _test_db_path
+    import db as _dm
+    import os as _os
+    # Delete old DB file
+    if _test_db_path:
+        try:
+            _os.unlink(_test_db_path)
+        except FileNotFoundError:
+            pass
+    # Create new temp file
+    _test_db_path = tempfile.mktemp(suffix=".sqlite")
+    _os.environ["DATABASE_URL"] = f"sqlite:///{_test_db_path}"
+    # Reset engine so next get_engine() uses the new path
+    if _dm._engine:
+        _dm._engine.dispose()
+    _dm._engine = None
+    _dm._SessionLocal = None
+    init_db()
 
 
 def _capture_output(argv: list[str]) -> str:
@@ -94,7 +117,7 @@ def _populate_db():
 class TestInspectDbMeetings(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        init_db()
+        _make_fresh_db()
         _populate_db()
 
     @classmethod
@@ -104,6 +127,8 @@ class TestInspectDbMeetings(unittest.TestCase):
         if _orig_db_url:
             os.environ["DATABASE_URL"] = _orig_db_url
         import db as _db_mod
+        if _db_mod._engine:
+            _db_mod._engine.dispose()
         _db_mod._engine = None
         _db_mod._SessionLocal = None
 

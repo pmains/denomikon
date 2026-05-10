@@ -43,7 +43,8 @@ def get_engine():
     global _engine
     if _engine is None:
         connect_args = {}
-        url = DATABASE_URL
+        # Re-read from environment at runtime so tests can swap databases
+        url = os.environ.get("DATABASE_URL", DATABASE_URL)
         if url.startswith("sqlite"):
             # Enable WAL mode and foreign keys for SQLite
             connect_args["check_same_thread"] = False
