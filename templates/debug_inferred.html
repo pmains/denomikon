@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Inferred Abstentions — Parser Gap Review{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h3 class="mb-0">Inferred Abstentions <small class="text-muted">Parser Gap Review</small></h3>
+    <a href="/meetings" class="btn btn-outline-secondary btn-sm">&larr; Meetings</a>
+</div>
+
+<p class="text-muted">
+    These votes were marked as <strong>abstain</strong> because the supervisor was present at the
+    meeting but no vote was recorded for them on this item in the summary text.
+    Each one may be a genuine abstention or a <strong>parser gap</strong> where the
+    summary included the supervisor's name but our extraction missed it.
+    Check the vote text preview against the actual meeting summary to decide.
+</p>
+
+{% if by_meeting %}
+{% for meeting_id, items in by_meeting %}
+<div class="card mb-3">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>
+            <strong>Meeting {{ meeting_id }}</strong>
+            <span class="text-muted ms-2">{{ items[0].meeting_date }}</span>
+        </span>
+        <a href="/meetings/bos/{{ meeting_id }}" class="btn btn-sm btn-outline-primary">View meeting</a>
+    </div>
+    <div class="card-body p-0">
+        <table class="table table-sm table-hover mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th>Item</th>
+                    <th>Supervisor</th>
+                    <th>Vote text preview</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in items %}
+                <tr>
+                    <td class="text-nowrap">{{ item.agenda_item_number }}</td>
+                    <td>
+                        <a href="/members/{{ item.supervisor_slug }}">{{ item.supervisor_name }}</a>
+                    </td>
+                    <td>
+                        <code class="small text-muted">
+                            {{- item.vote_text[:180] -}}
+                            {%- if item.vote_text|length > 180 %}...{% endif -%}
+                        </code>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="alert alert-success">No inferred abstentions found. All votes were explicitly captured.</div>
+{% endif %}
+
+{% endblock %}
