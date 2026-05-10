@@ -1,0 +1,818 @@
+
+
+
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+	<meta charset="utf-8" />
+	<meta http-equiv="x-ua-compatible" content="IE=Edge" />
+	<title>View Meeting - OnBase Agenda Online</title>
+	<link href="/AgendaOnline/favicon.ico" rel="shortcut icon" type="image/x-icon" />
+	<meta name="viewport" content="width=device-width" />
+	
+	<meta name="format-detection" content="telephone=no" />
+
+	<script src="/AgendaOnline/bundles/jquery?v=0XJqbYX4tFhH25_G_qbbiJSeeoDaZY7hjfcdPnQjLwc1"></script>
+
+
+	<link href="/AgendaOnline/bundles/css?v=jIZPD-sVh9irzaqKP37RuUDX5O0LPRn581p5iCjlHvo1" rel="stylesheet"/>
+
+
+
+	<script src="/AgendaOnline/Scripts/bootstrap.bundle-5.1.3.min.js" type="text/javascript"></script>
+
+	<!-- Dynamic Stylesheet -->
+	<link href="/AgendaOnline/Style" rel="stylesheet" />
+</head>
+<body>
+	<div id="logo-container">
+		
+<div class="logo"><img src="/AgendaOnline/Images/OnBase_Logo.png" /></div>
+	</div>
+	<div id="navbar" class="navbar navbar-expand-sm navbar-dark" role="navigation">
+		<div class="navbar-header">
+			<button class="navbar-toggler"
+					type="button"
+					data-bs-toggle="collapse"
+					data-bs-target="#navbarNavAltMarkup"
+					aria-controls="navbarNavAltMarkup"
+					aria-expanded="false">
+				<span class="navbar-toggler-icon header"></span>
+			</button>
+			<div class="media-collapse">
+				<span id="media-collapse-text">Hide Media</span>
+			</div>
+		</div>
+		<div id="navbarNavAltMarkup" class="navbar-collapse collapse">
+			<ul class="nav navbar-nav">
+				<li class="nav-link"><a href="/AgendaOnline/" id="lnkNavHome">Home</a></li>
+				<li class="nav-link"><a href="/AgendaOnline/Meetings" id="lnkNavMeetings">Meetings</a></li>
+				<li class="nav-link"><a href="/AgendaOnline/Home/Contact" id="lnkNavContact">Contact</a></li>
+			</ul>
+		</div>
+
+	</div>
+	<div>
+		
+		<section class="content-wrapper clear-fix">
+			
+
+
+
+
+
+	<script type="text/javascript">
+		var g_documentType = '3';
+		var g_isAccessible = false;
+		var g_infoPaneTop = '?';
+
+		$(window).on('load',
+			function ()
+			{	
+				updateAccessibleLink();
+				loadAgendaDocument(g_documentType);
+			}
+		);
+
+		$(document).ready
+		(
+			function ()
+			{
+				var targetDiv = $('#mediaAndItemView');
+
+				resetDiv(targetDiv, true);
+				resetDiv(targetDiv.find('#itemView'), true);
+
+				$(window).on('scroll', onAgendaViewScroll);
+				positionItemView();
+			}
+		);
+
+		function switchAccessibleView()
+		{
+			g_isAccessible = !g_isAccessible;
+			updateAccessibleLink();
+			loadAgendaDocument(g_documentType);
+		}
+
+		function updateAccessibleLink()
+		{
+			var access = $('#btnAccessible');
+			if( !g_isAccessible )
+			{
+				access.html('Switch to Accessible View')
+					  .attr('title', 'View accessible version of the current document');
+			}
+			else
+			{
+				access.html('Switch to Standard View')
+					  .attr('title', 'View standard version of the current document');
+			}
+		}       
+	   
+	</script>
+	<div id="LargeDevice" class="d-none d-lg-block"></div> 
+	<div id="agenda-table" class="container-fluid">
+		<div id="agenda-container" class="row">
+			<div class="no-padding">
+				<div class="container-fluid">
+					<div class="row">
+						<div class="col-md-9 no-padding-left">
+							<div>
+									<button id="btnAgenda" type="button" class="btn btn-primary" onclick="loadAgendaDocument(1); return false;">Agenda</button>
+																	<button id="btnSummary" type="button" class="btn btn-primary" onclick="loadAgendaDocument(3); return false;">Summary</button>
+																															</div>
+						</div>
+						<div class="col-md-3 text-right no-padding-right">
+							<button id="btnAccessible" type="button" class="btn btn-primary" onclick="switchAccessibleView(); return false;" title="View accessible version of the current document">Switch to Accessible View</button>
+						</div>
+					</div>
+				</div>
+				<br>
+			</div>
+		</div>
+
+		<div class="row">
+			<div class="no-padding">
+				<script type="text/javascript">
+					function loadAgendaDocument(doctype)
+					{
+						var url = '';
+						var type = 'agenda';
+						var isDocumentAvailable = 'True';
+
+						if ( doctype == 2 )
+						{
+							type = 'minutes';
+							isDocumentAvailable = 'False';
+						}
+						else if ( doctype == 3 )
+						{
+							type = 'summary';
+							isDocumentAvailable ='True';
+						}
+
+						if( g_isAccessible )
+						{
+							url = '/AgendaOnline/Meetings/ViewMeetingAgenda?meetingId=4622&type=AGENDATYPEVALUE';
+						}
+						else
+						{
+							url = '/AgendaOnline/Documents/ViewAgenda?meetingId=4622&type=AGENDATYPEVALUE&doctype=' + doctype;
+						}
+
+						url = url.replace('AGENDATYPEVALUE', type);
+
+						if (isDocumentAvailable == "False")
+						{
+							$('#agendaView').html('Document unavailable');
+						}
+						else
+						{
+							$.get
+							(
+								url,
+								function (data)
+								{
+									$('#agendaView').html(data);
+									var linkId = 1;
+									//replace the link hrefs and create the click handler using jquery (used for IE9 and IE10 compatibility)
+									$('#agendaView a').each(function () {
+										if ($(this).attr("href") != null) {
+											// add ID for automation
+											if ($(this).attr("id") == null) {
+												$(this).attr("id", "lnkAgendaItem_" + linkId++);
+											}
+											var hrefValue = $(this).attr("href");
+											var dataRegex = /loadAgendaItem\((\d{1,}),(true|false)\)/.exec(hrefValue);
+
+											if (dataRegex != null){
+												var sectionOrItemId = dataRegex[1];
+												var isSection = dataRegex[2] == "true";
+
+												if (sectionOrItemId != null && isSection != null){
+													$(this).click(function (e){
+														loadAgendaItem(sectionOrItemId, isSection);
+														e.preventDefault();
+														return false;
+													});
+
+													$(this).attr("href", "#");
+												}
+											}
+										}
+									});
+
+									$(window).resize();
+								}
+							);
+						}
+
+
+
+						// The global document type gets reset to whatever meeting document button was clicked.
+						g_documentType = doctype;
+
+						// Update agenda buttons
+						updateAgendaButtons();
+
+						// Update accessible link just in case
+						updateAccessibleLink();
+
+						// Clear out the item view section.
+						$('#itemView').empty();
+
+						
+							$(window).trigger("resize");
+						
+					}
+
+					function loadAgendaItem(itemId, isSection)
+					{
+						var type = 'agenda';
+
+						if ( g_documentType == 2 )
+						{
+							type = 'minutes';
+						}
+						else if ( g_documentType == 3 )
+						{
+							type = 'summary';
+						}
+
+						var url = '/AgendaOnline/Meetings/ViewMeetingAgendaItem?meetingId=4622&itemId=ITEMIDVALUE&isSection=ISSECTIONVALUE&type=AGENDATYPEVALUE'
+									.replace("ITEMIDVALUE", encodeURIComponent(itemId))
+									.replace("ISSECTIONVALUE", isSection ? "true" : "false")
+									.replace('AGENDATYPEVALUE', type);
+
+						$.get
+						(
+							url,
+							function (data)
+							{
+								$('#itemView').html(data);
+
+								$(window).resize();
+
+								if ($('#LargeDevice:visible').length < 1)
+								{
+									$("#rightPane")[0].scrollIntoView();
+								}
+								else
+								{
+									$('#mediaAndItemView').scrollTop(0);
+									$('#mediaAndItemView').find('#itemView').scrollTop(0);
+								}
+							}
+						);
+
+						
+						if (isSection) {
+							if (sectionEventPoints[itemId] != null)
+							{
+								jumpMedia(sectionEventPoints[itemId]);
+							}
+						}
+						else
+						{
+							if (itemEventPoints[itemId] != null)
+							{
+								jumpMedia(itemEventPoints[itemId]);
+							}
+						}
+						
+					}
+
+					function loadAgendaSection(sectionId)
+					{
+						loadAgendaItem(sectionId, true);
+					}
+
+					function updateAgendaButtons()
+					{
+						if (g_documentType == 2)
+						{
+							$('#btnAgenda').attr({
+								class: "btn btn-primary"
+							});
+
+							$('#btnAgenda').removeAttr('disabled');
+
+							$('#btnMinutes').attr({
+								disabled: "disabled",
+								class: "btn btn-default"
+							});
+
+							$('#btnSummary').attr({
+								class: "btn btn-primary"
+							});
+
+							$('#btnSummary').removeAttr('disabled');
+						}
+						else if (g_documentType == 3)
+						{
+							$('#btnAgenda').attr({
+								class: "btn btn-primary"
+							});
+
+							$('#btnAgenda').removeAttr('disabled');
+
+							$('#btnMinutes').attr({
+								class: "btn btn-primary"
+							});
+
+							$('#btnMinutes').removeAttr('disabled');
+
+							$('#btnSummary').attr({
+								disabled: "disabled",
+								class: "btn btn-default"
+							});
+						}
+						else
+						{
+							$('#btnAgenda').attr({
+								disabled: "disabled",
+								class: "btn btn-default"
+							});
+
+							$('#btnMinutes').attr({
+								class: "btn btn-primary"
+							});
+
+							$('#btnMinutes').removeAttr('disabled');
+
+							$('#btnSummary').attr({
+								class: "btn btn-primary"
+							});
+
+							$('#btnSummary').removeAttr('disabled');
+						}
+					}
+
+					
+					function resetDiv(div, store, props)
+					{
+						if (!(props && typeof(props) === 'object' && props.isArray()))
+							props = ['position', 'top', 'left', 'overflow-y', '-ms-overflow-y'];
+
+						if (div !== null && $(div).length > 0)
+						{
+							$.each
+							(
+								$(div),
+								function (i, e)
+								{
+									for (var i = 0; i < props.length; i++)
+									{
+										var prop = props[i];
+
+										if (!store)
+										{
+											var data = div.data('default-' + prop);
+											if (typeof(data) !== 'undefined')
+											{
+												$(this).css(prop, data);
+											}
+										}
+										else
+										{
+											if (typeof(div.css(prop)) !== 'undefined')
+											{
+												$(this).data('default-' + prop, div.css(prop));
+											}
+										}
+									}
+								}
+							);
+						}
+					}
+
+					function positionItemView()
+					{
+						var isLarge = $('#LargeDevice:visible').length > 0;
+
+						var targetDiv = $('#mediaAndItemView');
+						var itemView = targetDiv.find('#itemView');
+
+						if (targetDiv.length > 0)
+						{
+							if (isLarge)
+							{
+								if (typeof(g_infoPaneTop) === 'string' && g_infoPaneTop == '?')
+								{
+									g_infoPaneTop = targetDiv.offset().top;
+								}
+
+								var windowY = $(window).scrollTop();
+								var height = 0;
+
+								if (windowY > g_infoPaneTop)
+								{
+									height = Math.floor($(window).height());
+
+									targetDiv.css('position', 'relative')
+										.css('overflow-y', 'hidden')
+										.css('-ms-overflow-y', 'hidden')
+										.css('top', Math.floor(windowY - g_infoPaneTop) + 'px');
+								}
+								else
+								{
+									height = Math.floor(($(window).height() - g_infoPaneTop) + windowY);
+
+									targetDiv.css('position', 'relative')
+										.css('top', '0px')
+										.css('overflow-y', 'hidden')
+										.css('-ms-overflow-y', 'hidden');
+								}
+
+								itemView.css('position', 'relative')
+										.css('overflow-y', 'auto')
+										.css('-ms-overflow-y', 'auto')
+										.css('height', Math.floor(height - itemView.position().top) + 'px');
+							}
+							else
+							{
+								targetDiv.css('height', 'auto');
+								resetDiv(targetDiv);
+
+								itemView.css('height', 'auto');
+								resetDiv(itemView);
+							}
+						}
+					}
+
+					$(window).resize
+					(
+						function ()
+						{
+							positionItemView();
+						}
+					);
+
+					function onAgendaViewScroll()
+					{
+						positionItemView();
+					}
+				</script>
+
+				<div id="agendaView" class="col-lg-8 no-padding-left">
+					&nbsp;
+				</div>
+
+				<div id="mediaAndItemView" class="col-lg-4 no-padding-right">
+					<a id="rightPane"></a>
+					<div id="mediaView">
+
+
+
+
+<script src="../Scripts/jwplayer/jwplayer.js?8.38.2"></script>
+<script src="/AgendaOnline/Scripts/browser.js"></script>
+
+<script>
+	var currentEventPoint;
+
+	$.ajax({
+		url: "/AgendaOnline/Media/Validate"
+	}).done(function (data) {
+		jwplayer.key = data;
+
+		//JWPLAYER
+		jwplayer('player').setup({
+			playlist: [{
+				file: "https://d27q9sfkph1oc9.cloudfront.net/mcvod/mediacache/amlst:vwRZKTmmfvB8Mw4VspZQbTyMZDwqgb6MRXIFlJVyNIfa5HBxYjrD2NNNr0z3_j6L/playlist.m3u8?instance=1&amp;token=cIXSYZLbbBMySwzcWty3yalH9hLn4WNjf2LCMzkuHspGSJtkxg"
+			}],
+			stretching: "uniform",
+			base : "../scripts/jwplayer/",
+			width: "100%",
+			height: "280px",
+			androidhls: true,
+			autostart: true,
+			events: {
+				onReady: function (e) {
+					$(window).trigger("resize");
+				},
+				onPlay: function (e) {
+					if (currentEventPoint != null) {
+						jwplayer('player').seek(currentEventPoint);
+						currentEventPoint = null; //set the currentEventPoint to null after the player has jumped.
+					}
+				},
+				onSetupError: function (e) {
+					if ($.browser.needsFlash() == true && jwplayer().getRenderingMode() == "html5") {
+						$("#player-container").html('<div class="noflash">' +
+														'<span>' +
+															'Sorry, Flash Player is either not installed or not enabled. <br />Please install or enable the flash plugin.' +
+														'</span>' +
+													'</div>');
+					};
+				},
+
+			}
+		});
+	});
+
+
+</script>
+
+<div id="player-container" class="player-container">
+	<div tabindex="0" class="jwplayer jw-reset jw-skin-seven jw-state-idle" id="player" style="width: 480px; height: 270px;">
+		<div class="jw-aspect jw-reset"></div>
+		<div class="jw-media jw-reset">
+			<object name="myElement_swf_0" width="100%" height="100%" class="jw-swf jw-reset" id="myElement_swf_0" data="../Scripts/jwplayer/jwplayer.flash.swf" type="application/x-shockwave-flash" style="left: 0px; top: 0px; right: 0px; bottom: 0px; display: block; position: absolute;" bgcolor="#000000">
+				<param name="allowfullscreen" value="true">
+				<param name="allowscriptaccess" value="always">
+				<param name="wmode" value="opaque">
+				<param name="menu" value="false">
+			</object>
+		</div>
+		<div class="jw-preview jw-reset"></div>
+		<div class="jw-captions jw-reset">
+			<div class="jw-captions-window jw-reset">
+				<span class="jw-captions-text jw-reset"></span>
+			</div>
+		</div>
+		<div class="jw-title jw-reset" style="display: none;">
+			<div class="jw-title-primary jw-reset"></div>
+			<div class="jw-title-secondary jw-reset"></div>
+		</div>
+		<div class="jw-overlays jw-reset"></div>
+		<div class="jw-controls jw-reset">
+			<div class="jw-display-icon-container jw-background-color jw-reset">
+				<div class="jw-icon jw-icon-display jw-button-color jw-reset"></div>
+			</div>
+			<div class="jw-controls-right jw-reset">
+				<div class="jw-dock jw-reset">
+				</div>
+			</div>
+			<div class="jw-controlbar jw-background-color jw-reset">
+				<div class="jw-group jw-controlbar-left-group jw-reset">
+					<div class="jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-playback"></div>
+					<div class="jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-prev" style="display: none;"></div>
+					<div class="jw-icon jw-icon-tooltip jw-icon-playlist jw-button-color jw-reset jw-hidden">
+						<div class="jw-overlay jw-reset"></div>
+					</div>
+					<div class="jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-next" style="display: none;"></div>
+					<span class="jw-text jw-reset jw-text-elapsed">00:00</span>
+				</div>
+				<div class="jw-group jw-controlbar-center-group jw-reset">
+					<div class="jw-slider-time jw-background-color jw-reset jw-slider-horizontal jw-reset">
+						<div class="jw-slider-container jw-reset">
+							<div class="jw-rail jw-reset"></div>
+							<div class="jw-buffer jw-reset" style="width: 0%;"></div>
+							<div class="jw-progress jw-reset" style="width: 0%;"></div>
+							<div class="jw-knob jw-reset" style="left: 0%;"></div>
+							<div class="jw-icon jw-icon-tooltip jw-tooltip-time jw-button-color jw-reset"><div class="jw-overlay jw-reset"><div class="jw-time-tip jw-background-color jw-reset"><div class="jw-reset" style="width: 0px; height: 0px;"></div><span class="jw-text jw-reset"></span></div></div></div>
+						</div>
+					</div>
+					<span class="jw-text jw-reset jw-text-alt"></span>
+				</div>
+				<div class="jw-group jw-controlbar-right-group jw-reset">
+					<span class="jw-text jw-reset jw-text-duration">00:00</span>
+					<div class="jw-icon jw-icon-tooltip jw-icon-hd jw-button-color jw-reset jw-hidden">
+						<div class="jw-overlay jw-reset"></div>
+					</div>
+					<div class="jw-icon jw-icon-tooltip jw-icon-cc jw-button-color jw-reset jw-hidden jw-off">
+						<div class="jw-overlay jw-reset"></div>
+					</div>
+					<div class="jw-icon jw-icon-tooltip jw-icon-audio-tracks jw-button-color jw-reset jw-hidden">
+						<div class="jw-overlay jw-reset"></div>
+					</div>
+					<div class="jw-icon jw-icon-tooltip jw-icon-more jw-button-color jw-reset jw-hidden">
+						<div class="jw-overlay-horizontal jw-reset"></div>
+					</div>
+					<div class="jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-volume"></div>
+					<div class="jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-cast jw-off" style="display: none;"></div>
+					<div class="jw-slider-volume jw-background-color jw-reset jw-slider-horizontal jw-reset">
+						<div class="jw-slider-container jw-reset">
+							<div class="jw-rail jw-reset"></div>
+							<div class="jw-buffer jw-reset"></div>
+							<div class="jw-progress jw-reset" style="width: 90%;"></div>
+							<div class="jw-knob jw-reset" style="left: 90%;"></div>
+						</div>
+					</div>
+					<div class="jw-icon jw-icon-tooltip jw-icon-volume jw-button-color jw-reset">
+						<div class="jw-overlay jw-reset">
+							<div class="jw-slider-volume jw-volume-tip jw-background-color jw-reset jw-slider-vertical jw-reset">
+								<div class="jw-slider-container jw-reset">
+									<div class="jw-rail jw-reset"></div>
+									<div class="jw-buffer jw-reset"></div>
+									<div class="jw-progress jw-reset" style="height: 90%;"></div>
+									<div class="jw-knob jw-reset" style="bottom: 90%;"></div>
+								</div>
+							</div>
+						</div>
+					</div>
+					<div class="jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-fullscreen">
+
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+<script type="text/javascript">
+
+	//use the resize function on the window to apply the css for tablet and phone size.
+	//resize method is used because the point the player jumps to the bottom could be different.
+	$(window).resize(function () {
+
+		if ($(".player-container").height() != 0) {
+			$("#media-collapse-text").text("Hide Media");
+			if ($(window).width() <= tabletSize && $(window).width() > phoneSize) {
+				jwplayer('player').resize("100%", normalPlayerHeight);
+			}
+			else if (($(window).width()) <= phoneSize) {
+				//if using an iphone make player small to look like a button. otherwise display player normally.
+				jwplayer('player').resize("100%", normalPlayerHeight);
+			}
+		}
+	});
+
+	function jumpMedia(point) {
+		var isLive = 'false';
+
+		//we don't want to attemp a jump if its a live video
+		if (isLive == "false") {
+			currentEventPoint = point;
+			jwplayer('player').seek(point);
+
+		}
+	}
+
+
+</script>
+
+<script type="text/javascript">
+	var tabletSize = 991;
+	var phoneSize = 480;
+	var playerPadding = 4;
+	var navBarPadding = 14;
+	var normalPlayerHeight = 280;
+	var smallPlayerHeight = 48;
+
+	$(document).ready(function () {
+		var collapseSpeed = 300;
+
+		$(".media-collapse").click(function (e) {
+			var toggleHeight = 0;
+
+			if ($(".player-container").height() == 0) {
+				if ($(window).width() <= tabletSize && $(window).width() > phoneSize) {
+					toggleHeight = normalPlayerHeight;
+				}
+				else if ($(window).width() <= phoneSize) {
+					toggleHeight = normalPlayerHeight;
+				}
+			}
+
+			$(".player-container").animate({
+				height: toggleHeight
+			}, collapseSpeed, function (e) {
+				if ($(".player-container").height() == 0) {
+					$("#media-collapse-text").text("Show Media");
+				}
+				else {
+					$("#media-collapse-text").text("Hide Media");
+				}
+			});
+			$(".media-collapse").animate({
+				top: toggleHeight
+			}, collapseSpeed, function (e) {
+				if ($(".player-container").height() == 0) {
+					$("#player").height(0);
+				}
+				else {
+					$("#player").height(normalPlayerHeight);
+				}
+			});
+			$("#navbar").animate({
+				top: toggleHeight
+			}, collapseSpeed, function (e) {
+
+			});
+			$("#agenda-container").animate({
+				"margin-top": toggleHeight + $("#navbar").height() + navBarPadding + playerPadding
+			}, collapseSpeed, function (e) {
+
+			});
+
+		});
+
+		$(window).trigger("resize");
+	});
+
+	//use the resize function on the window to apply the css for tablet and phone size.
+	//resize method is used because the point the player jumps to the bottom could be different.
+	$(window).resize(function () {
+
+		$(".player-container").show();
+		$(".media-collapse").show();
+
+		if ($(".player-container").height() != 0) {
+			$("#media-collapse-text").text("Hide Media");
+			if ($(window).width() <= tabletSize) {
+				$(".player-container").css(
+					{
+						position: "fixed",
+						top: 0,
+						left: 0,
+						height: normalPlayerHeight,
+						"z-index": 98
+					}
+				);
+				$("#navbar").css(
+					{
+						width: "100%",
+						position: "fixed",
+						top: $(".player-container").height(),
+						left: 0,
+						"z-index": 99,
+						"border-radius": "0px"
+					}
+				);
+
+				$("#agenda-container").css({
+					"margin-top": $("#navbar").height() + navBarPadding + $(".player-container").height() + playerPadding,
+					"z-index": 101
+				});
+
+				$("#logo-container").hide();
+			} else {
+				$(".media-collapse").hide();
+				$(".player-container").css(
+					{
+						position: "relative",
+						height: normalPlayerHeight
+					}
+				);
+				$(".player-container").show();
+				$("#player").show();
+				$("#navbar").removeAttr("style");
+				$("#navbar").addClass("navbar navbar-dark");
+				$("#agenda-container").css("margin-top", "0px");
+				$("#logo-container").show();
+			}
+		} else {
+			$("#media-collapse-text").text("Show Media");
+			if ($(window).width() >= tabletSize) {
+				$(".player-container").css(
+					{
+						position: "relative",
+						height: normalPlayerHeight
+					}
+				);
+				$(".player-container").show();
+				$("#player").height(normalPlayerHeight);
+				$("#player").show();
+				$(window).trigger("resize");
+			}
+		}
+
+		$(".media-collapse").css({
+			position: "fixed",
+			top: $(".player-container").height(),
+			left: ($(window).width() / 2) - ($('.media-collapse').width() / 2),
+			"z-index": 100
+		});
+	});
+</script>					</div>
+					<div id="itemView">
+						&nbsp;
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>	
+	<br><br>
+	<script type="text/javascript">
+		var itemEventPoints = 
+			{
+264346: 510,264345: 510,264344: 510,264342: 510,264343: 510,264341: 510,264347: 542,264888: 1565,264858: 3772,264387: 3859,264300: 4258,264392: 4258,264339: 4258,264880: 3843,264882: 3843,264883: 3843,264252: 3378,263631: 3378,264446: 3421,264905: 542,264906: 510,264907: 510,264908: 510,264909: 510,264911: 510,264910: 510,264916: 3378,264919: 3378,264926: 3421,265023: 3772,265035: 3843,265036: 3843,265037: 3843,265039: 1565,265052: 3859,265057: 4258,265058: 4258,265059: 4258,			}
+
+		var sectionEventPoints = 
+			{
+61316: 145,61411: 6071,61317: 15,61315: 45,61320: 345,61314: 4305,62585: 15,62586: 45,62587: 145,62588: 345,62703: 4305,62706: 6071,			}
+	
+	</script>
+
+		</section>
+	</div>
+	<div class="footer">
+		<div class="container">
+			<div class="row">
+				<div class="no-padding-left copyright">
+					<img src="/AgendaOnline/Images/OnBase_Logo.png" class="onbase-logo" />
+					Copyright &#169; 2015-2026 Hyland Software, Inc.
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<script src="/AgendaOnline/bundles/corescripts?v=457QVHcykJM16qsLZTJmiE2yL_3fWgMP6B1eKTy1ilA1"></script>
+
+
+	<!--Version: 22.1.17.1000-->
+</body>
+</html>

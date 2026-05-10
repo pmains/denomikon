@@ -70,6 +70,21 @@ if _diag_ok:
     from db import get_session, Meeting, AgendaItem, SupportingDocument
     from db import AgendaItemVote, SupervisorVote, Supervisor, MeetingSupervisor, PZItemDetail
     from db import Case, CaseEvent
+    from db import (
+        get_bos_supervisors,
+        get_supervisor_by_slug_or_name,
+        get_supervisor_vote_stats,
+        get_supervisor_split_votes,
+        get_supervisor_dissents,
+        get_supervisor_abstentions,
+        get_supervisor_absences,
+        get_supervisor_full_voting_record,
+        get_supervisor_slug,
+        get_supervisor_majority_alignment_stats,
+        get_supervisor_voting_alignment,
+        get_supervisor_swing_votes,
+        get_supervisor_controversial_votes,
+    )
     from sqlalchemy import select, func, or_, text as sa_text
 else:
     print("FATAL: Missing dependencies — cannot start.", file=sys.stderr)
@@ -306,9 +321,10 @@ def meeting_detail(meeting_id, body=None):
             .join(Supervisor, SupervisorVote.supervisor_id == Supervisor.id)
             .where(SupervisorVote.agenda_item_vote_id.in_(vote_ids))
         ).all()
-        for sv, sname, _snorm in sv_rows:
+        for sv, sname, snorm in sv_rows:
+            slug = snorm.replace(" ", "-") if snorm else ""
             supervisor_votes_by_vote.setdefault(sv.agenda_item_vote_id, []).append(
-                {"name": sname, "vote": sv.vote}
+                {"name": sname, "vote": sv.vote, "slug": slug}
             )
 
     for av in item_votes:
@@ -464,6 +480,127 @@ def get_related_pz_items_for_case(case_number):
     """Get PZ-related events for a case number."""
     events = get_related_case_events(case_number)
     return [e for e in events if e.get("source_label") == "PZ"]
+
+
+# ---------------------------------------------------------------------------
+# BOS Member / Supervisor Voting Portal — Routes
+# ---------------------------------------------------------------------------
+
+VOTE_BADGE_CLASSES = {
+    "yes": "success",
+    "no": "danger",
+    "abstain": "warning",
+    "absent": "secondary",
+    "recused": "secondary",
+}
+
+MAJORITY_BADGE_CLASSES = {
+    "with_majority": "success",
+    "against_majority": "danger",
+}
+
+
+@app.route("/members")
+def members():
+    """Member directory — list all BOS supervisors with high-level stats."""
+    session = get_session()
+    supervisors = get_bos_supervisors(session)
+
+    member_rows = []
+    for sup in supervisors:
+        stats = get_supervisor_vote_stats(session, sup.id, body="bos")
+        slug = get_supervisor_slug(sup)
+        member_rows.append({
+            "id": sup.id,
+            "name": sup.name,
+            "normalized_name": sup.normalized_name,
+            "slug": slug,
+            "district": sup.district or "",
+            "role": "",
+            "active": sup.active_to is None,
+            "total_votes": stats["total_votes"],
+            "split_votes": stats["split_votes_attended"],
+            "dissents": stats["against_majority"],
+            "abstentions": stats["abstain"],
+            "absences": stats["absences"],
+        })
+
+    session.close()
+    return render_template("members.html", members=member_rows)
+
+
+@app.route("/members/<slug>")
+def member_detail(slug):
+    """Supervisor profile page with voting history sections."""
+    session = get_session()
+
+    sup = get_supervisor_by_slug_or_name(session, slug)
+    if not sup:
+        session.close()
+        return render_template(
+            "member_detail.html",
+            member=None,
+            slug=slug,
+        )
+
+    slug_out = get_supervisor_slug(sup)
+    stats = get_supervisor_vote_stats(session, sup.id, body="bos")
+    split_votes = get_supervisor_split_votes(session, sup.id, body="bos")
+    dissents = [s for s in split_votes if s.get("with_or_against_majority") == "against_majority"]
+    abstentions = get_supervisor_abstentions(session, sup.id, body="bos")
+    absences = get_supervisor_absences(session, sup.id, body="bos")
+    full_record = get_supervisor_full_voting_record(session, sup.id, body="bos")
+
+    session.close()
+
+    return render_template(
+        "member_detail.html",
+        member=sup,
+        slug=slug_out,
+        stats=stats,
+        split_votes=split_votes,
+        dissents=dissents,
+        abstentions=abstentions,
+        absences=absences,
+        full_record=full_record,
+        vote_badges=VOTE_BADGE_CLASSES,
+        majority_badges=MAJORITY_BADGE_CLASSES,
+    )
+
+
+@app.route("/members/<slug>/analytics")
+def member_analytics(slug):
+    """Voting analytics profile page for a member."""
+    session = get_session()
+
+    sup = get_supervisor_by_slug_or_name(session, slug)
+    if not sup:
+        session.close()
+        return render_template(
+            "analytics.html",
+            member=None,
+            slug=slug,
+        )
+
+    slug_out = get_supervisor_slug(sup)
+    alignment_stats = get_supervisor_majority_alignment_stats(session, sup.id, body="bos")
+    voting_alignment = get_supervisor_voting_alignment(session, sup.id, body="bos")
+    swing_votes = get_supervisor_swing_votes(session, sup.id, body="bos")
+    controversial_votes = get_supervisor_controversial_votes(session, sup.id, body="bos")
+
+    session.close()
+
+    return render_template(
+        "analytics.html",
+        member=sup,
+        slug=slug_out,
+        alignment_stats=alignment_stats,
+        voting_alignment=voting_alignment,
+        swing_votes=swing_votes,
+        controversial_votes=controversial_votes,
+        vote_badges=VOTE_BADGE_CLASSES,
+        majority_badges=MAJORITY_BADGE_CLASSES,
+    )
 
 
 if __name__ == "__main__":

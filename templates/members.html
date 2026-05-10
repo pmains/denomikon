@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Members — Poliscopic Meetings{% endblock %}
+{% block content %}
+
+<h2 class="mb-3">Board of Supervisors — Members</h2>
+
+{% if members %}
+<div class="table-responsive">
+    <table class="table table-hover table-sm align-middle">
+        <thead class="table-dark">
+            <tr>
+                <th>Name</th>
+                <th>District</th>
+                <th>Status</th>
+                <th class="text-center">Votes</th>
+                <th class="text-center">Split</th>
+                <th class="text-center">Dissents</th>
+                <th class="text-center">Abstain</th>
+                <th class="text-center">Absences</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for m in members %}
+            <tr>
+                <td>
+                    <a href="/members/{{ m.slug }}"><strong>{{ m.name }}</strong></a>
+                </td>
+                <td>{% if m.district %}District {{ m.district }}{% else %}&mdash;{% endif %}</td>
+                <td>
+                    {% if m.active %}
+                    <span class="badge bg-success">Active</span>
+                    {% else %}
+                    <span class="badge bg-secondary">Inactive</span>
+                    {% endif %}
+                </td>
+                <td class="text-center">{{ m.total_votes }}</td>
+                <td class="text-center">{{ m.split_votes }}</td>
+                <td class="text-center">{{ m.dissents }}</td>
+                <td class="text-center">{{ m.abstentions }}</td>
+                <td class="text-center">{{ m.absences }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="alert alert-info">No member data available. Sync some BOS meetings with votes first.</div>
+{% endif %}
+
+{% endblock %}

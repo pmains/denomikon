@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+{% block title %}Analytics — {{ member.name if member else 'Member not found' }} — Poliscopic Meetings{% endblock %}
+{% block content %}
+
+<a href="/members/{{ slug }}" class="btn btn-outline-secondary btn-sm mb-3">&larr; {{ member.name if member else 'Back' }}</a>
+
+{% if member %}
+
+{% macro vote_badge(vote_val) %}
+{%- set v = vote_val|lower -%}
+{%- set cls = vote_badges.get(v, 'secondary') -%}
+<span class="badge bg-{{ cls }}">{{ vote_val }}</span>
+{% endmacro %}
+
+{% macro majority_badge(val) %}
+{%- set cls = majority_badges.get(val, 'secondary') -%}
+<span class="badge bg-{{ cls }}">{{ val|replace('_', ' ')|title }}</span>
+{% endmacro %}
+
+{% macro controversy_badges(flags) %}
+{%- for flag in flags -%}
+<span class="badge bg-warning text-dark me-1">{{ flag }}</span>
+{%- endfor -%}
+{% endmacro %}
+
+<h3 class="mb-3">{{ member.name }} — Voting Analytics</h3>
+
+{# ─── 1. Majority Alignment ─── #}
+{% set a = alignment_stats %}
+<h4 class="mb-2">Majority Alignment</h4>
+<div class="row row-cols-2 row-cols-md-4 row-cols-lg-5 g-3 mb-4">
+    <div class="col">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0">{{ a.total_votes }}</h5>
+                <small class="text-muted">Total Votes</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-success">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-success">{{ a.unanimous_votes }}</h5>
+                <small class="text-muted">Unanimous</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-info">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-info">{{ a.split_votes_attended }}</h5>
+                <small class="text-muted">Split Votes</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-success">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-success">{{ a.with_majority }}</h5>
+                <small class="text-muted">With Majority</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-danger">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-danger">{{ a.against_majority }}</h5>
+                <small class="text-muted">Against Majority</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-warning">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-warning">{{ a.abstain_on_split }}</h5>
+                <small class="text-muted">Abstain (Split)</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0">
+                    {% if a.majority_alignment_rate is not none %}
+                    {{ (a.majority_alignment_rate * 100)|round(1) }}%
+                    {% else %}
+                    &mdash;
+                    {% endif %}
+                </h5>
+                <small class="text-muted">Majority Alignment</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0">
+                    {% if a.dissent_rate is not none %}
+                    {{ (a.dissent_rate * 100)|round(1) }}%
+                    {% else %}
+                    &mdash;
+                    {% endif %}
+                </h5>
+                <small class="text-muted">Dissent Rate</small>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# ─── 2. Voting Alignment Analysis ─── #}
+<h4 class="mb-2">Voting Alignment Analysis</h4>
+<p class="text-muted small mb-2">
+    How often this member votes the same way as each other BOS member on comparable items.
+    Excludes abstentions and absences.
+</p>
+{% if voting_alignment %}
+<div class="table-responsive mb-4">
+    <table class="table table-sm table-hover">
+        <thead class="table-light">
+            <tr>
+                <th>Other Member</th>
+                <th class="text-center">Comparable</th>
+                <th class="text-center">Same</th>
+                <th class="text-center">Different</th>
+                <th class="text-center">Overall</th>
+                <th class="text-center">Split Compares</th>
+                <th class="text-center">Split Same</th>
+                <th class="text-center">Split Alignment</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for va in voting_alignment %}
+            <tr>
+                <td>
+                    {% if va.slug %}
+                    <a href="/members/{{ va.slug }}"><strong>{{ va.other_name }}</strong></a>
+                    {% else %}
+                    <strong>{{ va.other_name }}</strong>
+                    {% endif %}
+                </td>
+                <td class="text-center">{{ va.total_comparable_votes }}</td>
+                <td class="text-center">{{ va.same_votes }}</td>
+                <td class="text-center">{{ va.different_votes }}</td>
+                <td class="text-center">
+                    {% if va.overall_alignment_pct is not none %}
+                    <strong>{{ va.overall_alignment_pct }}%</strong>
+                    {% else %}&mdash;{% endif %}
+                </td>
+                <td class="text-center">{{ va.split_vote_comparable }}</td>
+                <td class="text-center">{{ va.split_vote_same }}</td>
+                <td class="text-center">
+                    {% if va.split_vote_alignment_pct is not none %}
+                    <strong>{{ va.split_vote_alignment_pct }}%</strong>
+                    {% else %}&mdash;{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-muted mb-4">No comparable voting data available.</p>
+{% endif %}
+
+{# ─── 3. Swing Votes ─── #}
+<h4 class="mb-2">Swing Votes</h4>
+<p class="text-muted small mb-2">
+    Split votes where the margin was one vote (3-2 or 2-3) and this member voted with the prevailing side.
+</p>
+{% if swing_votes %}
+<div class="table-responsive mb-4">
+    <table class="table table-sm table-hover">
+        <thead class="table-light">
+            <tr>
+                <th>Date</th>
+                <th>Type</th>
+                <th>#</th>
+                <th>Title</th>
+                <th>Vote</th>
+                <th>Result</th>
+                <th>Tally</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for sw in swing_votes %}
+            <tr>
+                <td><a href="/meetings/{{ sw.meeting_id }}">{{ sw.meeting_date }}</a></td>
+                <td>{{ sw.meeting_type }}</td>
+                <td>{{ sw.agenda_item_number }}</td>
+                <td>{{ sw.agenda_item_title[:60] }}{% if sw.agenda_item_title|length > 60 %}...{% endif %}</td>
+                <td>{{ vote_badge(sw.supervisor_vote) }}</td>
+                <td><span class="badge bg-secondary">{{ sw.motion_result }}</span></td>
+                <td><code>{{ sw.vote_tally }}</code></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-muted mb-4">No swing votes identified.</p>
+{% endif %}
+
+{# ─── 4. Controversial Votes ─── #}
+<h4 class="mb-2">Controversial Votes</h4>
+<p class="text-muted small mb-2">
+    Items flagged by controversy heuristics: split votes, abstentions, keyword matches, dollar amounts, or unusual motion results.
+</p>
+{% if controversial_votes %}
+<div class="table-responsive mb-4">
+    <table class="table table-sm table-hover">
+        <thead class="table-light">
+            <tr>
+                <th>Date</th>
+                <th>Type</th>
+                <th>#</th>
+                <th>Title</th>
+                <th>Vote</th>
+                <th>Result</th>
+                <th>Controversy Reasons</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for cv in controversial_votes %}
+            <tr>
+                <td><a href="/meetings/{{ cv.meeting_id }}">{{ cv.meeting_date }}</a></td>
+                <td>{{ cv.meeting_type }}</td>
+                <td>{{ cv.agenda_item_number }}</td>
+                <td>{{ cv.agenda_item_title[:60] }}{% if cv.agenda_item_title|length > 60 %}...{% endif %}</td>
+                <td>{{ vote_badge(cv.supervisor_vote) }}</td>
+                <td><span class="badge bg-secondary">{{ cv.motion_result }}</span></td>
+                <td>{{ controversy_badges(cv.controversy_flags) }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-muted mb-4">No controversial votes flagged.</p>
+{% endif %}
+
+{% else %}
+<div class="alert alert-danger">Member <strong>{{ slug }}</strong> not found.</div>
+{% endif %}
+
+<p class="text-muted small mt-3"><a href="/members/{{ slug }}">&larr; Back to profile</a></p>
+{% endblock %}

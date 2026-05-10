@@ -1,0 +1,316 @@
+{% extends "base.html" %}
+{% block title %}{{ member.name if member else 'Member not found' }} — Poliscopic Meetings{% endblock %}
+{% block content %}
+
+<a href="/members" class="btn btn-outline-secondary btn-sm mb-3">&larr; All members</a>
+
+{% if member %}
+
+{# ─── Header card ─── #}
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-start">
+            <div>
+                <h3 class="card-title mb-1">{{ member.name }}</h3>
+                <p class="text-muted mb-0">
+                    {% if member.district %}District {{ member.district }} &middot; {% endif %}
+                    Board of Supervisors
+                </p>
+            </div>
+            <div>
+                <a href="/members/{{ slug }}/analytics" class="btn btn-outline-info btn-sm">View Analytics &rarr;</a>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% macro vote_badge(vote_val) %}
+{%- set v = vote_val|lower -%}
+{%- set cls = vote_badges.get(v, 'secondary') -%}
+<span class="badge bg-{{ cls }}">{{ vote_val }}</span>
+{% endmacro %}
+
+{% macro majority_badge(val) %}
+{%- set cls = majority_badges.get(val, 'secondary') -%}
+<span class="badge bg-{{ cls }}">{{ val|replace('_', ' ')|title }}</span>
+{% endmacro %}
+
+{# ─── A. Summary Cards ─── #}
+{% set s = stats %}
+<div class="row row-cols-2 row-cols-md-4 row-cols-lg-5 g-3 mb-4">
+    <div class="col">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0">{{ s.total_votes }}</h5>
+                <small class="text-muted">Total Votes</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-success">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-success">{{ s.yes }}</h5>
+                <small class="text-muted">Yes</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-danger">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-danger">{{ s.no }}</h5>
+                <small class="text-muted">No</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-warning">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-warning">{{ s.abstain }}</h5>
+                <small class="text-muted">Abstain</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-secondary">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-secondary">{{ s.absences }}</h5>
+                <small class="text-muted">Absences</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-info">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-info">{{ s.split_votes_attended }}</h5>
+                <small class="text-muted">Split Votes</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-success">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-success">{{ s.with_majority }}</h5>
+                <small class="text-muted">With Majority</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-danger">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-danger">{{ s.against_majority }}</h5>
+                <small class="text-muted">Against Majority</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0">
+                    {% if s.dissent_rate is not none %}
+                    {{ (s.dissent_rate * 100)|round(1) }}%
+                    {% else %}
+                    &mdash;
+                    {% endif %}
+                </h5>
+                <small class="text-muted">Dissent Rate</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0">
+                    {% if s.attendance_rate is not none %}
+                    {{ (s.attendance_rate * 100)|round(1) }}%
+                    {% else %}
+                    &mdash;
+                    {% endif %}
+                </h5>
+                <small class="text-muted">Attendance</small>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# ─── B. Split Votes ─── #}
+<h4 class="mb-2">Split Votes</h4>
+{% if split_votes %}
+<div class="table-responsive mb-4">
+    <table class="table table-sm table-hover">
+        <thead class="table-light">
+            <tr>
+                <th>Date</th>
+                <th>Type</th>
+                <th>#</th>
+                <th>Title</th>
+                <th>Vote</th>
+                <th>Result</th>
+                <th>Majority</th>
+                <th>Alignment</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for sv in split_votes %}
+            <tr>
+                <td><a href="/meetings/{{ sv.meeting_id }}">{{ sv.meeting_date }}</a></td>
+                <td>{{ sv.meeting_type }}</td>
+                <td>{{ sv.agenda_item_number }}</td>
+                <td>{{ sv.agenda_item_title[:60] }}{% if sv.agenda_item_title|length > 60 %}...{% endif %}</td>
+                <td>{{ vote_badge(sv.supervisor_vote) }}</td>
+                <td><span class="badge bg-secondary">{{ sv.motion_result }}</span></td>
+                <td>{{ vote_badge(sv.majority_position) if sv.majority_position else '&mdash;'|safe }}</td>
+                <td>
+                    {% if sv.with_or_against_majority %}
+                    {{ majority_badge(sv.with_or_against_majority) }}
+                    {% else %}
+                    &mdash;
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-muted mb-4">No split votes recorded.</p>
+{% endif %}
+
+{# ─── C. Dissents ─── #}
+<h4 class="mb-2">Dissenting Votes <small class="text-muted">(against majority on split votes)</small></h4>
+{% if dissents %}
+<div class="table-responsive mb-4">
+    <table class="table table-sm table-hover">
+        <thead class="table-light">
+            <tr>
+                <th>Date</th>
+                <th>Type</th>
+                <th>#</th>
+                <th>Title</th>
+                <th>Vote</th>
+                <th>Result</th>
+                <th>Majority</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for d in dissents %}
+            <tr>
+                <td><a href="/meetings/{{ d.meeting_id }}">{{ d.meeting_date }}</a></td>
+                <td>{{ d.meeting_type }}</td>
+                <td>{{ d.agenda_item_number }}</td>
+                <td>{{ d.agenda_item_title[:60] }}{% if d.agenda_item_title|length > 60 %}...{% endif %}</td>
+                <td>{{ vote_badge(d.supervisor_vote) }}</td>
+                <td><span class="badge bg-secondary">{{ d.motion_result }}</span></td>
+                <td>{{ vote_badge(d.majority_position) if d.majority_position else '&mdash;'|safe }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-muted mb-4">No dissenting votes recorded.</p>
+{% endif %}
+
+{# ─── D. Abstentions ─── #}
+<h4 class="mb-2">Abstentions</h4>
+{% if abstentions %}
+<div class="table-responsive mb-4">
+    <table class="table table-sm table-hover">
+        <thead class="table-light">
+            <tr>
+                <th>Date</th>
+                <th>Type</th>
+                <th>#</th>
+                <th>Title</th>
+                <th>Result</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for a in abstentions %}
+            <tr>
+                <td><a href="/meetings/{{ a.meeting_id }}">{{ a.meeting_date }}</a></td>
+                <td>{{ a.meeting_type }}</td>
+                <td>{{ a.agenda_item_number }}</td>
+                <td>{{ a.agenda_item_title[:60] }}{% if a.agenda_item_title|length > 60 %}...{% endif %}</td>
+                <td><span class="badge bg-secondary">{{ a.motion_result }}</span></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-muted mb-4">No abstentions recorded.</p>
+{% endif %}
+
+{# ─── E. Absences ─── #}
+<h4 class="mb-2">Absences</h4>
+{% if absences %}
+<div class="table-responsive mb-4">
+    <table class="table table-sm table-hover">
+        <thead class="table-light">
+            <tr>
+                <th>Date</th>
+                <th>Type</th>
+                <th>Title</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for a in absences %}
+            <tr>
+                <td><a href="/meetings/{{ a.meeting_id }}">{{ a.meeting_date }}</a></td>
+                <td>{{ a.meeting_type }}</td>
+                <td>{{ a.title }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-muted mb-4">No absences recorded.</p>
+{% endif %}
+
+{# ─── F. Full Voting Record ─── #}
+<h4 class="mb-2">Full Voting Record <small class="text-muted">({{ full_record|length }} votes)</small></h4>
+{% if full_record %}
+<div class="table-responsive mb-4">
+    <table class="table table-sm table-hover small">
+        <thead class="table-light">
+            <tr>
+                <th>Date</th>
+                <th>Type</th>
+                <th>#</th>
+                <th>Title</th>
+                <th>C-number</th>
+                <th>Vote</th>
+                <th>Result</th>
+                <th>Split?</th>
+                <th>Majority</th>
+                <th>Alignment</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in full_record %}
+            <tr>
+                <td><a href="/meetings/{{ r.meeting_id }}">{{ r.meeting_date }}</a></td>
+                <td>{{ r.meeting_type }}</td>
+                <td>{{ r.agenda_item_number }}</td>
+                <td>{{ r.agenda_item_title[:50] }}{% if r.agenda_item_title|length > 50 %}...{% endif %}</td>
+                <td>{% if r.c_number %}<code>{{ r.c_number }}</code>{% else %}&mdash;{% endif %}</td>
+                <td>{{ vote_badge(r.vote) }}</td>
+                <td><span class="badge bg-secondary">{{ r.motion_result }}</span></td>
+                <td>{% if r.is_split_vote %}<span class="badge bg-warning text-dark">Split</span>{% else %}&mdash;{% endif %}</td>
+                <td>{% if r.majority_position %}{{ vote_badge(r.majority_position) }}{% else %}&mdash;{% endif %}</td>
+                <td>{% if r.with_or_against_majority %}{{ majority_badge(r.with_or_against_majority) }}{% else %}&mdash;{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-muted mb-4">No voting record available.</p>
+{% endif %}
+
+{% else %}
+<div class="alert alert-danger">Member <strong>{{ slug }}</strong> not found.</div>
+{% endif %}
+
+{% endblock %}

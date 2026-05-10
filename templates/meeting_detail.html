@@ -190,7 +190,13 @@
                 <table class="table table-sm table-borderless small mb-2" style="width:auto">
                     {% for sv in item_vote.supervisor_votes %}
                     <tr>
-                        <td class="pe-3">{{ sv.name }}</td>
+                        <td class="pe-3">
+                            {%- if sv.slug -%}
+                            <a href="/members/{{ sv.slug }}">{{ sv.name }}</a>
+                            {%- else -%}
+                            {{ sv.name }}
+                            {%- endif -%}
+                        </td>
                         <td>
                             {% set v = sv.vote.lower() %}
                             <span class="badge bg-{% if v in ('yes', 'aye') %}success{% elif v in ('no', 'nay') %}danger{% else %}secondary{% endif %}">

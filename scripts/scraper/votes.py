@@ -131,17 +131,30 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
     item_boundaries: list[tuple[int, str, str]] = []
     seen_nums: set[int] = set()
     valid_item_nums = {int(a.get("agenda_item_number", 0)) for a in agenda_items if a.get("agenda_item_number")}
-    for m in re.finditer(r"(?:\xa0|[^\w\'\u2019\u2018])(\d{1,3})\.(?=\s*[A-Z0-9])", full_text):
+    for m in re.finditer(r"(?:^|[^\w\'\u2019\u2018])(\d{1,3})\.(?=\s*[A-Z0-9])", full_text):
         num = m.group(1)
         num_int = int(num)
         if num_int in seen_nums:
             continue
-        seen_nums.add(num_int)
         # Filter spurious matches (dollar amounts, subsection numbers) early
         if valid_item_nums and num_int not in valid_item_nums:
             continue
         if len(num) > 3 and num not in item_cnumber_map:
             continue
+        # Post-filter: reject spurious boundary matches
+        # Check 1: decimal numbers like "0,72.50" (char before separator is digit)
+        if m.start() > 0 and full_text[m.start() - 1].isdigit():
+            continue
+        # Check 2: percentages like " 27.66%" (2 digits then '%' after dot)
+        if len(full_text) > m.end() + 2:
+            after_dot = full_text[m.end():m.end()+3]
+            if re.match(r'\d{2}%', after_dot):
+                continue
+        # Check 3: condition sub-numbers in PZ consent text, where text after
+        # the dot is a space (" 7. Drainage" vs real " 7.OFF 17 NORTH").
+        if len(full_text) > m.end() and full_text[m.end()] == ' ':
+            continue
+        seen_nums.add(num_int)
         pos = m.start()
         rest = full_text[pos:].lstrip()
         rest = re.sub(r"^\d+\.\s*", "", rest)

@@ -30,6 +30,17 @@ from db import (
     get_session, Meeting, AgendaItem, SupportingDocument,
     Supervisor, MeetingSupervisor, AgendaItemVote, SupervisorVote,
     Case, CaseEvent,
+    get_supervisor_by_slug_or_name,
+    get_supervisor_vote_stats,
+    get_supervisor_split_votes,
+    get_supervisor_dissents,
+    get_supervisor_abstentions,
+    get_supervisor_absences,
+    get_supervisor_full_voting_record,
+    get_supervisor_majority_alignment_stats,
+    get_supervisor_voting_alignment,
+    get_supervisor_swing_votes,
+    get_supervisor_controversial_votes,
 )
 from sqlalchemy import or_, select, func, and_
 
@@ -689,18 +700,166 @@ def cmd_dissent(args):
 
 
 def cmd_member_votes(args):
-    """Show votes for a member."""
-    print(f"Member votes for '{args.name}': feature scaffold")
+    """Show votes for a member. Uses get_supervisor_full_voting_record()."""
+    session = get_session()
+    sup = get_supervisor_by_slug_or_name(session, args.name)
+    if not sup:
+        print(f"Member '{args.name}' not found.")
+        session.close()
+        return
+    body = getattr(args, 'body', None) or 'bos'
+    records = get_supervisor_full_voting_record(session, sup.id, body=body)
+    session.close()
+    if not records:
+        print(f"No votes found for {sup.name}.")
+        return
+    print(f"{sup.name} — {len(records)} votes (body: {body})")
+    print(f"{'─' * 70}")
+    for r in records:
+        split_tag = " SPLIT" if r['is_split_vote'] else ""
+        print(f"  {r['meeting_date']}  {r['meeting_id']}  #{r['agenda_item_number']:>4}  {r['vote']:<8}{split_tag}")
+    print(f"\nStats: yes={sum(1 for r in records if r['vote']=='yes')} "
+          f"no={sum(1 for r in records if r['vote']=='no')} "
+          f"abstain={sum(1 for r in records if r['vote']=='abstain')} "
+          f"split={sum(1 for r in records if r['is_split_vote'])}")
+
+
+def cmd_majority_alignment(args):
+    """Show majority alignment stats for a supervisor."""
+    session = get_session()
+    sup = get_supervisor_by_slug_or_name(session, args.name)
+    if not sup:
+        print(f"Member '{args.name}' not found.")
+        session.close()
+        return
+    body = getattr(args, 'body', None) or 'bos'
+    a = get_supervisor_majority_alignment_stats(session, sup.id, body=body)
+    session.close()
+    print(f"Majority Alignment — {sup.name} (body: {body})")
+    print(f"  Total votes:           {a['total_votes']}")
+    print(f"  Unanimous votes:       {a['unanimous_votes']}")
+    print(f"  Split votes attended:  {a['split_votes_attended']}")
+    print(f"  With majority:         {a['with_majority']}")
+    print(f"  Against majority:      {a['against_majority']}")
+    print(f"  Abstain on split:      {a['abstain_on_split']}")
+    rate = a['majority_alignment_rate']
+    print(f"  Majority alignment:    {round(rate*100,1) if rate else 'N/A'}%")
+    drate = a['dissent_rate']
+    print(f"  Dissent rate:          {round(drate*100,1) if drate else 'N/A'}%")
+
+
+def cmd_voting_alignment(args):
+    """Show pairwise voting alignment with other members."""
+    session = get_session()
+    sup = get_supervisor_by_slug_or_name(session, args.name)
+    if not sup:
+        print(f"Member '{args.name}' not found.")
+        session.close()
+        return
+    body = getattr(args, 'body', None) or 'bos'
+    alignment = get_supervisor_voting_alignment(session, sup.id, body=body)
+    session.close()
+    if not alignment:
+        print(f"No alignment data for {sup.name}.")
+        return
+    print(f"Voting Alignment — {sup.name} vs other members (body: {body})")
+    print(f"{'─' * 100}")
+    print(f"{'Other Member':<25} {'Comparable':>5} {'Same':>5} {'Diff':>5} {'Overall%':>8} {'SplitCmp':>8} {'SplitSame':>5} {'Split%':>8}")
+    print(f"{'─' * 100}")
+    for va in alignment:
+        o_pct = f"{va['overall_alignment_pct']}%" if va['overall_alignment_pct'] is not None else "N/A"
+        s_pct = f"{va['split_vote_alignment_pct']}%" if va['split_vote_alignment_pct'] is not None else "N/A"
+        print(f"{va['other_name']:<25} {va['total_comparable_votes']:>5} {va['same_votes']:>5} {va['different_votes']:>5} {o_pct:>8} {va['split_vote_comparable']:>8} {va['split_vote_same']:>5} {s_pct:>8}")
+
+
+def cmd_swing_votes(args):
+    """Show swing votes for a supervisor."""
+    session = get_session()
+    sup = get_supervisor_by_slug_or_name(session, args.name)
+    if not sup:
+        print(f"Member '{args.name}' not found.")
+        session.close()
+        return
+    body = getattr(args, 'body', None) or 'bos'
+    swings = get_supervisor_swing_votes(session, sup.id, body=body)
+    session.close()
+    if not swings:
+        print(f"No swing votes for {sup.name}.")
+        return
+    print(f"Swing Votes — {sup.name} (body: {body}): {len(swings)} vote(s)")
+    print(f"{'─' * 90}")
+    for sw in swings:
+        print(f"  {sw['meeting_date']}  {sw['meeting_id']}  #{sw['agenda_item_number']:>4}  {sw['supervisor_vote']:<6}  {sw['motion_result']:<10}  tally={sw['vote_tally']}")
+
+
+def cmd_controversial_votes(args):
+    """Show controversial votes for a supervisor."""
+    session = get_session()
+    sup = get_supervisor_by_slug_or_name(session, args.name)
+    if not sup:
+        print(f"Member '{args.name}' not found.")
+        session.close()
+        return
+    body = getattr(args, 'body', None) or 'bos'
+    controversial = get_supervisor_controversial_votes(session, sup.id, body=body)
+    session.close()
+    if not controversial:
+        print(f"No controversial votes for {sup.name}.")
+        return
+    print(f"Controversial Votes — {sup.name} (body: {body}): {len(controversial)} vote(s)")
+    print(f"{'─' * 100}")
+    for cv in controversial[:20]:
+        flags = ", ".join(cv['controversy_flags'][:3])
+        title = (cv['agenda_item_title'] or '')[:40]
+        print(f"  {cv['meeting_date']}  {cv['meeting_id']}  #{cv['agenda_item_number']:>4}  {cv['supervisor_vote']:<6}  {cv['motion_result']:<10}  [{flags}]")
+    if len(controversial) > 20:
+        print(f"  ... and {len(controversial) - 20} more")
 
 
 def cmd_no_vote(args):
-    """Search members who did not vote."""
-    print(f"No-vote search for '{args.name}': feature scaffold")
+    """Search abstentions by a member. Uses get_supervisor_abstentions()."""
+    session = get_session()
+    sup = get_supervisor_by_slug_or_name(session, args.name)
+    if not sup:
+        print(f"Member '{args.name}' not found.")
+        session.close()
+        return
+    body = getattr(args, 'body', None) or 'bos'
+    abstentions = get_supervisor_abstentions(session, sup.id, body=body)
+    no_votes = []  # Items where supervisor didn't vote but others did — not in current schema yet
+    session.close()
+    print(f"No-vote/abstention data for {sup.name} (body: {body}):")
+    print(f"  Abstentions (recorded): {len(abstentions)}")
+    for a in abstentions:
+        print(f"    {a['meeting_date']}  {a['meeting_id']}  #{a['agenda_item_number']}  {a.get('agenda_item_title','')[:50]}")
+    print(f"  No-vote (missing): {len(no_votes)} — requires inference logic, see get_supervisor_absences()")
+    print(f"  See also: inspect_db.py attendance '{args.name}' for meeting-level absences")
 
 
 def cmd_attendance(args):
-    """Show attendance for a member."""
-    print(f"Attendance for '{args.name}': feature scaffold")
+    """Show attendance for a member. Uses get_supervisor_absences() and meeting_supervisors."""
+    session = get_session()
+    sup = get_supervisor_by_slug_or_name(session, args.name)
+    if not sup:
+        print(f"Member '{args.name}' not found.")
+        session.close()
+        return
+    body = getattr(args, 'body', None) or 'bos'
+    stats = get_supervisor_vote_stats(session, sup.id, body=body)
+    absences = get_supervisor_absences(session, sup.id, body=body)
+    session.close()
+
+    present = stats['attendance_present']
+    absent = stats['attendance_absent']
+    total = present + absent
+    rate = stats['attendance_rate']
+    print(f"Attendance for {sup.name} (body: {body})")
+    print(f"  Present: {present}  Absent: {absent}  Total: {total}")
+    print(f"  Rate: {round(rate*100,1) if rate else 'N/A'}%")
+    if absences:
+        print(f"\n  Absences ({len(absences)}):")
+        for a in absences:
+            print(f"    {a['meeting_date']}  {a['meeting_id']}  {a.get('title','')[:50]}")
 
 
 def cmd_meeting_attendance(args):
@@ -909,14 +1068,37 @@ def parse_args(argv=None):
     # member-votes
     sp_mv = sub.add_parser("member-votes", help="Show votes for a member")
     sp_mv.add_argument("name", help="Member name")
+    sp_mv.add_argument("--body", default="bos", help="Body scope (default: bos)")
+
+    # majority-alignment
+    sp_ma = sub.add_parser("majority-alignment", help="Show majority alignment stats for a member")
+    sp_ma.add_argument("name", help="Member name")
+    sp_ma.add_argument("--body", default="bos", help="Body scope (default: bos)")
+
+    # voting-alignment
+    sp_va = sub.add_parser("voting-alignment", help="Show pairwise voting alignment with other members")
+    sp_va.add_argument("name", help="Member name")
+    sp_va.add_argument("--body", default="bos", help="Body scope (default: bos)")
+
+    # swing-votes
+    sp_sv = sub.add_parser("swing-votes", help="Show swing votes for a member")
+    sp_sv.add_argument("name", help="Member name")
+    sp_sv.add_argument("--body", default="bos", help="Body scope (default: bos)")
+
+    # controversial-votes
+    sp_cv = sub.add_parser("controversial-votes", help="Show controversial votes for a member")
+    sp_cv.add_argument("name", help="Member name")
+    sp_cv.add_argument("--body", default="bos", help="Body scope (default: bos)")
 
     # no-vote
     sp_nv = sub.add_parser("no-vote", help="Search members who did not vote")
     sp_nv.add_argument("name", help="Member name")
+    sp_nv.add_argument("--body", default="bos", help="Body scope (default: bos)")
 
     # attendance
     sp_att = sub.add_parser("attendance", help="Show attendance for a member")
     sp_att.add_argument("name", help="Member name")
+    sp_att.add_argument("--body", default="bos", help="Body scope (default: bos)")
 
     # meeting-attendance
     sp_ma = sub.add_parser("meeting-attendance", help="Show attendance for a meeting")
@@ -961,6 +1143,10 @@ def main(argv=None):
         "split-votes": cmd_split_votes,
         "dissent": cmd_dissent,
         "member-votes": cmd_member_votes,
+        "majority-alignment": cmd_majority_alignment,
+        "voting-alignment": cmd_voting_alignment,
+        "swing-votes": cmd_swing_votes,
+        "controversial-votes": cmd_controversial_votes,
         "no-vote": cmd_no_vote,
         "attendance": cmd_attendance,
         "meeting-attendance": cmd_meeting_attendance,
