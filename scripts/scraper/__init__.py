@@ -115,6 +115,7 @@ __all__ = [
     "extract_raw_agenda_blocks_for_meeting",
     "extract_raw_agenda_blocks_from_metadata",
     "extract_supporting_documents_dynamic",
+    "extract_supporting_documents_dynamic_concurrent",
     "extract_supporting_documents_from_items",
     "extract_votes_from_summary",
     "filter_agenda_metadata_rows",

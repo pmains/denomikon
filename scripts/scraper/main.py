@@ -45,7 +45,8 @@ from scraper.agenda_items import (
 )
 from scraper.supporting_docs import (
     _extract_supporting_docs_from_table, extract_supporting_documents_from_items,
-    extract_supporting_documents_dynamic, _click_and_extract_item,
+    extract_supporting_documents_dynamic, extract_supporting_documents_dynamic_concurrent,
+    _click_and_extract_item,
 )
 from scraper.pz import (
     _format_mm_dd_yyyy,
@@ -775,7 +776,9 @@ async def main() -> int:
 
                         # Extract supporting documents with retry
                         async def do_extract_docs():
-                            return await extract_supporting_documents_dynamic(page, items, source_url)
+                            return await extract_supporting_documents_dynamic_concurrent(
+                                page, items, source_url, concurrency=5
+                            )
 
                         docs = []
                         docs_ok = True
@@ -1146,8 +1149,8 @@ async def main() -> int:
 
                         log.info("%s phase=discover_documents started", meeting_prefix)
                         _doc_t0 = time.monotonic()
-                        docs = await extract_supporting_documents_dynamic(
-                            page, items, meeting.agenda_url
+                        docs = await extract_supporting_documents_dynamic_concurrent(
+                            page, items, meeting.agenda_url, concurrency=5
                         )
                         log.info(
                             "%s phase=discover_documents done item_docs=%d elapsed=%.1fs",

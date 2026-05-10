@@ -526,6 +526,117 @@ class TestRetryBackoff(unittest.TestCase):
         self.assertEqual(len(attempts), 1)
 
 
+@integration_test
+class TestPersistVotes(unittest.TestCase):
+    """Test that persist_votes handles retry and stale-session scenarios."""
+
+    @classmethod
+    def setUpClass(cls):
+        _reset_db_engine()
+        init_db()
+
+    def setUp(self):
+        from db import persist_votes
+        self.persist_votes = persist_votes
+        self.s = get_session()
+        # Ensure supervisor records exist
+        from db import Supervisor
+        existing = self.s.execute(
+            select(Supervisor).where(Supervisor.normalized_name == "test one")
+        ).scalar_one_or_none()
+        if not existing:
+            self.s.add(Supervisor(name="Test One", normalized_name="test one"))
+            self.s.add(Supervisor(name="Test Two", normalized_name="test two"))
+            self.s.commit()
+        else:
+            self.s.commit()
+
+    def tearDown(self):
+        self.s.close()
+
+    def _make_vote(self, item_num=1):
+        return [{
+            "agenda_item_number": item_num,
+            "c_number": f"C-01-25-{item_num:03d}-X-00",
+            "motion_result": "approved",
+            "vote_text": "Test vote",
+            "supervisor_votes": [
+                {"name": "Test One", "vote": "yes"},
+                {"name": "Test Two", "vote": "yes"},
+            ]
+        }]
+
+    def _make_supervisors(self):
+        return [
+            {"name": "Test One", "normalized_name": "test one", "district": "1"},
+            {"name": "Test Two", "normalized_name": "test two", "district": "2"},
+        ]
+
+    def test_persist_votes_twice_same_meeting(self):
+        """Calling persist_votes twice for the same meeting must succeed.
+
+        First call succeeds internally but the outer commit fails.
+        Second call must delete and re-insert without UNIQUE violations.
+        """
+        sups = self._make_supervisors()
+        v = self._make_vote()
+
+        self.persist_votes(self.s, "bos", "TEST001", sups, v)
+        self.s.rollback()
+
+        self.persist_votes(self.s, "bos", "TEST001", sups, v)
+        self.s.commit()
+
+        from db import MeetingSupervisor, AgendaItemVote
+        ms = self.s.execute(
+            select(MeetingSupervisor).where(
+                MeetingSupervisor.body == "bos",
+                MeetingSupervisor.meeting_id == "TEST001",
+            )
+        ).scalars().all()
+        aiv = self.s.execute(
+            select(AgendaItemVote).where(
+                AgendaItemVote.body == "bos",
+                AgendaItemVote.meeting_id == "TEST001",
+            )
+        ).scalars().all()
+        self.assertEqual(len(ms), 2)
+        self.assertEqual(len(aiv), 1)
+
+    def test_persist_votes_consecutive_meetings(self):
+        """Consecutive meetings must not leak session state."""
+        sups = self._make_supervisors()
+        for i in range(3):
+            mid = f"TEST00{i+2}"
+            self.persist_votes(self.s, "bos", mid, sups, self._make_vote(i + 1))
+            self.s.commit()
+
+        from db import MeetingSupervisor
+        total = self.s.execute(select(MeetingSupervisor)).scalars().all()
+        self.assertEqual(len(total), 6)
+
+    def test_persist_votes_stale_session_after_failure(self):
+        """When a commit fails after persist_votes, the next meeting's
+        persist_votes must succeed despite stale objects in the session."""
+        sups = self._make_supervisors()
+
+        # First call: succeed, no commit (simulates outer exception)
+        self.persist_votes(self.s, "bos", "TEST010", sups, self._make_vote())
+
+        # Second meeting: must not get UNIQUE constraint failure
+        self.persist_votes(self.s, "bos", "TEST011", sups, self._make_vote(1))
+        self.s.commit()
+
+        from db import MeetingSupervisor
+        ms10 = self.s.execute(
+            select(MeetingSupervisor).where(MeetingSupervisor.meeting_id == "TEST010")
+        ).scalars().all()
+        ms11 = self.s.execute(
+            select(MeetingSupervisor).where(MeetingSupervisor.meeting_id == "TEST011")
+        ).scalars().all()
+        self.assertEqual(len(ms10), 2)
+        self.assertEqual(len(ms11), 2)
+
 
 def _reset_engine_cache():
     """Reset the db engine cache for test isolation."""

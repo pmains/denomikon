@@ -66,7 +66,7 @@ print(f"Data path:    {_expected_db}", file=sys.stderr)
 print(f"DB exists:    {_expected_db.exists()}", file=sys.stderr)
 
 if _diag_ok:
-    from flask import Flask, render_template, redirect, request
+    from flask import Flask, render_template, redirect, request, jsonify
     from db import get_session, Meeting, AgendaItem, SupportingDocument
     from db import AgendaItemVote, SupervisorVote, Supervisor, MeetingSupervisor, PZItemDetail
     from db import Case, CaseEvent
@@ -529,6 +529,99 @@ def members():
     return render_template("members.html", members=member_rows)
 
 
+@app.route("/api/members/<slug>/votes")
+def member_votes_api(slug):
+    """JSON API for the Full Voting Record table.
+
+    Supports pagination, search, and per-column filtering via query params.
+    """
+    session = get_session()
+
+    sup = get_supervisor_by_slug_or_name(session, slug)
+    if not sup:
+        session.close()
+        return jsonify({"rows": [], "total": 0, "page": 1, "per_page": 25}), 200
+
+    try:
+        page = int(request.args.get("page", 1))
+    except ValueError:
+        page = 1
+    try:
+        per_page = int(request.args.get("per_page", 25))
+    except ValueError:
+        per_page = 25
+    per_page = max(10, min(100, per_page))
+    search_q = (request.args.get("q") or "").strip().lower()
+    filter_vote = (request.args.get("vote") or "").strip().lower()
+    filter_result = (request.args.get("result") or "").strip().lower()
+    filter_majority = (request.args.get("majority") or "").strip().lower()
+    filter_split = (request.args.get("split") or "").strip().lower()
+
+    # Load the full dataset
+    all_records = get_supervisor_full_voting_record(session, sup.id, body="bos")
+    session.close()
+
+    if not all_records:
+        return jsonify({"rows": [], "total": 0, "page": 1, "per_page": 25}), 200
+
+    # Apply filters
+    filtered = all_records
+    if search_q:
+        filtered = [
+            r for r in filtered
+            if search_q in (r.get("agenda_item_title") or "").lower()
+            or search_q in (r.get("meeting_date") or "")
+            or search_q in (r.get("meeting_type") or "").lower()
+            or search_q in str(r.get("agenda_item_number", ""))
+            or search_q in (r.get("c_number") or "").lower()
+            or search_q in (r.get("vote") or "")
+            or search_q in (r.get("motion_result") or "").lower()
+        ]
+    if filter_vote and filter_vote != "all":
+        filtered = [r for r in filtered if (r.get("vote") or "") == filter_vote]
+    if filter_result and filter_result != "all":
+        filtered = [r for r in filtered if (r.get("motion_result") or "") == filter_result]
+    if filter_majority and filter_majority != "all":
+        filtered = [
+            r for r in filtered
+            if (r.get("with_or_against_majority") or "") == filter_majority
+        ]
+    if filter_split in ("true", "1", "yes"):
+        filtered = [r for r in filtered if r.get("is_split_vote")]
+    elif filter_split in ("false", "0", "no"):
+        filtered = [r for r in filtered if not r.get("is_split_vote")]
+
+    total = len(filtered)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    if page > total_pages:
+        page = total_pages
+    start = (page - 1) * per_page
+    end = min(start + per_page, total)
+    rows = filtered[start:end]
+
+    return jsonify({
+        "rows": [
+            {
+                "meeting_id": r["meeting_id"],
+                "meeting_date": r["meeting_date"],
+                "meeting_type": r["meeting_type"],
+                "agenda_item_number": r["agenda_item_number"],
+                "agenda_item_title": r["agenda_item_title"],
+                "c_number": r["c_number"],
+                "vote": r["vote"],
+                "motion_result": r["motion_result"],
+                "is_split_vote": r["is_split_vote"],
+                "majority_position": r["majority_position"],
+                "with_or_against_majority": r["with_or_against_majority"],
+            }
+            for r in rows
+        ],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+    })
+
+
 @app.route("/members/<slug>")
 def member_detail(slug):
     """Supervisor profile page with voting history sections."""
@@ -550,6 +643,9 @@ def member_detail(slug):
     abstentions = get_supervisor_abstentions(session, sup.id, body="bos")
     absences = get_supervisor_absences(session, sup.id, body="bos")
     full_record = get_supervisor_full_voting_record(session, sup.id, body="bos")
+    full_record_count = len(full_record)
+    # Only render the first 25 rows server-side; the rest are lazy-loaded via API
+    full_record = full_record[:25]
 
     session.close()
 
@@ -563,6 +659,8 @@ def member_detail(slug):
         abstentions=abstentions,
         absences=absences,
         full_record=full_record,
+        full_record_count=full_record_count,
+        full_record_api_url=f"/api/members/{slug_out}/votes",
         vote_badges=VOTE_BADGE_CLASSES,
         majority_badges=MAJORITY_BADGE_CLASSES,
     )

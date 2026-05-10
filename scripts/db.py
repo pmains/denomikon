@@ -1326,9 +1326,10 @@ def persist_votes(
         norm = sup.get("normalized_name", sup.get("name", "").lower().strip())
         if not norm:
             continue
-        existing = session.execute(
-            select(Supervisor).where(Supervisor.normalized_name == norm)
-        ).scalar_one_or_none()
+        with session.no_autoflush:
+            existing = session.execute(
+                select(Supervisor).where(Supervisor.normalized_name == norm)
+            ).scalar_one_or_none()
         if existing:
             existing.name = sup.get("name", existing.name)
             existing.district = sup.get("district", existing.district)
@@ -1347,18 +1348,22 @@ def persist_votes(
             supervisor_map[norm] = new.id
 
     # 2. Delete existing records for this meeting (body-scoped)
-    session.execute(
-        MeetingSupervisor.__table__.delete().where(
-            MeetingSupervisor.body == body,
-            MeetingSupervisor.meeting_id == meeting_id,
+    # Use no_autoflush to prevent stale pending objects from a previous
+    # failed call from being re-inserted by query-invoked autoflush, which
+    # would collide with the fresh inserts below.
+    with session.no_autoflush:
+        session.execute(
+            MeetingSupervisor.__table__.delete().where(
+                MeetingSupervisor.body == body,
+                MeetingSupervisor.meeting_id == meeting_id,
+            )
         )
-    )
-    existing_aiv_rows = session.execute(
-        select(AgendaItemVote).where(
-            AgendaItemVote.body == body,
-            AgendaItemVote.meeting_id == meeting_id,
-        )
-    ).scalars().all()
+        existing_aiv_rows = session.execute(
+            select(AgendaItemVote).where(
+                AgendaItemVote.body == body,
+                AgendaItemVote.meeting_id == meeting_id,
+            )
+        ).scalars().all()
     existing_aiv_ids = [r.id for r in existing_aiv_rows]
     if existing_aiv_ids:
         session.execute(
@@ -1397,13 +1402,14 @@ def persist_votes(
     for vote in votes:
         item_number = int(vote.get("agenda_item_number", 0))
         # Look up the actual AgendaItem database row for FK reference
-        db_agenda_item = session.execute(
-            select(AgendaItem).where(
-                AgendaItem.body == body,
-                AgendaItem.meeting_id == meeting_id,
-                AgendaItem.agenda_item_number == item_number,
-            )
-        ).scalar_one_or_none()
+        with session.no_autoflush:
+            db_agenda_item = session.execute(
+                select(AgendaItem).where(
+                    AgendaItem.body == body,
+                    AgendaItem.meeting_id == meeting_id,
+                    AgendaItem.agenda_item_number == item_number,
+                )
+            ).scalar_one_or_none()
         if db_agenda_item:
             db_agenda_item_id = db_agenda_item.id
         else:
@@ -1435,9 +1441,10 @@ def persist_votes(
             sup_id = supervisor_map.get(norm_name)
             if sup_id is None:
                 # Try to find in DB without upserting
-                existing_sup = session.execute(
-                    select(Supervisor).where(Supervisor.normalized_name == norm_name)
-                ).scalar_one_or_none()
+                with session.no_autoflush:
+                    existing_sup = session.execute(
+                        select(Supervisor).where(Supervisor.normalized_name == norm_name)
+                    ).scalar_one_or_none()
                 if existing_sup:
                     sup_id = existing_sup.id
                     supervisor_map[norm_name] = sup_id

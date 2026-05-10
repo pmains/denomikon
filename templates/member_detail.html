@@ -321,10 +321,38 @@
 <p class="text-muted mb-4">No absences recorded.</p>
 {% endif %}
 
-{# ─── F. Full Voting Record ─── #}
-<h4 class="mb-2">Full Voting Record <small class="text-muted">({{ full_record|length }} votes)</small></h4>
-{% if full_record %}
-{{ table_controls_wrapper("full-record", fvote=["yes","no","abstain"], fresult=["approved","denied","carried","continued","withdrawn"], falignment=["with_majority","against_majority"], fsplit=["Split","-"]) }}
+{# ─── F. Full Voting Record (API-backed) ─── #}
+<h4 class="mb-2">Full Voting Record <small class="text-muted">({{ full_record_count }} votes)</small></h4>
+{% if full_record_count %}
+<div class="table-controls-wrapper" data-table-id="full-record" data-api-url="{{ full_record_api_url }}">
+<div class="d-flex flex-wrap gap-2 mb-2 align-items-center">
+  <input type="search" class="form-control form-control-sm ts-search" placeholder="Search..." style="max-width:220px">
+  <select class="form-select form-select-sm ts-filter" data-filter-col="vote" style="width:auto">
+    <option value="">All votes</option>
+    <option value="yes">Yes</option><option value="no">No</option><option value="abstain">Abstain</option>
+  </select>
+  <select class="form-select form-select-sm ts-filter" data-filter-col="result" style="width:auto">
+    <option value="">All results</option>
+    <option value="approved">Approved</option><option value="denied">Denied</option>
+    <option value="carried">Carried</option><option value="continued">Continued</option>
+  </select>
+  <select class="form-select form-select-sm ts-filter" data-filter-col="majority" style="width:auto">
+    <option value="">All alignment</option>
+    <option value="with_majority">With Majority</option><option value="against_majority">Against Majority</option>
+  </select>
+  <select class="form-select form-select-sm ts-filter" data-filter-col="split" style="width:auto">
+    <option value="">All</option>
+    <option value="yes">Split</option><option value="no">Not Split</option>
+  </select>
+  <span class="flex-grow-1"></span>
+  <select class="form-select form-select-sm ts-page-size" style="width:auto">
+    <option value="10">10</option>
+    <option value="25">25</option>
+    <option value="50">50</option>
+    <option value="100">100</option>
+  </select>
+</div>
+<div class="table-responsive mb-1">
     <table class="table table-sm table-hover small">
         <thead class="table-light">
             <tr>
