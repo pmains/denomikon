@@ -10,12 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_tiers import integration_test
 
-# Point to temp DB before importing scripts.db
-_test_db = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
-os.environ["DATABASE_URL"] = f"sqlite:///{_test_db.name}"
-
-from sqlalchemy import select, func, inspect as sa_inspect
-
+# Import db FIRST so the module-level DATABASE_URL defaults to production.
+# We switch to a temp database via set_database_url() below.
+import db as _db_mod
 from db import (
     init_db,
     get_session,
@@ -30,17 +27,25 @@ from db import (
     get_meetings_by_status,
     persist_meeting,
     backfill_meeting_normalization,
+    set_database_url,
 )
+from sqlalchemy import select, func, inspect as sa_inspect
+
+# Create a temp file and switch the module-level DATABASE_URL to it.
+# This NEVER touches os.environ, so no other process can accidentally
+# pick up the test path.
+_test_db_path = tempfile.mktemp(suffix=".sqlite")
+set_database_url(f"sqlite:///{_test_db_path}")
+init_db()
 
 
 def _reset_db_engine():
-    """Dispose and reset the global DB engine so the next get_engine()
-    creates a fresh connection with whatever DATABASE_URL is current."""
-    import db as _dm
-    if _dm._engine:
-        _dm._engine.dispose()
-    _dm._engine = None
-    _dm._SessionLocal = None
+    """Dispose and reset the DB engine so the next get_engine() creates
+    a fresh connection to the current DATABASE_URL."""
+    if _db_mod._engine:
+        _db_mod._engine.dispose()
+    _db_mod._engine = None
+    _db_mod._SessionLocal = None
 
 
 @integration_test

@@ -43,13 +43,33 @@ def get_engine():
     global _engine
     if _engine is None:
         connect_args = {}
-        # Re-read from environment at runtime so tests can swap databases
-        url = os.environ.get("DATABASE_URL", DATABASE_URL)
+        url = DATABASE_URL
         if url.startswith("sqlite"):
             # Enable WAL mode and foreign keys for SQLite
             connect_args["check_same_thread"] = False
         _engine = create_engine(url, connect_args=connect_args, future=True)
     return _engine
+
+
+def set_database_url(url: str):
+    """
+    Switch the database URL at runtime.
+
+    Used ONLY by test fixtures to point the engine at a temporary database.
+    Disposes any existing engine and resets the session factory so that
+    the next get_engine() / get_session() call creates fresh connections
+    to the new URL.
+
+    .. warning::
+       Do NOT call this in production.  Set DATABASE_URL via the
+       environment variable before the first import of this module.
+    """
+    global DATABASE_URL, _engine, _SessionLocal
+    if _engine:
+        _engine.dispose()
+    DATABASE_URL = url
+    _engine = None
+    _SessionLocal = None
 
 
 def get_session() -> Session:

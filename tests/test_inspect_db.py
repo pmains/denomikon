@@ -10,22 +10,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_tiers import integration_test
 
-_orig_db_url = os.environ.pop("DATABASE_URL", None)
-_test_db_path = None  # set by _make_fresh_db()
-
+# Import db BEFORE touching DATABASE_URL so the module-level constant is
+# the production default.  We'll switch to a temp database via
+# set_database_url() before each class — see _make_fresh_db().
 import db as _db_mod
-if _db_mod._engine:
-    _db_mod._engine.dispose()
-_db_mod._engine = None
-_db_mod._SessionLocal = None
+from db import (
+    init_db, get_session, Meeting, AgendaItem, SupportingDocument,
+    set_database_url,
+)
 
-from db import init_db, get_session, Meeting, AgendaItem, SupportingDocument
+_test_db_path = None  # set by _make_fresh_db()
 
 
 def _make_fresh_db():
-    """Create a new temp database, delete old one, reset engine."""
+    """Create a new temp database, delete old one, reset engine.
+
+    Uses set_database_url() to safely switch the module-level
+    DATABASE_URL constant — never touches os.environ, so the
+    production database path is never accidentally overwritten.
+    """
     global _test_db_path
-    import db as _dm
     import os as _os
     # Delete old DB file
     if _test_db_path:
@@ -33,14 +37,9 @@ def _make_fresh_db():
             _os.unlink(_test_db_path)
         except FileNotFoundError:
             pass
-    # Create new temp file
+    # Create new temp file and switch the database URL
     _test_db_path = tempfile.mktemp(suffix=".sqlite")
-    _os.environ["DATABASE_URL"] = f"sqlite:///{_test_db_path}"
-    # Reset engine so next get_engine() uses the new path
-    if _dm._engine:
-        _dm._engine.dispose()
-    _dm._engine = None
-    _dm._SessionLocal = None
+    set_database_url(f"sqlite:///{_test_db_path}")
     init_db()
 
 
@@ -122,15 +121,8 @@ class TestInspectDbMeetings(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        """Restore environment and engine cache for downstream tests."""
-        os.environ.pop("DATABASE_URL", None)
-        if _orig_db_url:
-            os.environ["DATABASE_URL"] = _orig_db_url
-        import db as _db_mod
-        if _db_mod._engine:
-            _db_mod._engine.dispose()
-        _db_mod._engine = None
-        _db_mod._SessionLocal = None
+        """Reset the engine for downstream tests."""
+        set_database_url(_db_mod.DATABASE_URL)
 
     def test_meetings_output(self):
         out = _capture_output(["meetings"])
