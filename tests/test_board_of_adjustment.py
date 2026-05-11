@@ -14,12 +14,15 @@ from pathlib import Path
 
 
 def _load_scraper():
-    scraper_path = Path(__file__).resolve().parents[1] / "scripts" / "maricopa_agenda_scraper.py"
-    spec = importlib.util.spec_from_file_location("maricopa_agenda_scraper", scraper_path)
+    scraper_path = Path(__file__).resolve().parents[1] / "scripts" / "agenda_scraper.py"
+    spec = importlib.util.spec_from_file_location("agenda_scraper", scraper_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load scraper from {scraper_path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
+    scripts_dir = str(Path(__file__).resolve().parents[1] / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
     spec.loader.exec_module(module)
     return module
 
@@ -669,7 +672,7 @@ class TestPZAndBOSStillWork(unittest.TestCase):
         self.assertEqual(m.body, "bos")
 
     def test_fixture_meeting_counts_unchanged(self):
-        """Verify test_maricopa_agenda_scraper fixture counts still match (sanity check)."""
+        """Verify test_agenda_scraper fixture counts still match (sanity check)."""
         from tests.test_maricopa_agenda_scraper import EXPECTED_FIXTURE_COUNTS
         # Just verify the constant is still accessible and unchanged
         self.assertIn("4471", EXPECTED_FIXTURE_COUNTS)

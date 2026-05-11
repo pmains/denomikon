@@ -8,7 +8,7 @@ from scraper.utils import log
 
 def _print_top_level_help() -> None:
     """Print a comprehensive help message listing all supported boards, then exit."""
-    print("usage: maricopa_agenda_scraper.py <subcommand> [options]")
+    print("usage: agenda_scraper.py <subcommand> [options]")
     print()
     print("Scrape meeting materials from Maricopa County public governance boards.")
     print()

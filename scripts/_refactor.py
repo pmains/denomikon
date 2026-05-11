@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract sections from maricopa_agenda_scraper.py into modular package files.
+"""Extract sections from agenda_scraper.py into modular package files.
 
 This script reads the source file and writes each module file with exact
 code from the original, preserving all behavior.
@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 
-SRC = Path(__file__).parent / "maricopa_agenda_scraper.py"
+SRC = Path(__file__).parent / "agenda_scraper.py"
 OUT = Path(__file__).parent / "scraper"
 
 
@@ -611,9 +611,9 @@ from scraper.main import main
 if __name__ == "__main__":
     raise SystemExit(asyncio.run(main()))
 '''
-shim_path = Path(__file__).parent / "maricopa_agenda_scraper.py"
+shim_path = Path(__file__).parent / "agenda_scraper.py"
 shim_path.write_text(shim_code)
-print("Rewritten maricopa_agenda_scraper.py shim")
+print("Rewritten agenda_scraper.py shim")
 
 print("\\nDone! Created modular package at scripts/scraper/")
 print("Test with: cd .. && .venv/bin/python -m pytest tests/ -v")

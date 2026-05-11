@@ -10,12 +10,15 @@ from unittest.mock import patch
 
 
 def _load_scraper():
-    scraper_path = Path(__file__).resolve().parents[1] / "scripts" / "maricopa_agenda_scraper.py"
-    spec = importlib.util.spec_from_file_location("maricopa_agenda_scraper", scraper_path)
+    scraper_path = Path(__file__).resolve().parents[1] / "scripts" / "agenda_scraper.py"
+    spec = importlib.util.spec_from_file_location("agenda_scraper", scraper_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load scraper from {scraper_path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
+    scripts_dir = str(Path(__file__).resolve().parents[1] / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
     spec.loader.exec_module(module)
     return module
 
@@ -1075,7 +1078,7 @@ class PZParserRegressionTests(unittest.TestCase):
         applicant, etc. have only one capturing group, but the code tried
         m.group(2) unconditionally, which raised IndexError.
         """
-        from scripts.maricopa_agenda_scraper import parse_pz_agenda_pdf
+        from scripts.agenda_scraper import parse_pz_agenda_pdf
         import subprocess, tempfile
         from pathlib import Path
 
@@ -1110,7 +1113,7 @@ class PZParserRegressionTests(unittest.TestCase):
         cause IndexError when the code tries to access m.group(2).
         Tests each field pattern against matching text lines.
         """
-        from scripts.maricopa_agenda_scraper import parse_pz_agenda_pdf
+        from scripts.agenda_scraper import parse_pz_agenda_pdf
 
         # Extract FIELD_PATTERNS directly from the function for testing
         import re

@@ -55,7 +55,7 @@ body/type/date, and pagination.
 
 ```bash
 # Initialize/migrate the database
-python scripts/maricopa_agenda_scraper.py --init-db
+python scripts/agenda_scraper.py --init-db
 ```
 
 ## Board of Supervisors (BOS)
@@ -66,23 +66,23 @@ optional for BOS operations.
 ### Sync a single meeting
 
 ```bash
-python scripts/maricopa_agenda_scraper.py --sync --meeting-id=4449
+python scripts/agenda_scraper.py --sync --meeting-id=4449
 ```
 
 Or with explicit subcommand:
 
 ```bash
-python scripts/maricopa_agenda_scraper.py bos --sync --meeting-id=4449
+python scripts/agenda_scraper.py bos --sync --meeting-id=4449
 ```
 
 ### Sync a date range
 
 ```bash
 # Discover and sync all meetings between two dates
-python scripts/maricopa_agenda_scraper.py bos --sync --start-date=2025-01-01 --end-date=2025-01-31
+python scripts/agenda_scraper.py bos --sync --start-date=2025-01-01 --end-date=2025-01-31
 
 # Resume previously failed/partial/pending meetings (no date range needed)
-python scripts/maricopa_agenda_scraper.py bos --sync --retry-failed
+python scripts/agenda_scraper.py bos --sync --retry-failed
 ```
 
 ### Sync resumable flags
@@ -99,20 +99,20 @@ python scripts/maricopa_agenda_scraper.py bos --sync --retry-failed
 
 ```bash
 # Summary of sync status across all meetings
-python scripts/maricopa_agenda_scraper.py --status
+python scripts/agenda_scraper.py --status
 
 # List failed/partial meetings
-python scripts/maricopa_agenda_scraper.py --failed
+python scripts/agenda_scraper.py --failed
 
 # List meetings needing manual review (image-based agendas)
-python scripts/maricopa_agenda_scraper.py --failed --include-manual-review
+python scripts/agenda_scraper.py --failed --include-manual-review
 ```
 
 ### Vote syncing
 
 ```bash
 # Extract roll-call votes from a meeting's summary page
-python scripts/maricopa_agenda_scraper.py bos --sync-votes --meeting-id=4449
+python scripts/agenda_scraper.py bos --sync-votes --meeting-id=4449
 ```
 
 ## Planning & Zoning (PZ)
@@ -121,13 +121,13 @@ Use the `pz` subcommand. All date flags use YYYY-MM-DD format.
 
 ```bash
 # Sync P&Z meetings by date range
-python scripts/maricopa_agenda_scraper.py pz --sync --start-date=2026-01-01 --end-date=2026-05-01
+python scripts/agenda_scraper.py pz --sync --start-date=2026-01-01 --end-date=2026-05-01
 
 # Sync a single P&Z meeting by ID
-python scripts/maricopa_agenda_scraper.py pz --sync --meeting-id=3734
+python scripts/agenda_scraper.py pz --sync --meeting-id=3734
 
 # Limit the number of meetings from a date range search
-python scripts/maricopa_agenda_scraper.py pz --sync --start-date=2026-01-01 --limit=5
+python scripts/agenda_scraper.py pz --sync --start-date=2026-01-01 --limit=5
 ```
 
 When no start/end date is given, PZ defaults to the last 90 days.
@@ -153,10 +153,10 @@ The old `--sync-pz` flag still works but prints a deprecation warning:
 
 ```bash
 # Old style (deprecated, prints warning):
-python scripts/maricopa_agenda_scraper.py --sync-pz --pz-start-date=01/01/2026
+python scripts/agenda_scraper.py --sync-pz --pz-start-date=01/01/2026
 
 # New style (preferred):
-python scripts/maricopa_agenda_scraper.py pz --sync --start-date=2026-01-01
+python scripts/agenda_scraper.py pz --sync --start-date=2026-01-01
 ```
 
 ## Inspect the database
@@ -253,7 +253,7 @@ The `sync_status` field tracks:
 
 ```
 scripts/
-  maricopa_agenda_scraper.py   Main scraper tool
+  agenda_scraper.py   Main scraper tool
   db.py                        Persistence layer (SQLAlchemy models)
   inspect_db.py                Database inspection CLI
 app.py                         Flask web application
@@ -268,7 +268,7 @@ data/
   agenda-items/                Extracted CSV exports
   supporting-materials/        Downloaded supporting documents
 tests/
-  test_maricopa_agenda_scraper.py
+  test_agenda_scraper.py
   test_persistence.py
   test_cli.py
   test_inspect_db.py

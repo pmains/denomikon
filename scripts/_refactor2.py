@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Correct extraction of sections from maricopa_agenda_scraper.py (from git) into modular package.
+"""Correct extraction of sections from agenda_scraper.py (from git) into modular package.
 
 Run from scripts/ directory.
 """

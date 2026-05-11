@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_tiers import integration_test
 
-from maricopa_agenda_scraper import (
+from agenda_scraper import (
     parse_c_number_parts,
     _extract_c_number,
     extract_supporting_documents_from_items,

@@ -56,7 +56,7 @@ if not _expected_db.exists():
     )
     print(
         "  Sync some meetings first:\n"
-        f"    .venv/bin/python scripts/maricopa_agenda_scraper.py\n"
+        f"    .venv/bin/python scripts/agenda_scraper.py\n"
         "    --sync --start-date=2025-01-01 --end-date=2025-12-31",
         file=sys.stderr,
     )

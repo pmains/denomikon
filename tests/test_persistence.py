@@ -475,7 +475,7 @@ class TestRetryBackoff(unittest.TestCase):
     def test_retry_succeeds_after_transient(self):
         """Retry succeeds on second attempt."""
         import asyncio
-        from maricopa_agenda_scraper import retry_with_backoff
+        from agenda_scraper import retry_with_backoff
 
         attempts = []
 
@@ -494,7 +494,7 @@ class TestRetryBackoff(unittest.TestCase):
     def test_retry_exhausts_and_raises(self):
         """Retry exhausts all attempts and raises the last exception."""
         import asyncio
-        from maricopa_agenda_scraper import retry_with_backoff
+        from agenda_scraper import retry_with_backoff
 
         attempts = []
 
@@ -511,7 +511,7 @@ class TestRetryBackoff(unittest.TestCase):
     def test_retry_succeeds_first_time(self):
         """No retry needed when first attempt succeeds."""
         import asyncio
-        from maricopa_agenda_scraper import retry_with_backoff
+        from agenda_scraper import retry_with_backoff
 
         attempts = []
 

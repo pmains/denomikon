@@ -12,7 +12,7 @@ from pathlib import Path
 # Add scripts directory so we can import the scraper module
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from maricopa_agenda_scraper import (
+from agenda_scraper import (
     _clean_html_text,
     _clean_lnk_title,
     _find_item_tables,
