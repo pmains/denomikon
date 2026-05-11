@@ -41,7 +41,9 @@ def parse_search_results_html(html: str, base_url: str) -> list[Meeting]:
         for anchor in _find_all(row, "a"):
             href = anchor.attrs.get("href", "").strip()
             text = _clean_html_text(_node_text(anchor))
-            abs_url = urllib.parse.urljoin(base_url, href) if href else ""
+            # Decode HTML entities (e.g. &amp; → &) in href values
+            decoded_href = __import__('html').unescape(href) if href else ""
+            abs_url = urllib.parse.urljoin(base_url, decoded_href) if decoded_href else ""
             key = abs_url or text
             if not key or key in seen:
                 continue

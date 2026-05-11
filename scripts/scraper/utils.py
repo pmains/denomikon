@@ -232,18 +232,44 @@ async def is_image_based_agenda(page) -> bool:
         return False
 
 
+async def get_page_state_summary(page) -> str:
+    """Grab the page title and a short body snippet for diagnostic logging.
+
+    Returns a one-line string like:
+        'title="Meeting 4627" body_snippet="Loading... (first 150 chars)"'
+    Returns empty string if page evaluation fails.
+    """
+    try:
+        info = await page.evaluate(
+            """() => {
+                const title = document.title || '';
+                const body = document.body ? document.body.textContent || '' : '';
+                const snippet = body.replace(/\\s+/g, ' ').trim();
+                return { title, snippet: snippet.slice(0, 200) };
+            }"""
+        )
+        if info and info.get("title"):
+            return f'title="{info["title"]}" body_snippet="{info.get("snippet", "")[:150]}"'
+        return f'body_snippet="{info.get("snippet", "(no page body)")[:150]}"'
+    except Exception:
+        return "(page state unavailable)"
+
+
 async def extract_agenda_items_for_meeting(page, meeting: dict[str, str]) -> list[dict[str, str]]:
     source_url = (meeting.get("document_url") or meeting.get("agenda_url") or "").strip()
     if not source_url:
         return []
-    await page.goto(source_url, wait_until="domcontentloaded")
-    await page.wait_for_timeout(3000)
+    # Wait for the page to be fully loaded and all network activity to
+    # settle (including the AJAX call that populates the agenda content).
+    # Using networkidle ensures we don't grab a stale JS scaffold page.
+    await page.goto(source_url, wait_until="networkidle", timeout=60000)
     html = await page.content()
     normalized_meeting = {
         "meeting_id": (meeting.get("record_id") or meeting.get("meeting_id") or "meeting").strip() or "meeting",
         "meeting_date": (meeting.get("record_date") or meeting.get("meeting_date") or "").strip(),
         "meeting_type": (meeting.get("meeting_type") or "").strip(),
     }
+    from scraper.agenda_items import parse_agenda_items_from_html
     return parse_agenda_items_from_html(html, source_url, normalized_meeting)
 
 

@@ -837,8 +837,11 @@ def backfill_body_column(engine):
             ).scalar()
             if not row or row == 0:
                 # Already backfilled or no rows
-                conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {marker}"))
-                conn.commit()
+                try:
+                    conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {marker}"))
+                    conn.commit()
+                except Exception:
+                    pass
                 continue
 
         # Backfill meetings body column
@@ -910,11 +913,14 @@ def _migrate_col(engine, table: str, col: str, col_def: str):
     inspector = sa_inspect(engine)
     existing_cols = {c["name"] for c in inspector.get_columns(table)}
     if col not in existing_cols:
-        with engine.connect() as conn:
-            conn.execute(
-                text(f'ALTER TABLE {table} ADD COLUMN {col} {col_def}')
-            )
-            conn.commit()
+        try:
+            with engine.connect() as conn:
+                conn.execute(
+                    text(f'ALTER TABLE {table} ADD COLUMN {col} {col_def}')
+                )
+                conn.commit()
+        except Exception:
+            pass  # Race: parallel worker may have added it first
 
 
 def _ensure_index(engine, table: str, index_name: str, column_expr: str):

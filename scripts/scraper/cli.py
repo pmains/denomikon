@@ -20,6 +20,7 @@ def _print_top_level_help() -> None:
     print("  health    Board of Health")
     print("  tab       Transportation Advisory Board")
     print("  ida       Industrial Development Authority (WordPress site)")
+    print("  all       Sync all boards: BOS, PZ, ADJ, Drain, Health, TAB, IDA")
     print()
     print("Common options (varies per subcommand; use <subcommand> --help for details):")
     print("  --sync                    Search online, extract, and persist to database")
@@ -95,7 +96,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida"):
+    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "all"):
         source = rest.pop(0)
 
     if source == "bos":
@@ -110,6 +111,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         args = _parse_tab_args(rest)
     elif source == "ida":
         args = _parse_ida_args(rest)
+    elif source == "all":
+        args = _parse_bos_args(rest)
     else:
         args = _parse_pz_args(rest)
     args.source = source
@@ -132,12 +135,17 @@ def _parse_bos_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--debug-agenda-html", action="store_true", help="Write diagnostics for the first agenda HTML page selected for item extraction")
     p.add_argument("--headed", action="store_true", help="Run Playwright headed")
     p.add_argument("--limit", type=int, default=None, help="Optional meeting limit")
+    p.add_argument("--parallel", type=int, default=1, help="Process N meetings concurrently (default 1)")
     p.add_argument("--count-agenda-items", action="store_true", help="Visit agenda pages, count items, and print a summary table")
     p.add_argument("--list-agenda-items", action="store_true", help="Visit agenda pages and list numbered items with titles")
     p.add_argument("--init-db", action="store_true", help="Create database tables")
     p.add_argument("--persist", action="store_true", help="Persist extracted agenda items from CSV to database")
     p.add_argument("--sync", action="store_true", help="Search online, extract agenda items, and persist directly to database (bypasses CSVs)")
     p.add_argument("--meeting-id", help="Single meeting ID to sync (e.g. 4449). Used with --sync to skip date search.")
+    p.add_argument("--meeting-date", help="Meeting date (YYYY-MM-DD) for --meeting-id path")
+    p.add_argument("--meeting-type", help="Meeting type (e.g. Formal) for --meeting-id path")
+    p.add_argument("--meeting-title", help="Meeting title for --meeting-id path")
+    p.add_argument("--meeting-url", help="Agenda URL for --meeting-id path")
     p.add_argument("--offline", action="store_true", help="Sync from a locally saved HTML file instead of the live server. Use with --sync --meeting-id.")
     p.add_argument("--from-file", help="Path to a local agenda HTML file to parse offline. Used with --sync.")
     p.add_argument("--retry-failed", action="store_true", help="Sync only meetings with status failed, partial, or pending")

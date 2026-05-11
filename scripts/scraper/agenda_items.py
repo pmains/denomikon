@@ -503,8 +503,7 @@ async def extract_agenda_item_titles(page, meeting_url: str) -> list[tuple[int, 
     - Items without any anchor in their table fall back to the nearest
       preceding lnkAgendaItem by position in the full HTML.
     """
-    await page.goto(meeting_url, wait_until="domcontentloaded")
-    await page.wait_for_timeout(2000)
+    await page.goto(meeting_url, wait_until="load")
     html = await page.content()
 
     # Find all numbered items with their table boundaries

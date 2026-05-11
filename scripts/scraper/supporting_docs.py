@@ -416,18 +416,30 @@ async def extract_supporting_documents_dynamic_concurrent(
             return []
         browser = page.context.browser
         worker_page = await browser.new_page()
+        worker_page.set_default_timeout(60000)
         try:
-            # Load the same meeting page
-            await worker_page.goto(base_url, wait_until="domcontentloaded")
-            await worker_page.wait_for_timeout(3000)
-            # Wait for agendaView to populate
+            # Load the same meeting page — use load and then wait for the
+            # agendaView to populate via AJAX.  networkidle is unreliable
+            # here because the server may send background keepalive
+            # connections that prevent it from ever settling.
+            await worker_page.goto(base_url, wait_until="load")
             try:
                 await worker_page.wait_for_function(
                     """() => {
                         const av = document.getElementById('agendaView');
-                        return av && av.textContent && av.textContent.length > 100;
+                        if (!av) return false;
+                        // Check for actual numbered item markers rather than
+                        // placeholder/loading text.
+                        const text = av.textContent || '';
+                        if (text.length < 100) return false;
+                        const spans = av.querySelectorAll('span[style*="bold"]');
+                        for (const s of spans) {
+                            if (/^\\d+\\.$/.test((s.textContent || '').trim()))
+                                return true;
+                        }
+                        return av.querySelector('a[id^="lnkAgendaItem"]') !== null;
                     }""",
-                    timeout=15000,
+                    timeout=20000,
                 )
             except Exception:
                 pass

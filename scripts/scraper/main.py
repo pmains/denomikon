@@ -14,6 +14,7 @@ from scraper.utils import (
     get_async_playwright, retry_with_backoff, CASE_PATTERN, C_NUMBER_PATTERN,
     _extract_c_number, parse_c_number_parts, parse_metadata_from_page_data,
     extract_meeting_metadata_from_page, is_image_based_agenda,
+    get_page_state_summary,
 )
 from scraper.models import Meeting
 from scraper.cli import parse_args, parse_date
@@ -120,8 +121,10 @@ async def extract_agenda_items_for_meeting(page, meeting: dict[str, str]) -> lis
     source_url = (meeting.get("document_url") or meeting.get("agenda_url") or "").strip()
     if not source_url:
         return []
-    await page.goto(source_url, wait_until="domcontentloaded")
-    await page.wait_for_timeout(3000)
+    # Wait for all network activity to settle (including the AJAX call that
+    # populates the agenda).  Using networkidle ensures the page is fully
+    # rendered, not a stale JS scaffold with unloaded data.
+    await page.goto(source_url, wait_until="networkidle", timeout=60000)
     html = await page.content()
     normalized_meeting = {
         "meeting_id": (meeting.get("record_id") or meeting.get("meeting_id") or "meeting").strip() or "meeting",
@@ -136,8 +139,7 @@ async def extract_raw_agenda_blocks_for_meeting(page, meeting: dict[str, str]) -
     source_url = (meeting.get("document_url") or meeting.get("agenda_url") or "").strip()
     if not source_url:
         return []
-    await page.goto(source_url, wait_until="domcontentloaded")
-    await page.wait_for_timeout(1000)
+    await page.goto(source_url, wait_until="load")
     return parse_raw_agenda_blocks_html(await page.content(), meeting)
 
 
@@ -185,7 +187,11 @@ async def extract_agenda_items_from_metadata(
 
     for meeting in meeting_rows:
         meeting_id = (meeting.get("record_id") or meeting.get("meeting_id") or "").strip() or "meeting"
-        items = await extract_agenda_items_for_meeting(page, meeting)
+        try:
+            items = await extract_agenda_items_for_meeting(page, meeting)
+        except Exception as e:
+            log.error("extract_agenda_items_for_meeting failed meeting_id=%s error=%s", meeting_id, str(e)[:300])
+            continue
         for item in items:
             key = (item["meeting_id"], item["agenda_item_id"])
             if key in existing_keys:
@@ -692,11 +698,27 @@ async def main() -> int:
             log.info(f"Syncing BOS meeting {meeting_id}...")
             meeting_prefix = f"BOS meeting_id={meeting_id}"
 
+            # Use metadata from --meeting-* args if provided (parallel workers),
+            # otherwise construct the source URL from the meeting ID and rely
+            # on page-level metadata extraction as a fallback.
+            meeting_date = getattr(args, "meeting_date", None) or ""
+            meeting_type = getattr(args, "meeting_type", None) or ""
+            meeting_title = getattr(args, "meeting_title", None) or ""
+            meeting_url = getattr(args, "meeting_url", None) or ""
+
+            if meeting_url:
+                source_url = meeting_url
+            else:
+                source_url = (
+                    "https://mccobagenda.databankcloud.com/AgendaOnline/Meetings/ViewMeeting"
+                    f"?id={meeting_id}&doctype=1"
+                )
+
             meeting_dict = {
                 "meeting_id": meeting_id,
-                "meeting_date": "",
-                "meeting_type": "",
-                "meeting_title": "",
+                "meeting_date": meeting_date,
+                "meeting_type": meeting_type,
+                "meeting_title": meeting_title,
                 "source_url": source_url,
             }
             extract_meeting = {
@@ -704,9 +726,9 @@ async def main() -> int:
                 "agenda_url": source_url,
                 "record_id": meeting_id,
                 "meeting_id": meeting_id,
-                "record_date": "",
-                "meeting_date": "",
-                "meeting_type": "",
+                "record_date": meeting_date,
+                "meeting_date": meeting_date,
+                "meeting_type": meeting_type,
             }
 
             from db import create_or_get_meeting, update_sync_status, replace_meeting_data_safe
@@ -733,6 +755,20 @@ async def main() -> int:
                         update_sync_status(session, args.source, meeting_id, meeting.sync_status)
                         session.commit()
 
+                        # Establish OnBase server session by visiting the source
+                        # page first.  The agenda page is a SPA that relies on
+                        # a session cookie set by the search/home page; without
+                        # it the AJAX call that populates agendaView fails.
+                        try:
+                            await page.goto(SOURCE_PAGE, wait_until="domcontentloaded", timeout=30000)
+                            await page.goto(
+                                SEARCH_BASE + "?dropid=11",
+                                wait_until="domcontentloaded",
+                                timeout=30000,
+                            )
+                        except Exception:
+                            log.warning("%s session_bootstrap failed, proceeding anyway", meeting_prefix)
+
                         retry = args.retry_count
 
                         # Extract agenda items with retry
@@ -758,15 +794,15 @@ async def main() -> int:
                         if page_meta.get("meeting_title"):
                             meeting_dict["meeting_title"] = page_meta["meeting_title"]
                         if not items:
-                            # Check if page is image-based (unparseable but reachable)
+                            page_state = await get_page_state_summary(page)
                             if await is_image_based_agenda(page):
                                 status = "manual_review"
                                 error = "Unsupported agenda format: page loaded but no parseable agenda items found; possible image/scanned agenda"
-                                log.warning("%s items=0 image_scanned", meeting_prefix)
+                                log.warning("%s items=0 image_scanned page_state=%s", meeting_prefix, page_state)
                             else:
                                 status = "failed"
                                 error = "No agenda items found on page"
-                                log.warning("%s items=0 not_found", meeting_prefix)
+                                log.warning("%s items=0 not_found page_state=%s", meeting_prefix, page_state)
                             update_sync_status(
                                 session, args.source, meeting_id, status,
                                 error=error,
@@ -1058,10 +1094,111 @@ async def main() -> int:
 
                 if args.limit is not None:
                     meetings = meetings[: args.limit]
+                meeting_count = len(meetings)
+
+                # Parallel mode: spawn one subprocess per meeting
+                parallel = getattr(args, "parallel", 1)
+                if parallel > 1 and meeting_count > 1 and not getattr(args, "meeting_id", None):
+                    import subprocess, sys as _sys
+                    import asyncio as _asyncio
+                    p_count = min(parallel, meeting_count)
+                    log.info("Parallel mode: %d meetings, %d concurrent workers", meeting_count, p_count)
+
+                    script = _sys.argv[0]
+                    base_cmd = ["python3", script, "bos", "--sync", "--force"] if args.force else ["python3", script, "bos", "--sync"]
+                    if getattr(args, 'headed', False):
+                        base_cmd.append("--headed")
+
+                    # Filter queue based on sync status
+                    from db import Meeting as MeetingModel
+                    from sqlalchemy import select
+
+                    retry_statuses = ["failed", "partial", "pending"]
+                    if getattr(args, 'include_manual_review', False):
+                        retry_statuses.append("manual_review")
+
+                    # Pre-load sync statuses for all meetings
+                    status_map = {}
+                    try:
+                        db_session = get_session()
+                        for m in meetings:
+                            row = db_session.execute(
+                                select(MeetingModel.sync_status).where(
+                                    MeetingModel.body == "bos",
+                                    MeetingModel.meeting_id == m.meeting_id,
+                                )
+                            ).scalar_one_or_none()
+                            if row:
+                                status_map[m.meeting_id] = row
+                        db_session.close()
+                    except Exception:
+                        pass
+
+                    # Build queue filtered by status
+                    queue = []
+                    skipped_status = 0
+                    for m in meetings:
+                        status = status_map.get(m.meeting_id, "")
+                        # Determine if we should process this meeting
+                        should_process = True
+                        if args.retry_failed and not args.force:
+                            should_process = status in retry_statuses or status == ""
+                        elif not args.force and status == "complete":
+                            should_process = True  # parallel mode processes all by default
+                        if not should_process:
+                            skipped_status += 1
+                            continue
+                        queue.append({
+                            "id": m.meeting_id,
+                            "date": m.meeting_date or "",
+                            "type": m.meeting_type or "",
+                            "title": m.meeting_title or "",
+                            "url": m.agenda_url or "",
+                        })
+
+                    active: list[tuple[dict, subprocess.Popen]] = []
+                    ok = 0
+                    errs = 0
+                    idx = 0
+                    total_queue = len(queue)
+
+                    while idx < len(queue) or active:
+                        while len(active) < p_count and idx < len(queue):
+                            item = queue[idx]
+                            cmd = list(base_cmd) + [
+                                "--meeting-id", item["id"],
+                                "--meeting-date", item["date"],
+                                "--meeting-type", item["type"],
+                                "--meeting-title", item["title"],
+                            ]
+                            log.info("  [%d/%d] Worker %s starting (%s %s)", idx + 1, total_queue, item["id"], item["date"], item["type"])
+                            active.append((item, subprocess.Popen(cmd)))
+                            idx += 1
+
+                        await _asyncio.sleep(5)
+
+                        still_active: list = []
+                        for item, proc in active:
+                            rc = proc.poll()
+                            if rc is not None:
+                                done_so_far = ok + errs + 1
+                                log.info("  [%d/%d] Worker %s finished code=%d", done_so_far, total_queue, item["id"], rc)
+                                if rc == 0:
+                                    ok += 1
+                                else:
+                                    errs += 1
+                            else:
+                                still_active.append((item, proc))
+                        active = still_active
+
+                    log.info("Parallel done. %d OK, %d failed out of %d", ok, errs, total_queue)
+                    if errs:
+                        return 1
+                    return 0
+
                 total = 0
                 errors = 0
                 skipped = 0
-                meeting_count = len(meetings)
                 for idx, meeting in enumerate(meetings, 1):
                     meeting_prefix = f"[{idx}/{meeting_count}]"
                     meeting_t0 = time.monotonic()
@@ -1116,27 +1253,36 @@ async def main() -> int:
                     try:
                         log.info("%s phase=load_cached_agenda started", meeting_prefix)
                         _phase_t0 = time.monotonic()
-                        # page already loaded with SOURCE_PAGE + search_url or
-                        # we navigate to the meeting's agenda_url directly
-                        items = await extract_agenda_items_for_meeting(page, extract_meeting)
+
+                        # Extract agenda items with retry (server-side AJAX
+                        # failures are intermittent; retry often recovers)
+                        _retry_count = getattr(args, "retry_count", 3)
+                        async def _do_extract():
+                            return await extract_agenda_items_for_meeting(page, extract_meeting)
+                        items = await retry_with_backoff(
+                            _do_extract,
+                            max_attempts=_retry_count,
+                            label=f"items {meeting.meeting_id}",
+                        )
                         log.info(
                             "%s phase=parse_agenda_items done items=%d elapsed=%.1fs",
                             meeting_prefix, len(items), time.monotonic() - _phase_t0,
                         )
                         if not items:
+                            page_state = await get_page_state_summary(page)
                             if await is_image_based_agenda(page):
                                 status = "manual_review"
                                 error = "Unsupported agenda format: page loaded but no parseable agenda items found; possible image/scanned agenda"
                                 log.warning(
-                                    "%s phase=parse_agenda_items result=image_scanned status=%s",
-                                    meeting_prefix, status,
+                                    "%s phase=parse_agenda_items result=image_scanned status=%s page_state=%s",
+                                    meeting_prefix, status, page_state,
                                 )
                             else:
                                 status = "failed"
                                 error = "No agenda items found"
                                 log.warning(
-                                    "%s phase=parse_agenda_items result=no_items status=%s",
-                                    meeting_prefix, status,
+                                    "%s phase=parse_agenda_items result=no_items status=%s page_state=%s",
+                                    meeting_prefix, status, page_state,
                                 )
                             update_sync_status(
                                 session, args.source, meeting.meeting_id, status,
