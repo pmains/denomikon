@@ -26,6 +26,7 @@ from sqlalchemy import (
     create_engine,
     func,
     inspect as sa_inspect,
+    or_,
     select,
     text,
 )
@@ -342,6 +343,8 @@ class PublicBodyMember(Base):
     district_or_seat = Column(String(32), nullable=True, default=None)
     active_from = Column(Date, nullable=True, default=None)
     active_to = Column(Date, nullable=True, default=None)
+    jurisdiction_id = Column(Integer, nullable=True, default=None, index=True)
+    public_body_id = Column(Integer, nullable=True, default=None, index=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -516,6 +519,33 @@ class PermitReport(Base):
     )
 
 
+class Jurisdiction(Base):
+    """A government jurisdiction (county, city, town) whose meetings we track."""
+    __tablename__ = "jurisdictions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(128), nullable=False, unique=True, index=True)
+    slug = Column(String(64), nullable=False, unique=True, index=True)
+    state = Column(String(2), nullable=True, default=None)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class PublicBody(Base):
+    """A public body (board, commission, committee) within a jurisdiction."""
+    __tablename__ = "public_bodies"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    jurisdiction_id = Column(Integer, nullable=False, index=True)
+    name = Column(String(256), nullable=False)
+    slug = Column(String(64), nullable=False, index=True)
+    body_code = Column(String(16), nullable=True, default=None, index=True)
+    body_type = Column(String(64), nullable=True, default=None)
+    description = Column(Text, nullable=True, default=None)
+    website_url = Column(String(512), nullable=True, default=None)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    __table_args__ = (UniqueConstraint("jurisdiction_id", "slug", name="uq_public_body_slug"),)
+
+
 class Permit(Base):
     """Individual permit row extracted from a weekly permit report."""
 
@@ -550,6 +580,13 @@ class Permit(Base):
     contractor_name = Column(Text, nullable=True, default=None)
     contractor_phone = Column(String(64), nullable=True, default=None)
     contractor_email = Column(String(256), nullable=True, default=None)
+
+    jurisdiction = Column(String(64), nullable=True, default=None, index=True)
+    application_date = Column(String(32), nullable=True, default=None)
+    height_stories = Column(String(32), nullable=True, default=None)
+    native_type = Column(Text, nullable=True, default=None, comment="Original jurisdiction-specific permit type label")
+    native_category = Column(Text, nullable=True, default=None, comment="Original jurisdiction-specific category label")
+    normalized_category = Column(String(64), nullable=True, default=None, index=True, comment="Cross-jurisdiction category: Residential, Commercial, Industrial, Mixed-Use, Other")
 
     row_hash = Column(String(64), nullable=False, index=True)
     created_at = Column(
@@ -731,6 +768,7 @@ def backfill_meeting_normalization(session, force: bool = False):
 def init_db():
     """Create all tables if they don't exist, or migrate existing ones."""
     Base.metadata.create_all(bind=get_engine())
+    init_poliscopic_models()
 
     _migrate_table("supporting_documents")
 
@@ -800,6 +838,12 @@ def init_db():
     _ensure_index(engine, "agenda_items", "idx_agenda_items_c_number", "c_number")
     _ensure_index(engine, "agenda_items", "idx_agenda_items_c_number_base", "c_number_base")
     _ensure_index(engine, "agenda_items", "idx_agenda_items_agenda_item_number", "agenda_item_number")
+
+    # Create poliscopic tables
+    init_poliscopic_models(engine)
+
+    # Seed default jurisdiction and bodies
+    seed_default_jurisdictions()
 
     # Backfill existing records to body='bos' and determine pz from meeting_type
     backfill_body_column(engine)
@@ -2940,3 +2984,226 @@ def get_supervisor_controversial_votes(
         })
 
     return results
+
+
+def init_poliscopic_models(engine=None):
+    """Create all poliscopic tables that may not yet exist (jurisdictions, public_bodies, etc.)."""
+    if engine is None:
+        engine = get_engine()
+    Base.metadata.create_all(engine, checkfirst=True)
+
+
+def _migrate_existing_tables(engine=None):
+    """Add columns to existing tables that were introduced after initial creation.
+
+    SQLite's CREATE TABLE IF NOT EXISTS won't ALTER existing tables, so
+    newly-added columns on tables that already exist need explicit ALTER TABLE.
+    This function uses PRAGMA table_info to check before adding.
+    """
+    if engine is None:
+        engine = get_engine()
+
+    migrations = [
+        ("public_body_members", "jurisdiction_id", "INTEGER DEFAULT NULL"),
+        ("public_body_members", "public_body_id", "INTEGER DEFAULT NULL"),
+        ("permits", "jurisdiction", "VARCHAR(64) DEFAULT NULL"),
+        ("permits", "application_date", "VARCHAR(32) DEFAULT NULL"),
+        ("permits", "height_stories", "VARCHAR(32) DEFAULT NULL"),
+        ("permits", "native_type", "TEXT DEFAULT NULL"),
+        ("permits", "native_category", "TEXT DEFAULT NULL"),
+        ("permits", "normalized_category", "VARCHAR(64) DEFAULT NULL"),
+    ]
+
+    with engine.connect() as conn:
+        for table, column, col_type in migrations:
+            # Check if table exists
+            result = conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name=:t"),
+                {"t": table},
+            )
+            if not result.fetchone():
+                continue  # table doesn't exist yet — create_all will handle it
+
+            # Check if column exists
+            result = conn.execute(
+                text(f"PRAGMA table_info('{table}')"),
+            )
+            existing_cols = {row[1] for row in result.fetchall()}
+            if column not in existing_cols:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+        conn.commit()
+
+
+def _migrate_supervisors_to_public_body_members():
+    """Copy legacy Supervisor rows into public_body_members for the BOS body.
+
+    The supervisors table predates the generalized public_body_members model.
+    This migration copies its rows so the new body-detail route works without
+    a legacy fallback, while the old /members routes continue to query
+    Supervisor directly (unchanged).
+    """
+    session = get_session()
+    try:
+        # Remove stale BOS rows (e.g. from a previous run that copied
+        # non-board attendees before the district filter was added).
+        session.execute(
+            text("DELETE FROM public_body_members WHERE body = 'bos'")
+        )
+        session.flush()
+
+        # Only copy supervisors that have a district assigned — the parsing
+        # logic that populates the supervisors table sometimes grabs
+        # non-board attendees from executive session "Also present" sections.
+        # Also look up the Maricopa County jurisdiction and BOS public body
+        # so we can set the FK fields for URL resolution.
+        mc_jurisdiction = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == "maricopa-county")
+        ).scalar_one_or_none()
+        bos_body = session.execute(
+            select(PublicBody).where(PublicBody.body_code == "bos")
+        ).scalar_one_or_none()
+
+        supervisors = session.execute(
+            select(Supervisor)
+            .where(Supervisor.district.isnot(None))
+            .order_by(Supervisor.district.asc().nullslast(), Supervisor.name)
+        ).scalars().all()
+
+        for s in supervisors:
+            member = PublicBodyMember(
+                body="bos",
+                name=s.name,
+                normalized_name=s.normalized_name,
+                title=f"District {s.district}" if s.district else "Supervisor",
+                district_or_seat=s.district,
+                active_from=s.active_from,
+                active_to=s.active_to,
+                jurisdiction_id=mc_jurisdiction.id if mc_jurisdiction else None,
+                public_body_id=bos_body.id if bos_body else None,
+            )
+            session.add(member)
+        session.commit()
+    finally:
+        session.close()
+
+
+def seed_default_jurisdictions():
+    """Populate the Maricopa County jurisdiction and its public bodies if empty."""
+    # Ensure tables exist (both new ones and columns added to existing ones)
+    _migrate_existing_tables()
+    init_poliscopic_models()
+
+    # Migrate legacy Supervisor data into public_body_members (idempotent)
+    _migrate_supervisors_to_public_body_members()
+
+    # Populate permit jurisdiction, native_type, and normalized_category
+    _migrate_permit_normalized_fields()
+
+    session = get_session()
+    try:
+        existing = session.execute(select(Jurisdiction).limit(1)).scalar_one_or_none()
+        if existing:
+            return
+
+        mc = Jurisdiction(name="Maricopa County", slug="maricopa-county", state="AZ")
+        session.add(mc)
+        session.flush()
+
+        bodies = [
+            PublicBody(jurisdiction_id=mc.id, name="Board of Supervisors", slug="board-of-supervisors", body_code="bos", body_type="Board"),
+            PublicBody(jurisdiction_id=mc.id, name="Planning & Zoning Commission", slug="planning-zoning-commission", body_code="pz", body_type="Commission"),
+            PublicBody(jurisdiction_id=mc.id, name="Board of Adjustment", slug="board-of-adjustment", body_code="adj", body_type="Board"),
+            PublicBody(jurisdiction_id=mc.id, name="Board of Health", slug="board-of-health", body_code="health", body_type="Board"),
+            PublicBody(jurisdiction_id=mc.id, name="Drainage Review Board", slug="drainage-review-board", body_code="drain", body_type="Board"),
+            PublicBody(jurisdiction_id=mc.id, name="Transportation Advisory Board", slug="transportation-advisory-board", body_code="tab", body_type="Board"),
+            PublicBody(jurisdiction_id=mc.id, name="Industrial Development Authority", slug="industrial-development-authority", body_code="ida", body_type="Authority"),
+        ]
+        session.add_all(bodies)
+        session.commit()
+    finally:
+        session.close()
+
+
+def _migrate_permit_normalized_fields():
+    """Populate jurisdiction, native_type, and normalized_category on permits.
+
+    These fields were added after data was already ingested.  Also derive
+    normalized_category (Residential, Commercial, Industrial, Infrastructure,
+    Other) from the native permit_type label so the aggregate views work.
+    """
+    session = get_session()
+    try:
+        # Only process permits that haven't been migrated yet
+        to_migrate = session.execute(
+            select(Permit).where(
+                or_(
+                    Permit.jurisdiction.is_(None),
+                    Permit.native_type.is_(None),
+                    Permit.normalized_category.is_(None),
+                )
+            )
+        ).scalars().all()
+
+        if not to_migrate:
+            return
+
+        for p in to_migrate:
+            if not p.jurisdiction:
+                p.jurisdiction = "Maricopa County"
+            if not p.native_type and p.permit_type:
+                p.native_type = p.permit_type
+            if not p.normalized_category and p.permit_type:
+                pt = p.permit_type.lower()
+                if "residential" in pt:
+                    p.normalized_category = "Residential"
+                elif "commercial" in pt:
+                    p.normalized_category = "Commercial"
+                elif "industrial" in pt:
+                    p.normalized_category = "Industrial"
+                elif "mixed" in pt:
+                    p.normalized_category = "Mixed-Use"
+                elif "grading" in pt or "infrastructure" in pt or "stormwater" in pt:
+                    p.normalized_category = "Infrastructure"
+                else:
+                    p.normalized_category = "Other"
+
+        session.commit()
+    finally:
+        session.close()
+
+
+def get_public_bodies_by_jurisdiction(slug):
+    """Get all public bodies for a jurisdiction slug."""
+    session = get_session()
+    try:
+        jurisdiction = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == slug)
+        ).scalar_one_or_none()
+        if not jurisdiction:
+            return []
+        bodies = session.execute(
+            select(PublicBody).where(PublicBody.jurisdiction_id == jurisdiction.id).order_by(PublicBody.name)
+        ).scalars().all()
+        return list(bodies)
+    finally:
+        session.close()
+
+
+def get_body_members(body_code, page=1, per_page=10):
+    """Get paginated members of a public body by body_code."""
+    session = get_session()
+    try:
+        offset = (page - 1) * per_page
+        total = session.execute(
+            select(func.count(PublicBodyMember.id))
+            .where(PublicBodyMember.body == body_code)
+        ).scalar() or 0
+        members = session.execute(
+            select(PublicBodyMember)
+            .where(PublicBodyMember.body == body_code)
+            .order_by(PublicBodyMember.active_from.desc().nullslast(), PublicBodyMember.name)
+            .offset(offset).limit(per_page)
+        ).scalars().all()
+        return list(members), total
+    finally:
+        session.close()

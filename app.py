@@ -72,6 +72,7 @@ print(f"DB exists:    {_expected_db.exists()}", file=sys.stderr)
 
 if _diag_ok:
     from flask import Flask, render_template, redirect, request, jsonify
+    from datetime import date
     from db import get_session, Meeting, AgendaItem, SupportingDocument
     from db import AgendaItemVote, SupervisorVote, Supervisor, MeetingSupervisor, PZItemDetail
     from db import Case, CaseEvent
@@ -90,7 +91,9 @@ if _diag_ok:
         get_supervisor_swing_votes,
         get_supervisor_controversial_votes,
     )
-    from sqlalchemy import select, func, or_, text as sa_text
+    from db import Jurisdiction, PublicBody, PublicBodyMember, Permit, PermitReport
+    from db import seed_default_jurisdictions, get_public_bodies_by_jurisdiction, get_body_members
+    from sqlalchemy import select, func, or_, Float, text as sa_text
 else:
     print("FATAL: Missing dependencies — cannot start.", file=sys.stderr)
     raise SystemExit(1)
@@ -119,6 +122,10 @@ def _cache(timeout=60, query_string=False):
     return lambda f: f
 
 
+# ── Seed default data on startup ───────────────────────────────────────────
+seed_default_jurisdictions()
+
+
 # ── Request timing ──────────────────────────────────────────────────────────
 @app.before_request
 def _start_timer():
@@ -144,7 +151,7 @@ SYNC_STATUS_BADGES = {
 
 @app.route("/")
 def index():
-    return redirect("/meetings")
+    return render_template("home.html")
 
 
 def get_distinct_meeting_types(body=None):
@@ -527,6 +534,200 @@ def get_related_pz_items_for_case(case_number):
 
 
 # ---------------------------------------------------------------------------
+# Public Bodies / Members — Routes
+# ---------------------------------------------------------------------------
+
+@app.route("/bodies")
+def bodies_index():
+    """List all known public bodies grouped by jurisdiction."""
+    session = get_session()
+    jurisdictions = session.execute(
+        select(Jurisdiction).order_by(Jurisdiction.name)
+    ).scalars().all()
+
+    result = []
+    for j in jurisdictions:
+        bodies = session.execute(
+            select(PublicBody).where(PublicBody.jurisdiction_id == j.id).order_by(PublicBody.name)
+        ).scalars().all()
+        result.append((j, bodies))
+    session.close()
+    return render_template("bodies_index.html", jurisdictions=result)
+
+
+@app.route("/bodies/<slug>")
+def body_detail(slug):
+    """Show members of a public body with pagination."""
+    session = get_session()
+    body = session.execute(
+        select(PublicBody).where(PublicBody.slug == slug)
+    ).scalar_one_or_none()
+    if not body:
+        session.close()
+        return "Body not found", 404
+
+    jurisdiction = session.execute(
+        select(Jurisdiction).where(Jurisdiction.id == body.jurisdiction_id)
+    ).scalar_one_or_none()
+
+    page = request.args.get("page", 1, type=int)
+    per_page = 10
+
+    total = session.execute(
+        select(func.count(PublicBodyMember.id))
+        .where(PublicBodyMember.body == body.body_code)
+    ).scalar() or 0
+
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+    offset = (page - 1) * per_page
+    members = session.execute(
+        select(PublicBodyMember)
+        .where(PublicBodyMember.body == body.body_code)
+        .order_by(PublicBodyMember.active_from.desc().nullslast(), PublicBodyMember.name)
+        .offset(offset).limit(per_page)
+    ).scalars().all()
+
+    tomorrow = date.today()
+
+    session.close()
+    return render_template(
+        "body_detail.html",
+        body=body,
+        jurisdiction=jurisdiction,
+        members=members,
+        page=page,
+        total_pages=total_pages,
+        total=total,
+        per_page=per_page,
+        today=tomorrow,
+    )
+
+
+@app.route("/permits")
+def permits_index():
+    """Permit overview — aggregate summaries by default, raw list on request."""
+    session = get_session()
+    view = request.args.get("view", "aggregate")
+    jurisdiction_filter = request.args.get("jurisdiction", "")
+    category_filter = request.args.get("category", "")
+    year_filter = request.args.get("year", "")
+
+    # Common filter base
+    def _base_filter(q):
+        if jurisdiction_filter:
+            q = q.where(Permit.jurisdiction == jurisdiction_filter)
+        if category_filter:
+            q = q.where(Permit.normalized_category == category_filter)
+        if year_filter:
+            q = q.where(Permit.permit_issue_date.startswith(year_filter))
+        return q
+
+    # Aggregate queries
+    valuation_cast = func.cast(func.nullif(Permit.permit_valuation, ""), Float)
+    sqft_cast = func.cast(func.nullif(Permit.permit_square_feet, ""), Float)
+
+    by_jurisdiction = session.execute(
+        _base_filter(
+            select(
+                Permit.jurisdiction,
+                func.count(Permit.id).label("count"),
+                func.sum(valuation_cast).label("total_valuation"),
+                func.sum(sqft_cast).label("total_sqft"),
+                func.avg(valuation_cast).label("avg_valuation"),
+            )
+            .where(Permit.jurisdiction.isnot(None))
+            .group_by(Permit.jurisdiction)
+            .order_by(func.count(Permit.id).desc())
+        )
+    ).all()
+
+    by_category = session.execute(
+        _base_filter(
+            select(
+                Permit.normalized_category,
+                func.count(Permit.id).label("count"),
+                func.sum(valuation_cast).label("total_valuation"),
+                func.sum(sqft_cast).label("total_sqft"),
+            )
+            .where(Permit.normalized_category.isnot(None), Permit.normalized_category != "")
+            .group_by(Permit.normalized_category)
+            .order_by(func.count(Permit.id).desc())
+        )
+    ).all()
+
+    by_type_top = session.execute(
+        _base_filter(
+            select(
+                Permit.native_type,
+                func.count(Permit.id).label("count"),
+            )
+            .where(Permit.native_type.isnot(None), Permit.native_type != "")
+            .group_by(Permit.native_type)
+            .order_by(func.count(Permit.id).desc())
+            .limit(20)
+        )
+    ).all()
+
+    # Available filter options
+    years = session.execute(
+        select(Permit.permit_issue_date)
+        .distinct()
+        .where(Permit.permit_issue_date.isnot(None), Permit.permit_issue_date != "")
+        .order_by(Permit.permit_issue_date.desc())
+    ).scalars().all()
+    # Extract unique years from ISO dates
+    years = sorted(set(d[:4] for d in years if d and len(d) >= 4), reverse=True)
+
+    jurisdictions = session.execute(
+        select(Permit.jurisdiction).distinct().where(Permit.jurisdiction.isnot(None)).order_by(Permit.jurisdiction)
+    ).scalars().all()
+
+    categories = session.execute(
+        select(Permit.normalized_category).distinct().where(Permit.normalized_category.isnot(None), Permit.normalized_category != "").order_by(Permit.normalized_category)
+    ).scalars().all()
+
+    # Raw list mode
+    permits_raw = []
+    page = 1
+    total_pages = 1
+    total = 0
+    per_page = 25
+
+    if view == "raw":
+        page = request.args.get("page", 1, type=int)
+        base_q = select(Permit).order_by(Permit.permit_issue_date.desc().nullslast(), Permit.id.desc())
+        count_q = select(func.count(Permit.id))
+        base_q = _base_filter(base_q)
+        count_q = _base_filter(count_q)
+        total = session.execute(count_q).scalar() or 0
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = max(1, min(page, total_pages))
+        offset = (page - 1) * per_page
+        permits_raw = session.execute(base_q.offset(offset).limit(per_page)).scalars().all()
+
+    session.close()
+    return render_template(
+        "permits.html",
+        view=view,
+        by_jurisdiction=by_jurisdiction,
+        by_category=by_category,
+        by_type_top=by_type_top,
+        permits_raw=permits_raw,
+        page=page,
+        total_pages=total_pages,
+        total=total,
+        per_page=per_page,
+        years=years,
+        jurisdictions=jurisdictions,
+        categories=categories,
+        jurisdiction_filter=jurisdiction_filter,
+        category_filter=category_filter,
+        year_filter=year_filter,
+    )
+
+
+# ---------------------------------------------------------------------------
 # BOS Member / Supervisor Voting Portal — Routes
 # ---------------------------------------------------------------------------
 
@@ -545,33 +746,9 @@ MAJORITY_BADGE_CLASSES = {
 
 
 @app.route("/members")
-@_cache(timeout=120)
 def members():
-    """Member directory — list all BOS supervisors with high-level stats."""
-    session = get_session()
-    supervisors = get_bos_supervisors(session)
-
-    member_rows = []
-    for sup in supervisors:
-        stats = get_supervisor_vote_stats(session, sup.id, body="bos")
-        slug = get_supervisor_slug(sup)
-        member_rows.append({
-            "id": sup.id,
-            "name": sup.name,
-            "normalized_name": sup.normalized_name,
-            "slug": slug,
-            "district": sup.district or "",
-            "role": "",
-            "active": sup.active_to is None,
-            "total_votes": stats["total_votes"],
-            "split_votes": stats["split_votes_attended"],
-            "dissents": stats["against_majority"],
-            "abstentions": stats["abstain"],
-            "absences": stats["absences"],
-        })
-
-    session.close()
-    return render_template("members.html", members=member_rows)
+    """Member directory — redirect to the unified bodies index."""
+    return redirect("/bodies")
 
 
 @app.route("/api/members/<slug>/votes")
@@ -668,19 +845,15 @@ def member_votes_api(slug):
     })
 
 
-@app.route("/members/<slug>")
-def member_detail(slug):
-    """Supervisor profile page with voting history sections."""
+@app.route("/members/<jurisdiction_slug>/<body_code>/<slug>")
+def member_detail(jurisdiction_slug, body_code, slug):
+    """Member profile by jurisdiction + body + slug — disambiguates name collisions."""
     session = get_session()
 
     sup = get_supervisor_by_slug_or_name(session, slug)
     if not sup:
         session.close()
-        return render_template(
-            "member_detail.html",
-            member=None,
-            slug=slug,
-        )
+        return render_template("member_detail.html", member=None, slug=slug)
 
     slug_out = get_supervisor_slug(sup)
     stats = get_supervisor_vote_stats(session, sup.id, body="bos")
@@ -690,9 +863,7 @@ def member_detail(slug):
     absences = get_supervisor_absences(session, sup.id, body="bos")
     full_record = get_supervisor_full_voting_record(session, sup.id, body="bos")
     full_record_count = len(full_record)
-    # Only render the first 25 rows server-side; the rest are lazy-loaded via API
     full_record = full_record[:25]
-
     session.close()
 
     return render_template(
@@ -709,7 +880,21 @@ def member_detail(slug):
         full_record_api_url=f"/api/members/{slug_out}/votes",
         vote_badges=VOTE_BADGE_CLASSES,
         majority_badges=MAJORITY_BADGE_CLASSES,
+        member_url=f"/members/{jurisdiction_slug}/{body_code}/{slug_out}",
     )
+
+
+@app.route("/members/<slug>")
+def member_detail_legacy(slug):
+    """Legacy member route — redirect to qualified URL."""
+    session = get_session()
+    sup = get_supervisor_by_slug_or_name(session, slug)
+    if sup:
+        slug_out = get_supervisor_slug(sup)
+        session.close()
+        return redirect(f"/members/maricopa-county/bos/{slug_out}")
+    session.close()
+    return render_template("member_detail.html", member=None, slug=slug)
 
 
 @app.route("/debug/inferred-abstentions")

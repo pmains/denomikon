@@ -246,7 +246,38 @@ agenda item (or vice versa), both meetings can be found without ID prefix hacks.
 
 The `--body` filter is available on inspect commands and in the web UI.
 
-## Database Schema
+## Routes
+
+| Path | Description |
+|---|---|
+| `/` | Homepage — navigate to Meetings, Members, or Permits |
+| `/meetings` | Meeting list with search, filter, and pagination |
+| `/meetings/<body>/<meeting_id>` | Meeting detail — agenda items, documents, votes |
+| `/bodies` | Public bodies index — all jurisdictions and their bodies |
+| `/bodies/<slug>` | Body detail — paginated member roster |
+| `/members` | Unified member index (redirects to /bodies) |
+| `/members/<id>` | Individual member profile and voting record |
+| `/members/<slug>/analytics` | Voting analytics for a member |
+| `/permits` | Permit list with jurisdiction and category filters |
+| `/c-number/<c_number_base>` | Case number revision history |
+
+## Data Model
+
+See `scripts/db.py` for the full SQLAlchemy model definitions.
+
+Key entities:
+- **Jurisdiction** — A county, city, or town (e.g., Maricopa County)
+- **PublicBody** — A board, commission, or committee within a jurisdiction
+- **PublicBodyMember** — A person who serves or served on a public body (title, district/seat, date range)
+- **Meeting** — A meeting of a public body with agendas, documents, and voting records
+- **Permit** — A permit extracted from weekly activity reports (jurisdiction-aware)
+
+## Architecture Notes
+
+- Permit schemas differ by jurisdiction. The `native_type` and `native_category` fields preserve the original label, while `normalized_category` provides cross-jurisdiction filtering (Residential, Commercial, Industrial, Mixed-Use, Other).
+- Member status (active/inactive) is derived from `active_to` dates, not from meeting attendance. A member absent from a meeting is still a current member.
+
+## Database Schema (Legacy)
 
 - **meetings** — sync status, item counts, retry tracking, body scope
 - **agenda_items** — individual agenda items with C-numbers and case numbers
@@ -258,6 +289,14 @@ The `--body` filter is available on inspect commands and in the web UI.
   name, applicant, request, location, recommendation)
 - **cases** — case numbers tracked across meetings
 - **case_events** — event history per case (agenda appearance, hearings, votes)
+- **jurisdictions** — Government jurisdictions (counties, cities, towns)
+- **public_bodies** — Boards, commissions, committees within a jurisdiction
+- **permits** — Permit records extracted from weekly activity reports
+- **permit_reports** — Weekly permit activity report (XLSX) metadata
+- **public_body_members** — Membership roster for public bodies
+- **meeting_attendance** — Per-meeting attendance records
+- **member_votes** — Generalized vote records for non-BOS bodies
+- **executive_session_participants** — BOS executive session advisors
 
 The `sync_status` field tracks:
 - `complete` — successfully extracted and persisted
