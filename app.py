@@ -9,9 +9,14 @@ Usage:
 Opens at http://127.0.0.1:5000/meetings
 """
 
+import logging
 import os
 import sys
+import time
+from functools import wraps
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Startup diagnostics — helps debug database discovery
@@ -91,6 +96,42 @@ else:
     raise SystemExit(1)
 
 app = Flask(__name__)
+
+# ── Cache ───────────────────────────────────────────────────────────────────
+try:
+    from flask_caching import Cache
+    cache = Cache(app, config={
+        "CACHE_TYPE": "FileSystemCache",
+        "CACHE_DIR": _here / ".cache" / "flask-cache",
+        "CACHE_DEFAULT_TIMEOUT": 60,
+        "CACHE_THRESHOLD": 200,
+    })
+    log.info("Flask-Caching enabled (FileSystemCache, 60s default)")
+except ImportError:
+    cache = None
+    log.warning("Flask-Caching not installed — install with: pip install Flask-Caching")
+
+# ── Conditional caching decorator ───────────────────────────────────────────
+def _cache(timeout=60, query_string=False):
+    """Apply Flask-Caching if available, otherwise no-op."""
+    if cache:
+        return cache.cached(timeout=timeout, query_string=query_string)
+    return lambda f: f
+
+
+# ── Request timing ──────────────────────────────────────────────────────────
+@app.before_request
+def _start_timer():
+    request._start_time = time.monotonic()
+
+
+@app.after_request
+def _log_timing(response):
+    elapsed = time.monotonic() - getattr(request, "_start_time", time.monotonic())
+    if elapsed > 1.0:
+        log.warning("%s %.1fs", request.path, elapsed)
+    return response
+
 
 SYNC_STATUS_BADGES = {
     "complete": "success",
@@ -217,6 +258,7 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
 
 
 @app.route("/meetings")
+@_cache(timeout=60, query_string=True)
 def meetings():
     body = request.args.get("body", "")
     meeting_type = request.args.get("type", "")
@@ -265,6 +307,7 @@ def meetings():
 
 @app.route("/meetings/<meeting_id>")
 @app.route("/meetings/<body>/<meeting_id>")
+@_cache(timeout=120)
 def meeting_detail(meeting_id, body=None):
     session = get_session()
 
@@ -502,6 +545,7 @@ MAJORITY_BADGE_CLASSES = {
 
 
 @app.route("/members")
+@_cache(timeout=120)
 def members():
     """Member directory — list all BOS supervisors with high-level stats."""
     session = get_session()

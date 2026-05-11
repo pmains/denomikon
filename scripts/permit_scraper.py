@@ -21,6 +21,16 @@ Usage:
 
     # All in one: discover, download (limit 5), inspect
     python scripts/permit_scraper.py --discover --download --limit 5 --inspect
+
+    # Parse downloaded reports into the database
+    python scripts/permit_scraper.py --init-db
+    python scripts/permit_scraper.py --sync --limit 3
+
+    # Summary reports
+    python scripts/permit_scraper.py --summary
+    python scripts/permit_scraper.py --summary --by month
+    python scripts/permit_scraper.py --summary --by city
+    python scripts/permit_scraper.py --summary --by contractor
 """
 
 import argparse
@@ -33,9 +43,25 @@ import re
 import sys
 import time
 import urllib.request
-import urllib.error
 from pathlib import Path
 from typing import Optional
+
+# lazy-import db so this module can be loaded without the full stack
+def _get_db():
+    import db
+    return db
+
+
+# Lazy imports for spreadsheet reading
+def _get_openpyxl():
+    import openpyxl
+    return openpyxl
+
+
+def _get_xlrd():
+    import xlrd
+    return xlrd
+import urllib.error
 
 
 # ── Constants ───────────────────────────────────────────────────────────────
@@ -156,7 +182,16 @@ def _extract_links_from_archive(html: str) -> list[dict]:
 # ── File-type detection ─────────────────────────────────────────────────────
 
 def _detect_file_type(content: bytes, content_type: Optional[str] = None) -> str:
-    """Detect file type from magic bytes or Content-Type header."""
+    """Detect file type from magic bytes (preferred) or Content-Type header."""
+    # Magic bytes take priority — they tell us what the content actually is.
+    if content[:8] == b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1":
+        return "xls"
+    if content[:4] == b"\x50\x4B\x03\x04":
+        return "xlsx"
+    if content[:5] == b"\x25\x50\x44\x46\x2D":
+        return "pdf"
+
+    # Fallback to Content-Type header
     if content_type:
         ct = content_type.lower()
         if "spreadsheet" in ct and "openxml" in ct:
@@ -167,15 +202,6 @@ def _detect_file_type(content: bytes, content_type: Optional[str] = None) -> str
             return "pdf"
         if "html" in ct:
             return "html"
-
-    # Magic bytes
-    if content[:4] == b"\x50\x4B\x03\x04":
-        # Could be xlsx (OOXML) or zip
-        return "xlsx"
-    if content[:5] == b"\x25\x50\x44\x46\x2D":
-        return "pdf"
-    if content[:8] == b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1":
-        return "xls"
     if content[:4] == b"\xEF\xBB\xBF" or content[:2] in (b"\xFF\xFE", b"\xFE\xFF"):
         return "csv"
 
@@ -387,6 +413,544 @@ def _inspect_report(path: Path):
             pass
 
 
+# ── XLSX Parser ─────────────────────────────────────────────────────────────
+
+# Known column name patterns for header detection (case-insensitive)
+_HEADER_PATTERNS = {
+    "permit_type": ["permit type"],
+    "work_class": ["work class"],
+    "permit_number": ["permit number", "permit #", "permit no"],
+    "permit_issue_date": ["permit issue date", "issue date", "permit date", "date issued"],
+    "permit_description": ["permit description", "description", "work description"],
+    "permit_valuation": ["permit valuation", "valuation", "estimated cost", "value"],
+    "permit_square_feet": ["permit square feet", "square feet", "sq ft", "sqft", "square footage"],
+    "parcel_no": ["parcel no", "parcel number", "parcel #", "apn", "assessor parcel"],
+    "no_units": ["no units", "units", "number of units"],
+    "job_address": ["job address", "address", "site address", "location"],
+    "subdivision": ["subdivision", "sub"],
+    "lot": ["lot", "lot number"],
+    "job_city": ["job city", "city"],
+    "job_state": ["job state", "state"],
+    "job_zip": ["job zip", "zip", "zip code"],
+    "owner_name": ["owner name", "owner", "property owner"],
+    "contractor_name": ["contractor name", "contractor", "builder"],
+    "contractor_phone": ["contractor phone", "phone", "contractor phone number"],
+    "contractor_email": ["contractor email", "email", "contractor email address"],
+}
+
+
+def _clean_val(val):
+    """Normalize a cell value to a clean string or None."""
+    if val is None:
+        return None
+    if isinstance(val, datetime.datetime):
+        return val.isoformat()[:10]
+    if isinstance(val, float):
+        s = str(val)
+        if s.endswith(".0"):
+            s = s[:-2]
+        return s
+    s = str(val).strip()
+    if not s or s == "None":
+        return None
+    return s
+
+
+def _detect_header_row(rows: list) -> int:
+    """Find the row index containing column headers.
+
+    Scans for a row that matches at least 3 known column-name patterns.
+    Falls back to row 1 if nothing is found.
+    """
+    all_patterns = set()
+    for pats in _HEADER_PATTERNS.values():
+        all_patterns.update(pats)
+
+    best_idx = 1  # fallback
+    best_score = 0
+    for ri, row in enumerate(rows):
+        if not row:
+            continue
+        score = 0
+        for cell in row:
+            if cell is None:
+                continue
+            low = str(cell).strip().lower()
+            for pat in all_patterns:
+                if low == pat:
+                    score += 1
+                    break
+        if score > best_score:
+            best_score = score
+            best_idx = ri
+        if score >= 5:  # good enough, stop early
+            break
+    return best_idx
+
+
+def _build_column_map(headers: list) -> dict:
+    """Map column name strings to position index (0-based).
+
+    Handles inconsistent column layouts by matching known patterns.
+    Unmatched columns are mapped to their position with a generic key.
+    """
+    col_map: dict[str, int] = {}
+    for ci, cell in enumerate(headers):
+        if cell is None:
+            continue
+        low = str(cell).strip().lower()
+        matched = False
+        for field_name, patterns in _HEADER_PATTERNS.items():
+            if low in patterns:
+                col_map[field_name] = ci
+                matched = True
+                break
+        if not matched:
+            col_map[f"_col_{ci}"] = ci
+    return col_map
+
+
+def _compute_row_hash(report_date: str, row: dict) -> str:
+    """Generate a stable SHA-256 row hash for dedup.
+
+    Based on: report_date + parcel_no + job_address + permit_description
+    + valuation + square_feet + owner_name + contractor_name.
+    """
+    parts = [
+        report_date or "",
+        row.get("parcel_no") or "",
+        row.get("job_address") or "",
+        row.get("permit_description") or "",
+        str(row.get("permit_valuation") or ""),
+        str(row.get("permit_square_feet") or ""),
+        row.get("owner_name") or "",
+        row.get("contractor_name") or "",
+    ]
+    raw = "||".join(parts)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _read_rows_xlsx(filepath: str) -> list[list]:
+    """Read all rows from an XLSX file using openpyxl."""
+    import openpyxl
+    wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    wb.close()
+    return rows
+
+
+def _read_rows_xls(filepath: str) -> list[list]:
+    """Read all rows from a legacy XLS file using xlrd."""
+    import xlrd
+    wb = xlrd.open_workbook(filepath)
+    ws = wb.sheet_by_index(0)
+    rows = []
+    for ri in range(ws.nrows):
+        row = []
+        for ci in range(ws.ncols):
+            cell = ws.cell(ri, ci)
+            if cell.ctype == xlrd.XL_CELL_DATE:
+                row.append(xlrd.xldate_as_tuple(cell.value, wb.datemode))
+            elif cell.ctype == xlrd.XL_CELL_EMPTY:
+                row.append(None)
+            else:
+                row.append(cell.value)
+        rows.append(row)
+    return rows
+
+
+def parse_spreadsheet(filepath: str) -> tuple[list[dict], list[str]]:
+    """Parse an XLSX or XLS file into structured permit rows.
+
+    Automatically detects format by file extension.
+    Returns (rows, warnings) where:
+    - rows: list of dicts with field_name keys
+    - warnings: list of human-readable warning strings about parsing
+    """
+    from pathlib import Path
+
+    warnings: list[str] = []
+    ext = Path(filepath).suffix.lower()
+
+    # Convert xlrd date tuples to ISO strings (same format openpyxl returns)
+    def _clean_xls_val(v):
+        if isinstance(v, tuple) and len(v) >= 3:
+            # xlrd date tuple: (year, month, day, hour, minute, second)
+            try:
+                return datetime.date(v[0], v[1], v[2]).isoformat()
+            except (ValueError, IndexError):
+                return str(v)
+        return v
+
+    try:
+        if ext == ".xls":
+            all_rows = _read_rows_xls(filepath)
+            # Convert date tuples to ISO strings
+            all_rows = [[_clean_xls_val(v) for v in row] for row in all_rows]
+            warnings.append("Parsed as legacy .xls format")
+        else:
+            all_rows = _read_rows_xlsx(filepath)
+    except Exception as e:
+        return [], [f"Failed to read spreadsheet: {e}"]
+
+    if not all_rows:
+        return [], ["Empty spreadsheet"]
+
+    # Detect header row
+    header_idx = _detect_header_row(all_rows)
+    headers = list(all_rows[header_idx]) if header_idx < len(all_rows) else []
+    if header_idx > 0:
+        warnings.append(f"Header detected at row {header_idx} (skipped {header_idx} title/pre-header rows)")
+
+    col_map = _build_column_map(headers)
+    fields_found = [k for k in col_map if not k.startswith("_")]
+    if not fields_found:
+        return [], ["No known column headers found in row {}".format(header_idx)]
+    warnings.append(f"Resolved columns: {', '.join(sorted(fields_found))}")
+
+    # Extract report title from the first row if it looks like one
+    report_title = ""
+    if all_rows[0] and all_rows[0][0]:
+        first_cell = str(all_rows[0][0]).strip()
+        if "weekly" in first_cell.lower() or "permit" in first_cell.lower():
+            report_title = first_cell
+
+    # Parse data rows (skip header row and any rows before it)
+    parsed: list[dict] = []
+    for ri in range(header_idx + 1, len(all_rows)):
+        row = all_rows[ri]
+        if not row or all(c is None for c in row):
+            continue
+
+        record: dict[str, str] = {}
+        for field_name, ci in col_map.items():
+            if field_name.startswith("_"):
+                continue
+            val = row[ci] if ci < len(row) else None
+            record[field_name] = _clean_val(val)
+
+        parsed.append(record)
+
+    return parsed, warnings
+
+
+def _file_content_hash(filepath: str) -> Optional[str]:
+    """SHA-256 of file contents."""
+    try:
+        return hashlib.sha256(Path(filepath).read_bytes()).hexdigest()
+    except Exception:
+        return None
+
+
+# ── DB helpers ──────────────────────────────────────────────────────────────
+
+def _init_db():
+    """Create/update permit tables."""
+    from db import PermitReport, Permit
+    from db import init_db
+    init_db()
+    print("Database initialized (permit_reports, permits tables ready)", file=sys.stderr)
+
+
+def _sync_single_report(session, record: dict, output_dir: str) -> int:
+    """Parse one downloaded XLSX, store rows in DB.
+
+    Idempotent: deletes existing permits for this report_adid first.
+    Returns count of rows inserted.
+    """
+    db_mod = _get_db()
+    PermitReport = db_mod.PermitReport
+    Permit = db_mod.Permit
+
+    adid = record.get("adid", "")
+    file_name = record.get("file_name", "")
+    file_type = record.get("file_type", "")
+    report_date = record.get("report_date", "")
+    source_url = record.get("archive_url", "")
+
+    # Locate the file on disk
+    if file_name:
+        year = report_date[:4] if len(report_date) >= 4 else "unknown"
+        local_path = Path(output_dir) / RAW_SUBDIR / year / report_date / file_name
+    else:
+        return 0
+
+    if not local_path.exists():
+        print(f"  File not found: {local_path}", file=sys.stderr)
+        return 0
+
+    # Parse
+    rows, warnings = parse_spreadsheet(str(local_path))
+    if not rows:
+        for w in warnings:
+            print(f"  Warning: {w}", file=sys.stderr)
+        return 0
+
+    # Upsert permit report record
+    content_hash = _file_content_hash(str(local_path))
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    from sqlalchemy import select
+    existing_report = session.execute(
+        select(PermitReport).where(PermitReport.adid == adid)
+    ).scalar_one_or_none()
+
+    if existing_report:
+        existing_report.file_type = file_type
+        existing_report.file_name = file_name
+        existing_report.local_path = str(local_path)
+        existing_report.content_hash = content_hash
+        existing_report.downloaded_at = now
+        existing_report.row_count = len(rows)
+        existing_report.updated_at = now
+    else:
+        session.add(PermitReport(
+            report_date=report_date,
+            adid=adid,
+            report_title=record.get("report_title", ""),
+            file_type=file_type,
+            file_name=file_name,
+            source_url=source_url,
+            local_path=str(local_path),
+            content_hash=content_hash,
+            downloaded_at=now,
+            row_count=len(rows),
+        ))
+
+    # Delete existing permits for this report (idempotent replace)
+    session.execute(
+        Permit.__table__.delete().where(Permit.report_adid == adid)
+    )
+
+    # Insert new permits
+    inserted = 0
+    for row in rows:
+        # Compute row_hash (always, for metadata and future dedup)
+        permit_number = row.get("permit_number") or None
+        row_hash = _compute_row_hash(report_date, row)
+
+        # Determine uniqueness key
+        if permit_number:
+            uniq_key = permit_number
+        else:
+            uniq_key = row_hash
+
+        # Build permit_number lookup: check if already exists
+        # (delete/replace semantics: for this report_adid, we already deleted
+        # old rows. But other reports might have the same permit_number.
+        # This shouldn't happen for weekly reports — each permit appears once.)
+
+        rec = Permit(
+            report_date=report_date,
+            report_adid=adid,
+            source_file=file_name,
+            permit_type=row.get("permit_type"),
+            work_class=row.get("work_class"),
+            permit_number=permit_number,
+            permit_issue_date=row.get("permit_issue_date"),
+            permit_description=row.get("permit_description"),
+            permit_valuation=row.get("permit_valuation"),
+            permit_square_feet=row.get("permit_square_feet"),
+            parcel_no=row.get("parcel_no"),
+            no_units=row.get("no_units"),
+            job_address=row.get("job_address"),
+            subdivision=row.get("subdivision"),
+            lot=row.get("lot"),
+            job_city=row.get("job_city"),
+            job_state=row.get("job_state"),
+            job_zip=row.get("job_zip"),
+            owner_name=row.get("owner_name"),
+            contractor_name=row.get("contractor_name"),
+            contractor_phone=row.get("contractor_phone"),
+            contractor_email=row.get("contractor_email"),
+            row_hash=row_hash,
+        )
+        session.add(rec)
+        inserted += 1
+
+    session.commit()
+    return inserted
+
+
+def _parse_num(val: Optional[str]) -> float:
+    """Parse a numeric string, returning 0 on failure.
+
+    Handles commas, leading dollar signs, whitespace.
+    """
+    if not val:
+        return 0.0
+    s = str(val).replace("$", "").replace(",", "").replace(" ", "").strip()
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _print_summary(session, group_by: Optional[str] = None):
+    """Print a summary of all synced permits."""
+    db_mod = _get_db()
+    Permit = db_mod.Permit
+    PermitReport = db_mod.PermitReport
+    from sqlalchemy import select, func, text
+
+    total = session.execute(select(func.count()).select_from(Permit)).scalar() or 0
+    if total == 0:
+        print("No permits in database. Run --sync first.")
+        return
+
+    # Column names
+    report_count = session.execute(
+        select(func.count()).select_from(PermitReport)
+    ).scalar() or 0
+
+    print(f"\n{'='*72}")
+    print(f"  PERMIT SUMMARY")
+    print(f"  {total} permits across {report_count} weekly reports")
+    print(f"{'='*72}")
+
+    # Overall stats
+    rows = session.execute(
+        select(Permit.permit_valuation, Permit.permit_square_feet, Permit.no_units)
+    ).all()
+
+    total_val = 0.0
+    total_sqft = 0.0
+    total_units = 0
+    for r in rows:
+        total_val += _parse_num(r.permit_valuation)
+        total_sqft += _parse_num(r.permit_square_feet)
+        total_units += int(float(r.no_units)) if r.no_units and r.no_units.strip() else 0
+
+    print(f"  {'Permit count:':30s} {total:,}")
+    print(f"  {'Total valuation:':30s} ${total_val:,.0f}")
+    print(f"  {'Total sq ft:':30s} {total_sqft:,.0f}")
+    print(f"  {'Total units:':30s} {total_units:,}")
+    print(f"  {'Avg valuation/sqft:':30s} ${total_val / total_sqft:.2f}" if total_sqft > 0 else f"  {'Avg valuation/sqft:':30s} N/A")
+    print()
+
+    # Group-by options
+    if group_by == "month":
+        rows = session.execute(
+            text("""
+                SELECT SUBSTR(report_date, 1, 7) as month,
+                       COUNT(*) as cnt,
+                       COALESCE(SUM(CAST(REPLACE(permit_valuation, ',', '') AS REAL)), 0) as val,
+                       COALESCE(SUM(CAST(REPLACE(permit_square_feet, ',', '') AS REAL)), 0) as sqft,
+                       COALESCE(SUM(CAST(COALESCE(NULLIF(no_units, ''), '0') AS REAL)), 0) as units
+                FROM permits
+                GROUP BY month
+                ORDER BY month DESC
+                LIMIT 24
+            """)
+        ).all()
+        print(f"  {'Month':12s} {'# Permits':>10s} {'Valuation':>14s} {'Sq Ft':>12s} {'Units':>8s}")
+        print(f"  {'-'*56}")
+        for r in rows:
+            print(f"  {r.month:12s} {r.cnt:>10,} ${r.val:>11,.0f} {r.sqft:>11,.0f} {r.units:>8,.0f}")
+
+    elif group_by == "city":
+        rows = session.execute(
+            text("""
+                SELECT UPPER(COALESCE(NULLIF(job_city, ''), '(unknown)')) as city,
+                       COUNT(*) as cnt,
+                       COALESCE(SUM(CAST(REPLACE(permit_valuation, ',', '') AS REAL)), 0) as val,
+                       COALESCE(SUM(CAST(REPLACE(permit_square_feet, ',', '') AS REAL)), 0) as sqft
+                FROM permits
+                GROUP BY city
+                ORDER BY sqft DESC
+                LIMIT 20
+            """)
+        ).all()
+        print(f"  {'City':20s} {'# Permits':>10s} {'Valuation':>14s} {'Sq Ft':>12s}")
+        print(f"  {'-'*56}")
+        for r in rows:
+            print(f"  {r.city:20s} {r.cnt:>10,} ${r.val:>11,.0f} {r.sqft:>11,.0f}")
+
+    elif group_by == "type":
+        rows = session.execute(
+            text("""
+                SELECT UPPER(COALESCE(NULLIF(permit_type, ''), '(unknown)')) as ptype,
+                       COUNT(*) as cnt,
+                       COALESCE(SUM(CAST(REPLACE(permit_valuation, ',', '') AS REAL)), 0) as val,
+                       COALESCE(SUM(CAST(REPLACE(permit_square_feet, ',', '') AS REAL)), 0) as sqft,
+                       COALESCE(SUM(CAST(COALESCE(NULLIF(no_units, ''), '0') AS REAL)), 0) as units
+                FROM permits
+                GROUP BY ptype
+                ORDER BY sqft DESC
+                LIMIT 20
+            """)
+        ).all()
+        print(f"  {'Permit Type':35s} {'#':>5s} {'Valuation':>14s} {'Sq Ft':>12s} {'Units':>8s}")
+        print(f"  {'-'*74}")
+        for r in rows:
+            pt = r.ptype[:33] + ".." if len(r.ptype) > 33 else r.ptype
+            print(f"  {pt:35s} {r.cnt:>5} ${r.val:>11,.0f} {r.sqft:>11,.0f} {r.units:>8,.0f}")
+        print()
+
+        # Also show cross-tab: top cities for each major type
+        for major_type in ["BUILDING (RESIDENTIAL)", "BUILDING (COMMERCIAL)", "SIGN", "DEMOLITION"]:
+            sub = session.execute(
+                text("""
+                    SELECT UPPER(COALESCE(NULLIF(job_city, ''), '(unknown)')) as city,
+                           COUNT(*) as cnt,
+                           COALESCE(SUM(CAST(REPLACE(permit_square_feet, ',', '') AS REAL)), 0) as sqft
+                    FROM permits
+                    WHERE UPPER(COALESCE(NULLIF(permit_type, ''), '(unknown)')) LIKE :pattern
+                    GROUP BY city
+                    ORDER BY sqft DESC
+                    LIMIT 5
+                """),
+                {"pattern": f"%{major_type}%"},
+            ).all()
+            print(f"  Top cities for {major_type}:")
+            print(f"    {'City':25s} {'#':>5s} {'Sq Ft':>12s}")
+            print(f"    {'-'*42}")
+            for r in sub:
+                print(f"    {r.city:25s} {r.cnt:>5} {r.sqft:>11,.0f}")
+            print()
+
+    elif group_by == "contractor":
+        rows = session.execute(
+            text("""
+                SELECT COALESCE(NULLIF(contractor_name, ''), '(unknown)') as contractor,
+                       COUNT(*) as cnt,
+                       COALESCE(SUM(CAST(REPLACE(permit_valuation, ',', '') AS REAL)), 0) as val,
+                       COALESCE(SUM(CAST(REPLACE(permit_square_feet, ',', '') AS REAL)), 0) as sqft
+                FROM permits
+                GROUP BY contractor
+                ORDER BY sqft DESC
+                LIMIT 20
+            """)
+        ).all()
+        print(f"  {'Contractor':30s} {'# Permits':>10s} {'Valuation':>14s} {'Sq Ft':>12s}")
+        print(f"  {'-'*66}")
+        for r in rows:
+            cname = r.contractor[:28] + ".." if len(r.contractor) > 28 else r.contractor
+            print(f"  {cname:30s} {r.cnt:>10,} ${r.val:>11,.0f} {r.sqft:>11,.0f}")
+
+    else:
+        # Top permit descriptions by sq ft
+        rows = session.execute(
+            text("""
+                SELECT COALESCE(NULLIF(permit_description, ''), '(blank)') as descr,
+                       COUNT(*) as cnt,
+                       COALESCE(SUM(CAST(REPLACE(permit_square_feet, ',', '') AS REAL)), 0) as sqft
+                FROM permits
+                GROUP BY descr
+                ORDER BY sqft DESC
+                LIMIT 10
+            """)
+        ).all()
+        print(f"  {'Permit Description':50s} {'#':>5s} {'Sq Ft':>12s}")
+        print(f"  {'-'*67}")
+        for r in rows:
+            d = r.descr[:48] + ".." if len(r.descr) > 48 else r.descr
+            print(f"  {d:50s} {r.cnt:>5} {r.sqft:>11,.0f}")
+
+    print()
+
+
 # ── CLI ─────────────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -404,6 +968,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--inspect", action="store_true",
         help="Print file type and column headers from the newest 3 downloaded reports",
+    )
+    parser.add_argument(
+        "--init-db", action="store_true",
+        help="Create/update permit database tables",
+    )
+    parser.add_argument(
+        "--sync", action="store_true",
+        help="Parse downloaded reports into the database",
+    )
+    parser.add_argument(
+        "--summary", action="store_true",
+        help="Print permit summary",
+    )
+    parser.add_argument(
+        "--by", choices=["month", "city", "contractor", "type"], default=None,
+        help="Group summary output by this dimension (used with --summary)",
     )
     parser.add_argument(
         "--output-dir", default=DEFAULT_OUTPUT_DIR,
@@ -434,6 +1014,11 @@ def main():
 
     output_dir = args.output_dir
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    # ── Init DB ─────────────────────────────────────────────────────────
+    if args.init_db:
+        _init_db()
+        return
 
     # ── Discover ────────────────────────────────────────────────────────
     if args.discover:
@@ -525,6 +1110,63 @@ def main():
 
         # Update index with resolved URLs and file info
         _save_index(updated, output_dir)
+
+    # ── Sync ────────────────────────────────────────────────────────────
+    if args.sync:
+        records = _load_index(output_dir)
+        if not records:
+            print("No index found. Run --discover or --download first.", file=sys.stderr)
+            sys.exit(1)
+
+        db_mod = _get_db()
+        db_mod.init_db()
+        session = db_mod.get_session()
+
+        # Filter by date range
+        if args.start_date or args.end_date:
+            records = _filter_records_by_date(records, args.start_date, args.end_date)
+
+        # Apply limit
+        if args.limit is not None:
+            records = records[: args.limit]
+
+        print(f"Syncing {len(records)} reports into database...", file=sys.stderr)
+        total_rows = 0
+        synced = 0
+        for record in records:
+            adid = record.get("adid", "")
+            date_str = record.get("report_date", "")
+            print(f"  Parsing {date_str}_{adid}...", file=sys.stderr)
+            try:
+                count = _sync_single_report(session, record, output_dir)
+                if count > 0:
+                    total_rows += count
+                    synced += 1
+                    print(f"    -> {count} permit rows", file=sys.stderr)
+                else:
+                    print(f"    -> 0 rows (file not found or empty)", file=sys.stderr)
+            except Exception as e:
+                print(f"    -> ERROR: {e}", file=sys.stderr)
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+                # Re-create a fresh session for the next report
+                session.close()
+                db_mod = _get_db()
+                db_mod.init_db()
+                session = db_mod.get_session()
+
+        session.close()
+        print(f"\nDone: {synced} reports synced, {total_rows} total permit rows", file=sys.stderr)
+
+    # ── Summary ───────────────────────────────────────────────────────────
+    if args.summary:
+        db_mod = _get_db()
+        db_mod.init_db()
+        session = db_mod.get_session()
+        _print_summary(session, group_by=args.by)
+        session.close()
 
     # ── Inspect ─────────────────────────────────────────────────────────
     if args.inspect:

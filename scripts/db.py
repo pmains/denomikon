@@ -48,7 +48,24 @@ def get_engine():
             # Enable WAL mode and foreign keys for SQLite
             connect_args["check_same_thread"] = False
         _engine = create_engine(url, connect_args=connect_args, future=True)
+        if url.startswith("sqlite"):
+            _set_sqlite_pragmas(_engine)
     return _engine
+
+
+def _set_sqlite_pragmas(engine):
+    """Apply performance-oriented PRAGMAs to a SQLite connection."""
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "connect")
+    def _on_connect(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA synchronous=NORMAL;")
+        cursor.execute("PRAGMA temp_store=MEMORY;")
+        cursor.execute("PRAGMA cache_size=-20000;")  # 20 MB cache
+        cursor.execute("PRAGMA foreign_keys=ON;")
+        cursor.close()
 
 
 def set_database_url(url: str):
@@ -470,6 +487,88 @@ class SupportingDocument(Base):
     )
 
 
+class PermitReport(Base):
+    """A single weekly permit activity report (one XLSX file)."""
+
+    __tablename__ = "permit_reports"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    report_date = Column(String(16), nullable=False, index=True)
+    adid = Column(String(16), nullable=False, unique=True, index=True)
+    report_title = Column(String(256), nullable=False, default="")
+    file_type = Column(String(16), nullable=True, default=None)
+    file_name = Column(String(256), nullable=True, default=None)
+    source_url = Column(String(512), nullable=False, default="")
+    local_path = Column(String(512), nullable=True, default=None)
+    content_hash = Column(String(64), nullable=True, default=None)
+    downloaded_at = Column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    row_count = Column(Integer, nullable=True, default=None)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class Permit(Base):
+    """Individual permit row extracted from a weekly permit report."""
+
+    __tablename__ = "permits"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    report_date = Column(String(16), nullable=False, index=True)
+    report_adid = Column(String(16), nullable=False, index=True)
+    source_file = Column(String(256), nullable=True, default=None)
+
+    # Core permit fields (all nullable since column positions vary by report)
+    permit_type = Column(Text, nullable=True, default=None)
+    work_class = Column(Text, nullable=True, default=None)
+    permit_number = Column(String(64), nullable=True, default=None, index=True)
+    permit_issue_date = Column(String(32), nullable=True, default=None)
+    permit_description = Column(Text, nullable=True, default=None)
+    permit_valuation = Column(
+        String(32), nullable=True, default=None,
+    )
+    permit_square_feet = Column(
+        String(32), nullable=True, default=None,
+    )
+    parcel_no = Column(String(32), nullable=True, default=None)
+    no_units = Column(String(16), nullable=True, default=None)
+    job_address = Column(Text, nullable=True, default=None)
+    subdivision = Column(Text, nullable=True, default=None)
+    lot = Column(String(32), nullable=True, default=None)
+    job_city = Column(String(128), nullable=True, default=None)
+    job_state = Column(String(16), nullable=True, default=None)
+    job_zip = Column(String(16), nullable=True, default=None)
+    owner_name = Column(Text, nullable=True, default=None)
+    contractor_name = Column(Text, nullable=True, default=None)
+    contractor_phone = Column(String(64), nullable=True, default=None)
+    contractor_email = Column(String(256), nullable=True, default=None)
+
+    row_hash = Column(String(64), nullable=False, index=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        # Permit numbers may repeat across different weekly reports (e.g.
+        # fiscal-year reset), so the uniqueness is scoped to each report.
+        UniqueConstraint("report_adid", "permit_number", name="uq_permit_per_report"),
+    )
+
+
 _KNWON_MEETING_TYPES = {"formal", "informal", "special", "executive"}
 
 
@@ -694,6 +793,14 @@ def init_db():
     _migrate_col(engine, "pz_item_details", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
     _migrate_col(engine, "pz_item_details", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
 
+    # Create additional indexes for common query patterns
+    _ensure_index(engine, "meetings", "idx_meetings_date_desc", "meeting_date DESC")
+    _ensure_index(engine, "meetings", "idx_meetings_meeting_type", "meeting_type")
+    _ensure_index(engine, "agenda_items", "idx_agenda_items_meeting_id", "meeting_id")
+    _ensure_index(engine, "agenda_items", "idx_agenda_items_c_number", "c_number")
+    _ensure_index(engine, "agenda_items", "idx_agenda_items_c_number_base", "c_number_base")
+    _ensure_index(engine, "agenda_items", "idx_agenda_items_agenda_item_number", "agenda_item_number")
+
     # Backfill existing records to body='bos' and determine pz from meeting_type
     backfill_body_column(engine)
 
@@ -806,6 +913,18 @@ def _migrate_col(engine, table: str, col: str, col_def: str):
         with engine.connect() as conn:
             conn.execute(
                 text(f'ALTER TABLE {table} ADD COLUMN {col} {col_def}')
+            )
+            conn.commit()
+
+
+def _ensure_index(engine, table: str, index_name: str, column_expr: str):
+    """Create an index if it doesn't already exist."""
+    inspector = sa_inspect(engine)
+    existing = {ix["name"] for ix in inspector.get_indexes(table)}
+    if index_name not in existing:
+        with engine.connect() as conn:
+            conn.execute(
+                text(f'CREATE INDEX IF NOT EXISTS {index_name} ON {table} ({column_expr})')
             )
             conn.commit()
 

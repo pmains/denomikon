@@ -29,7 +29,9 @@ from the Agenda Online and AgendaCenter platforms.
 - Playwright (with Chromium browser) — for browser-backed scraping
 - `pdftotext` (poppler-utils) — for P&Z agenda PDF parsing
 - SQLAlchemy
-- Flask
+- Flask (with Flask-Caching for route-level caching)
+- openpyxl (for XLSX permit report parsing)
+- xlrd (for legacy XLS permit report parsing)
 
 Install:
 
@@ -38,6 +40,21 @@ pip install -r requirements.txt
 playwright install chromium
 brew install poppler        # macOS — provides pdftotext
 ```
+
+### Dependencies
+
+Core:
+```
+flask
+flask-caching
+sqlalchemy
+playwright
+openpyxl
+xlrd
+```
+
+Optional (for PDF parsing only):
+- `pdftotext` (poppler-utils)
 
 ## Usage
 
@@ -285,6 +302,81 @@ requirements.txt
 ## Tests
 
 ```bash
-# Run the full test suite (199 tests)
+# Run the full test suite
 python -m unittest discover -s tests
+# or
+python -m pytest tests/
+```
+
+## Performance Optimizations
+
+### SQLite PRAGMAs
+
+The following PRAGMAs are applied automatically on every connection:
+
+| PRAGMA | Value | Effect |
+|---|---|---|
+| `journal_mode` | WAL | Concurrent reads + writes without lock contention |
+| `synchronous` | NORMAL | Reduces fsync calls without risking corruption |
+| `temp_store` | MEMORY | Temp tables/indices live in RAM |
+| `cache_size` | -20000 | 20 MB page cache |
+| `foreign_keys` | ON | Enforce referential integrity |
+
+### Database Indexes
+
+Additional indexes are created by `--init-db` for common access patterns:
+
+- `meetings(meeting_date DESC)` — the meetings list page
+- `meetings(meeting_type)` — filter-by-type queries
+- `agenda_items(meeting_id)` — meeting detail items
+- `agenda_items(c_number)`, `agenda_items(c_number_base)` — case-number lookups
+- `agenda_items(agenda_item_number)` — item ordering
+
+### Server-Side Caching
+
+Flask-Caching is configured with a **FileSystemCache** backend (60-second default
+TTL) and caches the following routes:
+
+| Route | Cache TTL | Notes |
+|---|---|---|
+| `/meetings` | 60s | Varies by query string (body, type, date, page) |
+| `/meetings/<id>` | 120s | Per-meeting detail |
+| `/members` | 120s | Member directory |
+
+The cache directory is `.cache/flask-cache/` and is auto-created.
+
+### Request Timing
+
+Every request over 1 second is logged as a warning with the elapsed time:
+```
+WARNING:/meetings 1.4s
+```
+
+### Benchmarking
+
+```bash
+# Requires the Flask app to be running on :5000
+
+# Default: 10 warm-up, 20 measured requests
+python scripts/benchmark.py
+
+# Uncached benchmark (adds _=timestamp to bypass cache key)
+python scripts/benchmark.py --no-cache
+
+# Test a different endpoint
+python scripts/benchmark.py --endpoint=/members --requests=5 --warmup=2
+```
+
+### Recommended sync workflow
+
+```bash
+# First sync (slow — downloads 750+ permit reports)
+python scripts/permit_scraper.py --discover --download --sync
+
+# Weekly incremental
+python scripts/permit_scraper.py --discover --download --sync --limit 1
+
+# Explore permits
+python scripts/permit_scraper.py --summary --by month
+python scripts/permit_scraper.py --summary --by city
 ```
