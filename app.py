@@ -659,17 +659,22 @@ def permits_index():
                d.normalized_category,
                d.native_type,
                CAST(NULLIF(d.permit_valuation, '') AS REAL) AS val,
-               CAST(NULLIF(d.permit_square_feet, '') AS REAL) AS sqft
+               CAST(NULLIF(d.permit_square_feet, '') AS REAL) AS sqft,
+               SUBSTR(d.permit_issue_date, 1, 4) AS yr
         FROM deduped d
         WHERE d.rn = 1
+          AND d.permit_issue_date IS NOT NULL
     """
 
     jur_tot: dict = defaultdict(lambda: {"count": 0, "sqft": 0.0, "val": 0.0})
     cat_tot: dict = defaultdict(lambda: {"count": 0, "sqft": 0.0, "val": 0.0})
     type_cnt: dict = defaultdict(int)
+    sqft_by_year: dict = defaultdict(lambda: defaultdict(float))
+    cnt_by_year: dict = defaultdict(lambda: defaultdict(int))
+    all_cats: set = set()
 
     for r in session.execute(text(sql), params).all():
-        j, c, t, v, s = r
+        j, c, t, v, s, yr = r
         v = v or 0.0
         s = s or 0.0
         if j:
@@ -677,24 +682,30 @@ def permits_index():
             jt["count"] += 1
             jt["sqft"] += s
             jt["val"] += v
-        if c:
-            ct = cat_tot[c]
+        cat = c or "Other"
+        if cat:
+            all_cats.add(cat)
+            ct = cat_tot[cat]
             ct["count"] += 1
             ct["sqft"] += s
             ct["val"] += v
+            if yr:
+                sqft_by_year[yr][cat] += s
+                cnt_by_year[yr][cat] += 1
         if t:
             type_cnt[t] += 1
 
-    # Sort and format for the template
-    def _to_rows(src, label_key, extra_fields=None):
-        rows = []
-        for label, vals in src.items():
-            row = {"normalized_category": label, "count": vals["count"],
-                   "total_valuation": vals["val"], "total_sqft": vals["sqft"]}
-            if extra_fields:
-                row.update(extra_fields(vals, label))
-            rows.append(row)
-        return rows
+    years = sorted(sqft_by_year.keys())
+
+    # Build chart-data structures inline (no extra API round-trip)
+    cats_ordered = sorted(all_cats, key=lambda x: -cat_tot[x]["count"])
+    chart_sqft_by_year = {y: {c: sqft_by_year[y].get(c, 0) for c in cats_ordered} for y in years}
+    chart_cnt_by_year = {y: {c: cnt_by_year[y].get(c, 0) for c in cats_ordered} for y in years}
+    chart_cat_totals = [
+        {"category": c, "sqft": cat_tot[c]["sqft"],
+         "valuation": cat_tot[c]["val"], "count": cat_tot[c]["count"]}
+        for c in cats_ordered
+    ]
 
     by_jurisdiction = sorted(
         [{"jurisdiction": k, "count": v["count"],
@@ -771,6 +782,12 @@ def permits_index():
         jurisdiction_filter=jurisdiction_filter,
         category_filter=category_filter,
         year_filter=year_filter,
+        chart_data={
+            "years": years,
+            "sqft_by_year": chart_sqft_by_year,
+            "permits_by_year": chart_cnt_by_year,
+            "category_totals": chart_cat_totals,
+        },
     )
 
 

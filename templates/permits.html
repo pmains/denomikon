@@ -252,45 +252,37 @@ const COLORS = {
   'Other': '#6c757d',
 };
 
-const url = '/api/permits/chart-data?' + [
-{% if jurisdiction_filter %}  'jurisdiction={{ jurisdiction_filter }}',{% endif %}
-{% if category_filter %}  'category={{ category_filter }}',{% endif %}
-{% if year_filter %}  'year={{ year_filter }}',{% endif %}
-].filter(Boolean).join('&');
+const chartData = {{ chart_data | tojson }};
+const totals = chartData.category_totals;
 
-function makeCatBar(id, title, label, accessor, fmt) {
-  return fetch(url).then(r => r.json()).then(data => {
-    const totals = data.category_totals;
-    new Chart(document.getElementById(id), {
-      type: 'bar',
-      data: {
-        labels: totals.map(t => t.category),
-        datasets: [{
-          data: totals.map(t => t[accessor]),
-          backgroundColor: totals.map(t => COLORS[t.category] || '#adb5bd'),
-          borderRadius: 4,
-        }]
+function makeCatBar(id, label, accessor, fmt) {
+  new Chart(document.getElementById(id), {
+    type: 'bar',
+    data: {
+      labels: totals.map(t => t.category),
+      datasets: [{
+        data: totals.map(t => t[accessor]),
+        backgroundColor: totals.map(t => COLORS[t.category] || '#adb5bd'),
+        borderRadius: 4,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => fmt(ctx.raw) } }
       },
-      options: {
-        indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-          tooltip: { callbacks: { label: ctx => fmt(ctx.raw) } }
-        },
-        scales: {
-          x: { title: { display: true, text: label } }
-        }
+      scales: {
+        x: { title: { display: true, text: label } }
       }
-    });
+    }
   });
 }
 
-Promise.all([
-  makeCatBar('sqftByCatChart', 'Sqft', 'Sq Ft', 'sqft', v => Number(v).toLocaleString() + ' sqft'),
-  makeCatBar('countByCatChart', 'Count', 'Permits', 'count', v => Number(v).toLocaleString() + ' permits'),
-  makeCatBar('valByCatChart', 'Valuation', 'Dollars', 'valuation', v => '$' + Number(v).toLocaleString()),
-]);
+makeCatBar('sqftByCatChart', 'Sq Ft', 'sqft', v => Number(v).toLocaleString() + ' sqft');
+makeCatBar('countByCatChart', 'Permits', 'count', v => Number(v).toLocaleString() + ' permits');
+makeCatBar('valByCatChart', 'Dollars', 'valuation', v => '$' + Number(v).toLocaleString());
 </script>
 {% endblock %}
