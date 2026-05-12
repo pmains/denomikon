@@ -605,6 +605,7 @@ def body_detail(slug):
 
 
 @app.route("/permits")
+@_cache(timeout=604800, query_string=True)  # 7 days — invalidated on sync
 def permits_index():
     """Permit overview — aggregate summaries by default, raw list on request."""
     session = get_session()
@@ -623,75 +624,97 @@ def permits_index():
             q = q.where(Permit.permit_issue_date.startswith(year_filter))
         return q
 
-    # ── Deduped aggregate queries ────────────────────────────────────────
+    # ── Single-pass deduped aggregate ────────────────────────────────────
     # Weekly reports are cumulative snapshots — the same permit can appear
-    # in many reports.  Dedup by unique (permit_number, permit_square_feet)
-    # so totals reflect actual permits, not weekly repetitions.
+    # in many reports.  We run the dedup CTE ONCE and compute all three
+    # aggregate tables in Python to avoid 3x table scans.
     from sqlalchemy import text
+    from collections import defaultdict
 
-    def _dedup_aggregate(base_select: str, group_col: str, extra_cols: str = "",
-                         having: str = "") -> list:
-        """Run a deduped aggregate query, returning Row objects."""
-        parts = []
-        params = {}
-        if jurisdiction_filter:
-            parts.append("p.jurisdiction = :jur")
-            params["jur"] = jurisdiction_filter
-        if category_filter:
-            parts.append("p.normalized_category = :cat")
-            params["cat"] = category_filter
-        if year_filter:
-            parts.append("p.permit_issue_date LIKE :yr")
-            params["yr"] = f"{year_filter}%"
-        where = " AND ".join(parts) if parts else "1=1"
+    parts = []
+    params = {}
+    if jurisdiction_filter:
+        parts.append("p.jurisdiction = :jur")
+        params["jur"] = jurisdiction_filter
+    if category_filter:
+        parts.append("p.normalized_category = :cat")
+        params["cat"] = category_filter
+    if year_filter:
+        parts.append("p.permit_issue_date LIKE :yr")
+        params["yr"] = f"{year_filter}%"
+    where = " AND ".join(parts) if parts else "1=1"
 
-        sql = f"""
-            WITH deduped AS (
-                SELECT *,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY COALESCE(p.permit_number, p.row_hash),
-                                         COALESCE(p.permit_square_feet, '')
-                           ORDER BY p.permit_issue_date
-                       ) AS rn
-                FROM permits p
-                WHERE {where}
-            )
-            SELECT {base_select}
-            FROM deduped d
-            WHERE d.rn = 1
-            {having}
-            GROUP BY d.{group_col}
-            {extra_cols}
-        """
-        return session.execute(text(sql), params).all()
+    sql = f"""
+        WITH deduped AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY COALESCE(p.permit_number, p.row_hash),
+                                     COALESCE(p.permit_square_feet, '')
+                       ORDER BY p.permit_issue_date
+                   ) AS rn
+            FROM permits p
+            WHERE {where}
+        )
+        SELECT d.jurisdiction,
+               d.normalized_category,
+               d.native_type,
+               CAST(NULLIF(d.permit_valuation, '') AS REAL) AS val,
+               CAST(NULLIF(d.permit_square_feet, '') AS REAL) AS sqft
+        FROM deduped d
+        WHERE d.rn = 1
+    """
 
-    by_jurisdiction = _dedup_aggregate(
-        base_select="d.jurisdiction,"
-                     " COUNT(*) AS count,"
-                     " COALESCE(SUM(CAST(NULLIF(d.permit_valuation, '') AS REAL)), 0) AS total_valuation,"
-                     " COALESCE(SUM(CAST(NULLIF(d.permit_square_feet, '') AS REAL)), 0) AS total_sqft,"
-                     " COALESCE(AVG(CAST(NULLIF(d.permit_valuation, '') AS REAL)), 0) AS avg_valuation",
-        group_col="jurisdiction",
-        extra_cols="ORDER BY count DESC",
-        having="AND d.jurisdiction IS NOT NULL",
+    jur_tot: dict = defaultdict(lambda: {"count": 0, "sqft": 0.0, "val": 0.0})
+    cat_tot: dict = defaultdict(lambda: {"count": 0, "sqft": 0.0, "val": 0.0})
+    type_cnt: dict = defaultdict(int)
+
+    for r in session.execute(text(sql), params).all():
+        j, c, t, v, s = r
+        v = v or 0.0
+        s = s or 0.0
+        if j:
+            jt = jur_tot[j]
+            jt["count"] += 1
+            jt["sqft"] += s
+            jt["val"] += v
+        if c:
+            ct = cat_tot[c]
+            ct["count"] += 1
+            ct["sqft"] += s
+            ct["val"] += v
+        if t:
+            type_cnt[t] += 1
+
+    # Sort and format for the template
+    def _to_rows(src, label_key, extra_fields=None):
+        rows = []
+        for label, vals in src.items():
+            row = {"normalized_category": label, "count": vals["count"],
+                   "total_valuation": vals["val"], "total_sqft": vals["sqft"]}
+            if extra_fields:
+                row.update(extra_fields(vals, label))
+            rows.append(row)
+        return rows
+
+    by_jurisdiction = sorted(
+        [{"jurisdiction": k, "count": v["count"],
+          "total_valuation": v["val"], "total_sqft": v["sqft"],
+          "avg_valuation": v["val"] / v["count"] if v["count"] else 0}
+         for k, v in jur_tot.items()],
+        key=lambda r: r["count"], reverse=True,
     )
 
-    by_category = _dedup_aggregate(
-        base_select="d.normalized_category,"
-                     " COUNT(*) AS count,"
-                     " COALESCE(SUM(CAST(NULLIF(d.permit_valuation, '') AS REAL)), 0) AS total_valuation,"
-                     " COALESCE(SUM(CAST(NULLIF(d.permit_square_feet, '') AS REAL)), 0) AS total_sqft",
-        group_col="normalized_category",
-        extra_cols="ORDER BY count DESC",
-        having="AND d.normalized_category IS NOT NULL AND d.normalized_category != ''",
+    by_category = sorted(
+        [{"normalized_category": k, "count": v["count"],
+          "total_valuation": v["val"], "total_sqft": v["sqft"]}
+         for k, v in cat_tot.items()],
+        key=lambda r: r["count"], reverse=True,
     )
 
-    by_type_top = _dedup_aggregate(
-        base_select="d.native_type, COUNT(*) AS count",
-        group_col="native_type",
-        extra_cols="ORDER BY count DESC LIMIT 20",
-        having="AND d.native_type IS NOT NULL AND d.native_type != ''",
-    )
+    by_type_top = sorted(
+        [{"native_type": k, "count": v} for k, v in type_cnt.items()],
+        key=lambda r: r["count"], reverse=True,
+    )[:20]
 
     # Available filter options (non-deduped — detection is fine with full set)
     years = session.execute(

@@ -1083,6 +1083,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _clear_flask_cache():
+    """Clear Flask's filesystem cache so stale permit aggregates aren't served."""
+    import shutil
+    cache_dir = Path(__file__).resolve().parent.parent / ".cache" / "flask-cache"
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        print(f"  Flask cache cleared ({cache_dir})", file=sys.stderr)
+
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
@@ -1188,6 +1198,10 @@ def main():
 
     # ── Sync / Reparse ─────────────────────────────────────────────────
     if args.sync or args.reparse:
+        # Invalidate Flask cache so stale aggregate data isn't served.
+        # Permits only change on explicit sync, so cache lives forever between syncs.
+        _clear_flask_cache()
+
         records = _load_index(output_dir)
         if not records:
             print("No index found. Run --discover or --download first.", file=sys.stderr)
@@ -1234,6 +1248,23 @@ def main():
 
         session.close()
         print(f"\nDone: {synced} reports synced, {total_rows} total permit rows", file=sys.stderr)
+
+        # Pre-warm the Flask cache by hitting the permit aggregate endpoint
+        # (only if the Flask app is running locally alongside this script).
+        try:
+            import urllib.request
+            BASE = "http://127.0.0.1:5000"
+            for path in ["/api/permits/chart-data", 
+                         "/permits?view=aggregate",
+                         "/permits/category/Residential",
+                         "/permits/category/Commercial"]:
+                try:
+                    urllib.request.urlopen(f"{BASE}{path}", timeout=10)
+                    print(f"  Pre-warmed: {path}", file=sys.stderr)
+                except Exception:
+                    pass  # Flask not running — skip pre-warm
+        except Exception:
+            pass
 
     # ── Summary ───────────────────────────────────────────────────────────
     if args.summary:
