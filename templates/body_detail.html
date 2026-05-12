@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}{{ body.name }} — Poliscopic Meetings{% endblock %}
+{% block content %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="/bodies">Bodies</a></li>
+    {% if jurisdiction %}<li class="breadcrumb-item">{{ jurisdiction.name }}</li>{% endif %}
+    <li class="breadcrumb-item active">{{ body.name }}</li>
+  </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="mb-0">{{ body.name }}</h1>
+  <a href="/meetings?body={{ body.body_code }}" class="btn btn-outline-primary btn-sm">View Meetings</a>
+</div>
+
+{% if total == 0 %}
+<p class="text-muted">No members recorded for this body yet.</p>
+{% else %}
+<div class="table-responsive">
+  <table class="table table-hover align-middle">
+    <thead class="table-light">
+      <tr>
+        <th>Name</th>
+        <th>Title / Role</th>
+        <th>District / Seat</th>
+        <th>Active From</th>
+        <th>Active To</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in members %}
+      <tr>
+        <td><a href="/members/maricopa-county/{{ body.body_code }}/{{ m.normalized_name.replace(' ', '-') }}">{{ m.name }}</a></td>
+        <td>{{ m.title or '-' }}</td>
+        <td>{{ m.district_or_seat or '-' }}</td>
+        <td>{{ m.active_from or '-' }}</td>
+        <td>{{ m.active_to or '-' }}</td>
+        <td>
+          {% if m.active_to and m.active_to < today %}
+          <span class="badge bg-secondary">Historical</span>
+          {% else %}
+          <span class="badge bg-success">Current</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<!-- Pagination (sliding window) -->
+{% if total_pages > 1 %}
+<nav>
+  <ul class="pagination justify-content-center">
+    <li class="page-item {{ 'disabled' if page <= 1 }}">
+      <a class="page-link" href="?page={{ page - 1 }}">Previous</a>
+    </li>
+    {% set window = 5 %}
+    {% set start = [page - window, 2] | max %}
+    {% set end = [page + window, total_pages - 1] | min %}
+    <li class="page-item {{ 'active' if page == 1 }}">
+      <a class="page-link" href="?page=1">1</a>
+    </li>
+    {% if start > 2 %}
+    <li class="page-item disabled"><span class="page-link">&hellip;</span></li>
+    {% endif %}
+    {% for p in range(start, end + 1) %}
+    <li class="page-item {{ 'active' if p == page }}">
+      <a class="page-link" href="?page={{ p }}">{{ p }}</a>
+    </li>
+    {% endfor %}
+    {% if end < total_pages - 1 %}
+    <li class="page-item disabled"><span class="page-link">&hellip;</span></li>
+    {% endif %}
+    <li class="page-item {{ 'active' if page == total_pages }}">
+      <a class="page-link" href="?page={{ total_pages }}">{{ total_pages }}</a>
+    </li>
+    <li class="page-item {{ 'disabled' if page >= total_pages }}">
+      <a class="page-link" href="?page={{ page + 1 }}">Next</a>
+    </li>
+  </ul>
+</nav>
+{% endif %}
+
+<p class="text-muted small">{{ total }} member(s), showing {{ per_page }} per page</p>
+{% endif %}
+{% endblock %}

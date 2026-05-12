@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Public Bodies — Poliscopic Meetings{% endblock %}
+{% block content %}
+<h1 class="mb-4">Public Bodies</h1>
+{% for jurisdiction, bodies in jurisdictions %}
+<div class="card shadow-sm mb-4">
+  <div class="card-header">
+    <h4 class="mb-0">{{ jurisdiction.name }}</h4>
+    <small class="text-muted">{{ jurisdiction.state }}</small>
+  </div>
+  <div class="list-group list-group-flush">
+    {% for b in bodies %}
+    <a href="/bodies/{{ b.slug }}" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+      <div>
+        <strong>{{ b.name }}</strong>
+        {% if b.body_type %}<span class="badge bg-secondary ms-2">{{ b.body_type }}</span>{% endif %}
+      </div>
+      <span class="text-muted small">{{ b.body_code }}</span>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}
+{% endblock %}

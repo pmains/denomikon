@@ -1,0 +1,296 @@
+{% extends "base.html" %}
+{% block title %}Permits — Poliscopic{% endblock %}
+{% block content %}
+<h1 class="mb-4">Permits</h1>
+
+<!-- View toggle + filters -->
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+  <div class="btn-group" role="group">
+    <a href="/permits?view=aggregate{% if jurisdiction_filter %}&jurisdiction={{ jurisdiction_filter }}{% endif %}{% if category_filter %}&category={{ category_filter }}{% endif %}{% if year_filter %}&year={{ year_filter }}{% endif %}" class="btn btn-sm {{ 'btn-primary' if view == 'aggregate' else 'btn-outline-primary' }}">Summary</a>
+    <a href="/permits?view=raw{% if jurisdiction_filter %}&jurisdiction={{ jurisdiction_filter }}{% endif %}{% if category_filter %}&category={{ category_filter }}{% endif %}{% if year_filter %}&year={{ year_filter }}{% endif %}" class="btn btn-sm {{ 'btn-primary' if view == 'raw' else 'btn-outline-primary' }}">All Permits</a>
+  </div>
+
+  <form class="row g-2 align-items-end" method="get">
+    <input type="hidden" name="view" value="{{ view }}">
+    <div class="col-auto">
+      <select name="year" class="form-select form-select-sm" onchange="this.form.submit()">
+        <option value="">All Years</option>
+        {% for y in years %}
+        <option value="{{ y }}" {{ 'selected' if year_filter == y }}>{{ y }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-auto">
+      <select name="jurisdiction" class="form-select form-select-sm" onchange="this.form.submit()">
+        <option value="">All Jurisdictions</option>
+        {% for j in jurisdictions %}
+        <option value="{{ j }}" {{ 'selected' if jurisdiction_filter == j }}>{{ j }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-auto">
+      <select name="category" class="form-select form-select-sm" onchange="this.form.submit()">
+        <option value="">All Categories</option>
+        {% for c in categories %}
+        <option value="{{ c }}" {{ 'selected' if category_filter == c }}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-auto">
+      <a href="/permits" class="btn btn-outline-secondary btn-sm">Clear</a>
+    </div>
+  </form>
+</div>
+
+{% if view == 'aggregate' %}
+  {% if not by_jurisdiction and not by_category %}
+  <p class="text-muted">No permits found matching the current filters.</p>
+  {% else %}
+
+  <!-- By Jurisdiction -->
+  <div class="card shadow-sm mb-4">
+    <div class="card-header"><h5 class="mb-0">By Jurisdiction</h5></div>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle small mb-0">
+        <thead class="table-light">
+          <tr>
+            <th>Jurisdiction</th>
+            <th class="text-end">Permits</th>
+            <th class="text-end">Total Valuation</th>
+            <th class="text-end">Avg Valuation</th>
+            <th class="text-end">Total Sq Ft</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in by_jurisdiction %}
+          <tr>
+            <td><strong>{{ row.jurisdiction or 'Unknown' }}</strong></td>
+            <td class="text-end">{{ row.count }}</td>
+            <td class="text-end">{{ '{:,.0f}'.format(row.total_valuation) if row.total_valuation else '-' }}</td>
+            <td class="text-end">{{ '{:,.0f}'.format(row.avg_valuation) if row.avg_valuation else '-' }}</td>
+            <td class="text-end">{{ '{:,.0f}'.format(row.total_sqft) if row.total_sqft else '-' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- By Category -->
+  <div class="card shadow-sm mb-4">
+    <div class="card-header"><h5 class="mb-0">By Category</h5></div>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle small mb-0">
+        <thead class="table-light">
+          <tr>
+            <th>Category</th>
+            <th class="text-end">Permits</th>
+            <th class="text-end">Total Valuation</th>
+            <th class="text-end">Total Sq Ft</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in by_category %}
+          <tr>
+            <td>
+              <strong>{{ row.normalized_category }}</strong>
+              <a href="/permits/category/{{ row.normalized_category }}{% if jurisdiction_filter %}?jurisdiction={{ jurisdiction_filter }}{% endif %}" class="ms-2 text-decoration-none text-muted" title="View yearly breakdown">
+                <i class="bi bi-graph-up"></i>
+              </a>
+            </td>
+            <td class="text-end">{{ row.count }}</td>
+            <td class="text-end">{{ '{:,.0f}'.format(row.total_valuation) if row.total_valuation else '-' }}</td>
+            <td class="text-end">{{ '{:,.0f}'.format(row.total_sqft) if row.total_sqft else '-' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- By Type (top 20) -->
+  <div class="card shadow-sm mb-4">
+    <div class="card-header"><h5 class="mb-0">Top Permit Types</h5></div>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle small mb-0">
+        <thead class="table-light">
+          <tr>
+            <th>Type</th>
+            <th class="text-end">Permits</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in by_type_top %}
+          <tr>
+            <td>{{ row.native_type }}</td>
+            <td class="text-end">{{ row.count }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {% endif %}
+
+  <!-- Charts -->
+  <div class="row g-3 mb-4">
+    <div class="col-lg-4 d-flex">
+      <div class="card shadow-sm flex-fill">
+        <div class="card-header"><h5 class="mb-0">Square Footage by Category</h5></div>
+        <div class="card-body">
+          <canvas id="sqftByCatChart" height="200"></canvas>
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-4 d-flex">
+      <div class="card shadow-sm flex-fill">
+        <div class="card-header"><h5 class="mb-0">Permit Count by Category</h5></div>
+        <div class="card-body">
+          <canvas id="countByCatChart" height="200"></canvas>
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-4 d-flex">
+      <div class="card shadow-sm flex-fill">
+        <div class="card-header"><h5 class="mb-0">Total Valuation by Category</h5></div>
+        <div class="card-body">
+          <canvas id="valByCatChart" height="200"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+{% elif view == 'raw' %}
+
+  {% if total == 0 %}
+  <p class="text-muted">No permits found.</p>
+  {% else %}
+  <div class="table-responsive">
+    <table class="table table-hover align-middle small">
+      <thead class="table-light">
+        <tr>
+          <th>Permit #</th>
+          <th>Jurisdiction</th>
+          <th>Type</th>
+          <th>Category</th>
+          <th class="text-end">Sq Ft</th>
+          <th class="text-end">Valuation</th>
+          <th>Address</th>
+          <th>Issue Date</th>
+          <th>Owner</th>
+          <th>Contractor</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in permits_raw %}
+        <tr>
+          <td><code>{{ p.permit_number or '-' }}</code></td>
+          <td>{{ p.jurisdiction or '-' }}</td>
+          <td>{{ p.native_type or p.permit_type or '-' }}</td>
+          <td>{{ p.normalized_category or '-' }}</td>
+          <td class="text-end">{{ p.permit_square_feet or '-' }}</td>
+          <td class="text-end">{{ p.permit_valuation or '-' }}</td>
+          <td>{{ p.job_address or '-' }}</td>
+          <td>{{ p.permit_issue_date or '-' }}</td>
+          <td>{{ p.owner_name or '-' }}</td>
+          <td>{{ p.contractor_name or '-' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Pagination (sliding window) -->
+  {% if total_pages > 1 %}
+  {% macro _qs() %}{% if jurisdiction_filter %}&jurisdiction={{ jurisdiction_filter }}{% endif %}{% if category_filter %}&category={{ category_filter }}{% endif %}{% if year_filter %}&year={{ year_filter }}{% endif %}{% endmacro %}
+  <nav>
+    <ul class="pagination justify-content-center">
+      <li class="page-item {{ 'disabled' if page <= 1 }}">
+        <a class="page-link" href="?view=raw&page={{ page - 1 }}{{ _qs() }}">Previous</a>
+      </li>
+      {% set window = 5 %}
+      {% set start = [page - window, 2] | max %}
+      {% set end = [page + window, total_pages - 1] | min %}
+      <li class="page-item {{ 'active' if page == 1 }}">
+        <a class="page-link" href="?view=raw&page=1{{ _qs() }}">1</a>
+      </li>
+      {% if start > 2 %}
+      <li class="page-item disabled"><span class="page-link">&hellip;</span></li>
+      {% endif %}
+      {% for p in range(start, end + 1) %}
+      <li class="page-item {{ 'active' if p == page }}">
+        <a class="page-link" href="?view=raw&page={{ p }}{{ _qs() }}">{{ p }}</a>
+      </li>
+      {% endfor %}
+      {% if end < total_pages - 1 %}
+      <li class="page-item disabled"><span class="page-link">&hellip;</span></li>
+      {% endif %}
+      <li class="page-item {{ 'active' if page == total_pages }}">
+        <a class="page-link" href="?view=raw&page={{ total_pages }}{{ _qs() }}">{{ total_pages }}</a>
+      </li>
+      <li class="page-item {{ 'disabled' if page >= total_pages }}">
+        <a class="page-link" href="?view=raw&page={{ page + 1 }}{{ _qs() }}">Next</a>
+      </li>
+    </ul>
+  </nav>
+  {% endif %}
+
+  <p class="text-muted small">{{ total }} permit(s), showing {{ per_page }} per page</p>
+  {% endif %}
+
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script>
+const COLORS = {
+  'Residential': '#0d6efd',
+  'Commercial': '#198754',
+  'Industrial': '#dc3545',
+  'Other': '#6c757d',
+};
+
+const url = '/api/permits/chart-data?' + [
+{% if jurisdiction_filter %}  'jurisdiction={{ jurisdiction_filter }}',{% endif %}
+{% if category_filter %}  'category={{ category_filter }}',{% endif %}
+{% if year_filter %}  'year={{ year_filter }}',{% endif %}
+].filter(Boolean).join('&');
+
+function makeCatBar(id, title, label, accessor, fmt) {
+  return fetch(url).then(r => r.json()).then(data => {
+    const totals = data.category_totals;
+    new Chart(document.getElementById(id), {
+      type: 'bar',
+      data: {
+        labels: totals.map(t => t.category),
+        datasets: [{
+          data: totals.map(t => t[accessor]),
+          backgroundColor: totals.map(t => COLORS[t.category] || '#adb5bd'),
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => fmt(ctx.raw) } }
+        },
+        scales: {
+          x: { title: { display: true, text: label } }
+        }
+      }
+    });
+  });
+}
+
+Promise.all([
+  makeCatBar('sqftByCatChart', 'Sqft', 'Sq Ft', 'sqft', v => Number(v).toLocaleString() + ' sqft'),
+  makeCatBar('countByCatChart', 'Count', 'Permits', 'count', v => Number(v).toLocaleString() + ' permits'),
+  makeCatBar('valByCatChart', 'Valuation', 'Dollars', 'valuation', v => '$' + Number(v).toLocaleString()),
+]);
+</script>
+{% endblock %}
