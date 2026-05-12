@@ -613,7 +613,7 @@ def permits_index():
     category_filter = request.args.get("category", "")
     year_filter = request.args.get("year", "")
 
-    # Common filter base
+    # ── Filter builder for raw-list mode (non-deduped) ──────────────────
     def _base_filter(q):
         if jurisdiction_filter:
             q = q.where(Permit.jurisdiction == jurisdiction_filter)
@@ -623,53 +623,77 @@ def permits_index():
             q = q.where(Permit.permit_issue_date.startswith(year_filter))
         return q
 
-    # Aggregate queries
-    valuation_cast = func.cast(func.nullif(Permit.permit_valuation, ""), Float)
-    sqft_cast = func.cast(func.nullif(Permit.permit_square_feet, ""), Float)
+    # ── Deduped aggregate queries ────────────────────────────────────────
+    # Weekly reports are cumulative snapshots — the same permit can appear
+    # in many reports.  Dedup by unique (permit_number, permit_square_feet)
+    # so totals reflect actual permits, not weekly repetitions.
+    from sqlalchemy import text
 
-    by_jurisdiction = session.execute(
-        _base_filter(
-            select(
-                Permit.jurisdiction,
-                func.count(Permit.id).label("count"),
-                func.sum(valuation_cast).label("total_valuation"),
-                func.sum(sqft_cast).label("total_sqft"),
-                func.avg(valuation_cast).label("avg_valuation"),
+    def _dedup_aggregate(base_select: str, group_col: str, extra_cols: str = "",
+                         having: str = "") -> list:
+        """Run a deduped aggregate query, returning Row objects."""
+        parts = []
+        params = {}
+        if jurisdiction_filter:
+            parts.append("p.jurisdiction = :jur")
+            params["jur"] = jurisdiction_filter
+        if category_filter:
+            parts.append("p.normalized_category = :cat")
+            params["cat"] = category_filter
+        if year_filter:
+            parts.append("p.permit_issue_date LIKE :yr")
+            params["yr"] = f"{year_filter}%"
+        where = " AND ".join(parts) if parts else "1=1"
+
+        sql = f"""
+            WITH deduped AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY COALESCE(p.permit_number, p.row_hash),
+                                         COALESCE(p.permit_square_feet, '')
+                           ORDER BY p.permit_issue_date
+                       ) AS rn
+                FROM permits p
+                WHERE {where}
             )
-            .where(Permit.jurisdiction.isnot(None))
-            .group_by(Permit.jurisdiction)
-            .order_by(func.count(Permit.id).desc())
-        )
-    ).all()
+            SELECT {base_select}
+            FROM deduped d
+            WHERE d.rn = 1
+            {having}
+            GROUP BY d.{group_col}
+            {extra_cols}
+        """
+        return session.execute(text(sql), params).all()
 
-    by_category = session.execute(
-        _base_filter(
-            select(
-                Permit.normalized_category,
-                func.count(Permit.id).label("count"),
-                func.sum(valuation_cast).label("total_valuation"),
-                func.sum(sqft_cast).label("total_sqft"),
-            )
-            .where(Permit.normalized_category.isnot(None), Permit.normalized_category != "")
-            .group_by(Permit.normalized_category)
-            .order_by(func.count(Permit.id).desc())
-        )
-    ).all()
+    by_jurisdiction = _dedup_aggregate(
+        base_select="d.jurisdiction,"
+                     " COUNT(*) AS count,"
+                     " COALESCE(SUM(CAST(NULLIF(d.permit_valuation, '') AS REAL)), 0) AS total_valuation,"
+                     " COALESCE(SUM(CAST(NULLIF(d.permit_square_feet, '') AS REAL)), 0) AS total_sqft,"
+                     " COALESCE(AVG(CAST(NULLIF(d.permit_valuation, '') AS REAL)), 0) AS avg_valuation",
+        group_col="jurisdiction",
+        extra_cols="ORDER BY count DESC",
+        having="AND d.jurisdiction IS NOT NULL",
+    )
 
-    by_type_top = session.execute(
-        _base_filter(
-            select(
-                Permit.native_type,
-                func.count(Permit.id).label("count"),
-            )
-            .where(Permit.native_type.isnot(None), Permit.native_type != "")
-            .group_by(Permit.native_type)
-            .order_by(func.count(Permit.id).desc())
-            .limit(20)
-        )
-    ).all()
+    by_category = _dedup_aggregate(
+        base_select="d.normalized_category,"
+                     " COUNT(*) AS count,"
+                     " COALESCE(SUM(CAST(NULLIF(d.permit_valuation, '') AS REAL)), 0) AS total_valuation,"
+                     " COALESCE(SUM(CAST(NULLIF(d.permit_square_feet, '') AS REAL)), 0) AS total_sqft",
+        group_col="normalized_category",
+        extra_cols="ORDER BY count DESC",
+        having="AND d.normalized_category IS NOT NULL AND d.normalized_category != ''",
+    )
 
-    # Available filter options
+    by_type_top = _dedup_aggregate(
+        base_select="d.native_type, COUNT(*) AS count",
+        group_col="native_type",
+        extra_cols="ORDER BY count DESC LIMIT 20",
+        having="AND d.native_type IS NOT NULL AND d.native_type != ''",
+    )
+
+    # Available filter options (non-deduped — detection is fine with full set)
     years = session.execute(
         select(Permit.permit_issue_date)
         .distinct()
@@ -724,6 +748,160 @@ def permits_index():
         jurisdiction_filter=jurisdiction_filter,
         category_filter=category_filter,
         year_filter=year_filter,
+    )
+
+
+@app.route("/api/permits/chart-data")
+def permits_chart_data():
+    """JSON endpoint with deduped chart data for the permits template.
+
+    Returns sqft_by_year, permits_by_year, and category_totals,
+    optionally filtered by jurisdiction, category, or year.
+    """
+    session = get_session()
+    jf = request.args.get("jurisdiction", "")
+    cf = request.args.get("category", "")
+    yf = request.args.get("year", "")
+
+    parts = ["1=1"]
+    params = {}
+    if jf:
+        parts.append("p.jurisdiction = :jur")
+        params["jur"] = jf
+    if cf:
+        parts.append("p.normalized_category = :cat")
+        params["cat"] = cf
+    if yf:
+        parts.append("p.permit_issue_date LIKE :yr")
+        params["yr"] = f"{yf}%"
+    where = " AND ".join(parts)
+
+    from sqlalchemy import text
+
+    # Years that have data, sorted
+    years_sql = text(f"""
+        SELECT DISTINCT SUBSTR(p.permit_issue_date, 1, 4) AS yr
+        FROM permits p
+        WHERE p.permit_issue_date IS NOT NULL AND {where}
+        ORDER BY yr
+    """)
+    years = [r[0] for r in session.execute(years_sql, params).all()]
+
+    # Sqft per year per category
+    sqft_sql = text(f"""
+        WITH deduped AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY COALESCE(p.permit_number, p.row_hash),
+                                     COALESCE(p.permit_square_feet, '')
+                       ORDER BY p.permit_issue_date
+                   ) AS rn
+            FROM permits p
+            WHERE {where}
+        )
+        SELECT SUBSTR(d.permit_issue_date, 1, 4) AS yr,
+               COALESCE(d.normalized_category, 'Other') AS cat,
+               COALESCE(SUM(CAST(NULLIF(d.permit_square_feet, '') AS REAL)), 0) AS sqft,
+               COUNT(*) AS cnt
+        FROM deduped d
+        WHERE d.rn = 1 AND d.permit_issue_date IS NOT NULL
+        GROUP BY yr, cat
+        ORDER BY yr, cat
+    """)
+    sqft_by_year: dict[str, dict[str, float]] = {}
+    permits_by_year: dict[str, dict[str, int]] = {}
+    for r in session.execute(sqft_sql, params).all():
+        yr, cat, sqft, cnt = r
+        sqft_by_year.setdefault(yr, {})[cat] = sqft
+        permits_by_year.setdefault(yr, {})[cat] = cnt
+
+    # Category totals (all years)
+    cat_totals_sql = text(f"""
+        WITH deduped AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY COALESCE(p.permit_number, p.row_hash),
+                                     COALESCE(p.permit_square_feet, '')
+                       ORDER BY p.permit_issue_date
+                   ) AS rn
+            FROM permits p
+            WHERE {where}
+        )
+        SELECT COALESCE(d.normalized_category, 'Other') AS cat,
+               COALESCE(SUM(CAST(NULLIF(d.permit_square_feet, '') AS REAL)), 0) AS sqft,
+               COALESCE(SUM(CAST(NULLIF(d.permit_valuation, '') AS REAL)), 0) AS valuation,
+               COUNT(*) AS cnt
+        FROM deduped d
+        WHERE d.rn = 1
+        GROUP BY cat
+        ORDER BY cnt DESC
+    """)
+    category_totals: list[dict] = []
+    for r in session.execute(cat_totals_sql, params).all():
+        category_totals.append({"category": r[0], "sqft": r[1], "valuation": r[2], "count": r[3]})
+
+    session.close()
+
+    return {
+        "years": years,
+        "sqft_by_year": sqft_by_year,
+        "permits_by_year": permits_by_year,
+        "category_totals": category_totals,
+    }
+
+
+@app.route("/permits/category/<category_name>")
+def permit_category_detail(category_name):
+    """Year-over-year breakdown for a single permit category.
+
+    Shows a line chart and data table of sqft / count / valuation
+    across all available years, optionally filtered by jurisdiction.
+    """
+    session = get_session()
+    jurisdiction_filter = request.args.get("jurisdiction", "")
+
+    parts = ["1=1", "d.rn = 1"]
+    params = {"cat": category_name}
+    if jurisdiction_filter:
+        parts.append("d.jurisdiction = :jur")
+        params["jur"] = jurisdiction_filter
+    where = " AND ".join(parts)
+
+    from sqlalchemy import text
+
+    sql = text(f"""
+        WITH deduped AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY COALESCE(p.permit_number, p.row_hash),
+                                     COALESCE(p.permit_square_feet, '')
+                       ORDER BY p.permit_issue_date
+                   ) AS rn
+            FROM permits p
+            WHERE COALESCE(p.normalized_category, 'Other') = :cat
+              AND p.permit_issue_date IS NOT NULL
+        )
+        SELECT SUBSTR(d.permit_issue_date, 1, 4) AS yr,
+               COUNT(*) AS cnt,
+               COALESCE(SUM(CAST(NULLIF(d.permit_square_feet, '') AS REAL)), 0) AS sqft,
+               COALESCE(SUM(CAST(NULLIF(d.permit_valuation, '') AS REAL)), 0) AS valuation
+        FROM deduped d
+        WHERE {where}
+        GROUP BY yr
+        ORDER BY yr
+    """)
+
+    yearly = [
+        {"year": r[0], "count": r[1], "sqft": r[2], "valuation": r[3]}
+        for r in session.execute(sql, params).all()
+    ]
+
+    session.close()
+    return render_template(
+        "permit_category.html",
+        category=category_name,
+        yearly=yearly,
+        jurisdiction_filter=jurisdiction_filter,
     )
 
 

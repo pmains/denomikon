@@ -418,12 +418,12 @@ def _inspect_report(path: Path):
 # Known column name patterns for header detection (case-insensitive)
 _HEADER_PATTERNS = {
     "permit_type": ["permit type"],
-    "work_class": ["work class"],
-    "permit_number": ["permit number", "permit #", "permit no"],
+    "work_class": ["work class", "permit work class"],
+    "permit_number": ["permit number", "permit #", "permit no", "tracking number"],
     "permit_issue_date": ["permit issue date", "issue date", "permit date", "date issued"],
     "permit_description": ["permit description", "description", "work description"],
     "permit_valuation": ["permit valuation", "valuation", "estimated cost", "value"],
-    "permit_square_feet": ["permit square feet", "square feet", "sq ft", "sqft", "square footage"],
+    "permit_square_feet": ["permit square feet", "square feet", "sq ft", "sqft", "square footage", "building footprint square footage"],
     "parcel_no": ["parcel no", "parcel number", "parcel #", "apn", "assessor parcel"],
     "no_units": ["no units", "units", "number of units"],
     "job_address": ["job address", "address", "site address", "location"],
@@ -434,8 +434,22 @@ _HEADER_PATTERNS = {
     "job_zip": ["job zip", "zip", "zip code"],
     "owner_name": ["owner name", "owner", "property owner"],
     "contractor_name": ["contractor name", "contractor", "builder"],
-    "contractor_phone": ["contractor phone", "phone", "contractor phone number"],
-    "contractor_email": ["contractor email", "email", "contractor email address"],
+    "contractor_phone": ["contractor phone", "phone", "contractor phone number", "contactor phone number"],
+    "contractor_email": ["contractor email", "email", "contractor email address", "contact email"],
+    "contractor_phone": ["contractor phone", "phone", "contractor phone number", "contactor phone number", "contact business phone"],
+
+    # 2024+ columns not caught above
+    "application_date": ["permit application date"],
+    "job_zip": ["job zip", "zip", "zip code", "postal code"],
+}
+
+
+# Old-format (2012-2023) header overrides for columns whose names collide
+# with modern patterns. Detected by the presence of 'THIS PERMIT IS FOR'.
+_OLD_FORMAT_PATTERNS = {
+    "native_category": ["description"],
+    "work_class": ["category"],
+    "permit_description": ["this permit is for"],
 }
 
 
@@ -488,6 +502,12 @@ def _detect_header_row(rows: list) -> int:
     return best_idx
 
 
+def _is_old_format(headers: list) -> bool:
+    """Detect pre-2024 permit files by checking for legacy column headers."""
+    low = [str(c).strip().lower() for c in headers if c is not None]
+    return "this permit is for" in low or "tracking number" in low or "building footprint square footage" in low
+
+
 def _build_column_map(headers: list) -> dict:
     """Map column name strings to position index (0-based).
 
@@ -507,6 +527,23 @@ def _build_column_map(headers: list) -> dict:
                 break
         if not matched:
             col_map[f"_col_{ci}"] = ci
+
+    # Apply old-format overrides — the 'DESCRIPTION' header means 'native_category'
+    # in old files, not 'permit_description'.
+    if _is_old_format(headers):
+        for field_name, patterns in _OLD_FORMAT_PATTERNS.items():
+            for ci, cell in enumerate(headers):
+                if cell is None:
+                    continue
+                low = str(cell).strip().lower()
+                if low in patterns:
+                    col_map[field_name] = ci
+                    # Remove the standard-field key that collided
+                    for std_field in _HEADER_PATTERNS:
+                        if col_map.get(std_field) == ci and std_field != field_name:
+                            del col_map[std_field]
+                            break
+
     return col_map
 
 
@@ -542,8 +579,9 @@ def _read_rows_xlsx(filepath: str) -> list[list]:
 
 def _read_rows_xls(filepath: str) -> list[list]:
     """Read all rows from a legacy XLS file using xlrd."""
+    import os
     import xlrd
-    wb = xlrd.open_workbook(filepath)
+    wb = xlrd.open_workbook(filepath, logfile=open(os.devnull, "w"))
     ws = wb.sheet_by_index(0)
     rows = []
     for ri in range(ws.nrows):
@@ -653,6 +691,26 @@ def _init_db():
     print("Database initialized (permit_reports, permits tables ready)", file=sys.stderr)
 
 
+def _normalize_permit_category(permit_type: Optional[str],
+                                  native_category: Optional[str] = None) -> str:
+    """Map permit_type or native_category to a cross-jurisdiction category.
+
+    New-format files (2024+) have permit_type ("Building (Residential)").
+    Old-format files (2012-2023) have native_category ("Residential", "Fence").
+    """
+    src = permit_type or native_category
+    if not src:
+        return "Other"
+    src_lower = src.strip().lower()
+    if "residential" in src_lower:
+        return "Residential"
+    if "commercial" in src_lower:
+        return "Commercial"
+    if "industrial" in src_lower:
+        return "Industrial"
+    return "Other"
+
+
 def _sync_single_report(session, record: dict, output_dir: str) -> int:
     """Parse one downloaded XLSX, store rows in DB.
 
@@ -722,13 +780,20 @@ def _sync_single_report(session, record: dict, output_dir: str) -> int:
     session.execute(
         Permit.__table__.delete().where(Permit.report_adid == adid)
     )
+    session.flush()  # ensure DELETE runs before ORM INSERTs
 
     # Insert new permits
     inserted = 0
+    seen_hashes: set[str] = set()
     for row in rows:
         # Compute row_hash (always, for metadata and future dedup)
         permit_number = row.get("permit_number") or None
         row_hash = _compute_row_hash(report_date, row)
+
+        # Skip duplicate rows within this report (same adid + same content)
+        if row_hash in seen_hashes:
+            continue
+        seen_hashes.add(row_hash)
 
         # Determine uniqueness key
         if permit_number:
@@ -741,11 +806,13 @@ def _sync_single_report(session, record: dict, output_dir: str) -> int:
         # old rows. But other reports might have the same permit_number.
         # This shouldn't happen for weekly reports — each permit appears once.)
 
+        permit_type = row.get("permit_type")
+
         rec = Permit(
             report_date=report_date,
             report_adid=adid,
             source_file=file_name,
-            permit_type=row.get("permit_type"),
+            permit_type=permit_type,
             work_class=row.get("work_class"),
             permit_number=permit_number,
             permit_issue_date=row.get("permit_issue_date"),
@@ -765,6 +832,10 @@ def _sync_single_report(session, record: dict, output_dir: str) -> int:
             contractor_phone=row.get("contractor_phone"),
             contractor_email=row.get("contractor_email"),
             row_hash=row_hash,
+            jurisdiction="Maricopa County",
+            normalized_category=_normalize_permit_category(permit_type, row.get("native_category")),
+            native_type=permit_type,
+            native_category=row.get("native_category"),
         )
         session.add(rec)
         inserted += 1
@@ -978,6 +1049,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Parse downloaded reports into the database",
     )
     parser.add_argument(
+        "--reparse", action="store_true",
+        help="Re-parse all existing local files into the database (shortcut for --sync with no date/limit filter)",
+    )
+    parser.add_argument(
         "--summary", action="store_true",
         help="Print permit summary",
     )
@@ -1111,8 +1186,8 @@ def main():
         # Update index with resolved URLs and file info
         _save_index(updated, output_dir)
 
-    # ── Sync ────────────────────────────────────────────────────────────
-    if args.sync:
+    # ── Sync / Reparse ─────────────────────────────────────────────────
+    if args.sync or args.reparse:
         records = _load_index(output_dir)
         if not records:
             print("No index found. Run --discover or --download first.", file=sys.stderr)

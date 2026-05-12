@@ -19,6 +19,7 @@ from sqlalchemy import (
     Column,
     Date,
     DateTime,
+    Index,
     Integer,
     String,
     Text,
@@ -600,9 +601,20 @@ class Permit(Base):
     )
 
     __table_args__ = (
-        # Permit numbers may repeat across different weekly reports (e.g.
-        # fiscal-year reset), so the uniqueness is scoped to each report.
-        UniqueConstraint("report_adid", "permit_number", name="uq_permit_per_report"),
+        # Uniqueness by content hash within each report ensures idempotent
+        # re-sync without collision on duplicate permit numbers (common in
+        # pre-2024 reports where tracking numbers repeat for multi-line items).
+        UniqueConstraint("report_adid", "row_hash", name="uq_permit_per_report"),
+
+        # Performance indexes for common query patterns.
+        # The aggregate /permits endpoint filters by permit_issue_date (LIKE
+        # prefix for year) and groups by normalized_category or jurisdiction.
+        Index("ix_permits_issue_date", "permit_issue_date"),
+        Index("ix_permits_issue_date_category", "permit_issue_date", "normalized_category"),
+        Index("ix_permits_issue_date_jurisdiction", "permit_issue_date", "jurisdiction"),
+        Index("ix_permits_native_type", "native_type"),
+        Index("ix_permits_valuation", "permit_valuation"),
+        Index("ix_permits_square_feet", "permit_square_feet"),
     )
 
 
