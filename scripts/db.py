@@ -231,6 +231,11 @@ class Meeting(Base):
     supporting_doc_count = Column(Integer, nullable=False, default=0)
     items_extracted = Column(Boolean, nullable=False, default=False)
     supporting_docs_extracted = Column(Boolean, nullable=False, default=False)
+    # Multi-jurisdiction FK columns (logical FKs — added after schema creation)
+    jurisdiction_id = Column(Integer, nullable=True, default=None, index=True)
+    public_body_id = Column(Integer, nullable=True, default=None, index=True)
+    source_system = Column(String(64), nullable=True, default=None)
+    source_instance_url = Column(String(512), nullable=True, default=None)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -325,6 +330,9 @@ class AgendaItem(Base):
     c_number_base = Column(String(48), nullable=False, default="", index=True)
     c_number_revision = Column(String(16), nullable=True, default=None, index=True)
     case_number = Column(String(32), nullable=False, default="", index=True)
+    # Multi-jurisdiction FK columns
+    jurisdiction_id = Column(Integer, nullable=True, default=None, index=True)
+    public_body_id = Column(Integer, nullable=True, default=None, index=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -476,6 +484,8 @@ class SupportingDocument(Base):
     scraped_at = Column(
         DateTime(timezone=True), nullable=True, default=None
     )
+    # Multi-jurisdiction FK column
+    jurisdiction_id = Column(Integer, nullable=True, default=None, index=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -831,6 +841,26 @@ def init_db():
     _migrate_col(engine, "meetings", "meeting_body", "VARCHAR(128) DEFAULT NULL")
     _migrate_col(engine, "meetings", "display_name", "VARCHAR(256) DEFAULT NULL")
 
+    # Multi-jurisdiction columns
+    _migrate_col(engine, "meetings", "jurisdiction_id", "INTEGER DEFAULT NULL")
+    _migrate_col(engine, "meetings", "public_body_id", "INTEGER DEFAULT NULL")
+    _migrate_col(engine, "meetings", "source_system", "VARCHAR(64) DEFAULT NULL")
+    _migrate_col(engine, "meetings", "source_instance_url", "VARCHAR(512) DEFAULT NULL")
+    _migrate_col(engine, "agenda_items", "jurisdiction_id", "INTEGER DEFAULT NULL")
+    _migrate_col(engine, "agenda_items", "public_body_id", "INTEGER DEFAULT NULL")
+    _migrate_col(engine, "supporting_documents", "jurisdiction_id", "INTEGER DEFAULT NULL")
+
+    # Create indexes for multi-jurisdiction lookups
+    _ensure_index(engine, "meetings", "idx_meetings_jurisdiction_id", "jurisdiction_id")
+    _ensure_index(engine, "meetings", "idx_meetings_public_body_id", "public_body_id")
+    _ensure_index(engine, "meetings", "idx_meetings_source_system", "source_system")
+    _ensure_index(engine, "agenda_items", "idx_agenda_items_jurisdiction_id", "jurisdiction_id")
+    _ensure_index(engine, "agenda_items", "idx_agenda_items_public_body_id", "public_body_id")
+    _ensure_index(engine, "supporting_documents", "idx_supporting_docs_jurisdiction_id", "jurisdiction_id")
+
+    # Backfill multi-jurisdiction columns for existing Maricopa records
+    backfill_multi_jurisdiction_columns(engine)
+
     # Body column migrations (for body-scoped identity)
     _migrate_col(engine, "meetings", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
     _migrate_col(engine, "meetings", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
@@ -863,6 +893,82 @@ def init_db():
 
     # Backfill existing records to body='bos' and determine pz from meeting_type
     backfill_body_column(engine)
+
+
+def backfill_multi_jurisdiction_columns(engine):
+    """Backfill jurisdiction_id, public_body_id for existing Maricopa records.
+
+    Maps meetings.body (body_code) to public_bodies.body_code to set public_body_id.
+    All existing data belongs to Maricopa County (jurisdiction_id=1).
+    Uses _multi_jurisdiction_backfilled as a migration marker.
+    """
+    inspector = sa_inspect(engine)
+    if "meetings" not in inspector.get_table_names():
+        return
+
+    # Add marker column if needed
+    _migrate_col(engine, "meetings", "_multi_jurisdiction_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
+    _migrate_col(engine, "agenda_items", "_multi_jurisdiction_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
+    _migrate_col(engine, "supporting_documents", "_multi_jurisdiction_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
+
+    with engine.connect() as conn:
+        # Check if already backfilled
+        existing = conn.execute(
+            text("SELECT COUNT(*) FROM meetings WHERE _multi_jurisdiction_backfilled = 0")
+        ).scalar()
+        if existing == 0:
+            return
+
+        # Map body_code to public_body_id
+        body_map = {}
+        rows = conn.execute(
+            text("SELECT id, body_code FROM public_bodies WHERE body_code IS NOT NULL")
+        ).fetchall()
+        for row in rows:
+            body_map[row[1]] = row[0]
+
+        # Backfill meetings
+        conn.execute(
+            text("""
+                UPDATE meetings
+                SET jurisdiction_id = 1,
+                    public_body_id = (
+                        SELECT pb.id FROM public_bodies pb
+                        WHERE pb.body_code = meetings.body
+                        LIMIT 1
+                    ),
+                    _multi_jurisdiction_backfilled = 1
+                WHERE _multi_jurisdiction_backfilled = 0
+            """)
+        )
+
+        # Backfill agenda_items from their parent meeting
+        conn.execute(
+            text("""
+                UPDATE agenda_items
+                SET jurisdiction_id = 1,
+                    public_body_id = (
+                        SELECT m.public_body_id FROM meetings m
+                        WHERE m.meeting_id = agenda_items.meeting_id
+                          AND m.body = agenda_items.body
+                        LIMIT 1
+                    ),
+                    _multi_jurisdiction_backfilled = 1
+                WHERE _multi_jurisdiction_backfilled = 0
+            """)
+        )
+
+        # Backfill supporting_documents from their parent meeting
+        conn.execute(
+            text("""
+                UPDATE supporting_documents
+                SET jurisdiction_id = 1,
+                    _multi_jurisdiction_backfilled = 1
+                WHERE _multi_jurisdiction_backfilled = 0
+            """)
+        )
+
+        conn.commit()
 
 
 def backfill_body_column(engine):
@@ -3117,15 +3223,16 @@ def seed_default_jurisdictions():
 
     session = get_session()
     try:
-        existing = session.execute(select(Jurisdiction).limit(1)).scalar_one_or_none()
-        if existing:
-            return
+        # ── Maricopa County (jurisdiction_id=1) ──
+        mc = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == "maricopa-county")
+        ).scalar_one_or_none()
+        if mc is None:
+            mc = Jurisdiction(name="Maricopa County", slug="maricopa-county", state="AZ")
+            session.add(mc)
+            session.flush()
 
-        mc = Jurisdiction(name="Maricopa County", slug="maricopa-county", state="AZ")
-        session.add(mc)
-        session.flush()
-
-        bodies = [
+        maricopa_bodies = [
             PublicBody(jurisdiction_id=mc.id, name="Board of Supervisors", slug="board-of-supervisors", body_code="bos", body_type="Board"),
             PublicBody(jurisdiction_id=mc.id, name="Planning & Zoning Commission", slug="planning-zoning-commission", body_code="pz", body_type="Commission"),
             PublicBody(jurisdiction_id=mc.id, name="Board of Adjustment", slug="board-of-adjustment", body_code="adj", body_type="Board"),
@@ -3134,7 +3241,97 @@ def seed_default_jurisdictions():
             PublicBody(jurisdiction_id=mc.id, name="Transportation Advisory Board", slug="transportation-advisory-board", body_code="tab", body_type="Board"),
             PublicBody(jurisdiction_id=mc.id, name="Industrial Development Authority", slug="industrial-development-authority", body_code="ida", body_type="Authority"),
         ]
-        session.add_all(bodies)
+        for pb in maricopa_bodies:
+            existing = session.execute(
+                select(PublicBody).where(
+                    PublicBody.jurisdiction_id == mc.id,
+                    PublicBody.slug == pb.slug,
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(pb)
+        session.flush()
+
+        # ── City of Tempe (jurisdiction_id=2) ──
+        tempe = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == "tempe")
+        ).scalar_one_or_none()
+        if tempe is None:
+            tempe = Jurisdiction(name="City of Tempe", slug="tempe", state="AZ")
+            session.add(tempe)
+            session.flush()
+
+        # OnBase Agenda Online meeting type IDs are noted in comments
+        # Actual body names, not session types (e.g. "Executive Session" is a type, not a body)
+        tempe_bodies = [
+            PublicBody(
+                jurisdiction_id=tempe.id,
+                name="Tempe City Council",
+                slug="tempe-city-council",
+                body_code="tempe-cc",
+                body_type="Council",
+                website_url="https://www.tempe.gov/government/mayor-and-city-council",
+            ),
+            PublicBody(
+                jurisdiction_id=tempe.id,
+                name="Tempe Development Review Commission",
+                slug="tempe-development-review-commission",
+                body_code="tempe-drc",
+                body_type="Commission",
+            ),
+            PublicBody(
+                jurisdiction_id=tempe.id,
+                name="Tempe Board of Adjustment",
+                slug="tempe-board-of-adjustment",
+                body_code="tempe-boa",
+                body_type="Board",
+            ),
+            PublicBody(
+                jurisdiction_id=tempe.id,
+                name="Tempe Historic Preservation Commission",
+                slug="tempe-historic-preservation-commission",
+                body_code="tempe-hpc",
+                body_type="Commission",
+            ),
+            PublicBody(
+                jurisdiction_id=tempe.id,
+                name="Tempe Housing Authority",
+                slug="tempe-housing-authority",
+                body_code="tempe-ha",
+                body_type="Authority",
+            ),
+            PublicBody(
+                jurisdiction_id=tempe.id,
+                name="Tempe Rio Salado Community Facilities District Board",
+                slug="tempe-rio-salado-cfd",
+                body_code="tempe-rio",
+                body_type="Board",
+            ),
+            PublicBody(
+                jurisdiction_id=tempe.id,
+                name="Tempe Risk Management Trust Board",
+                slug="tempe-risk-management-trust",
+                body_code="tempe-rmt",
+                body_type="Board",
+            ),
+            PublicBody(
+                jurisdiction_id=tempe.id,
+                name="Tempe Joint Review Committee",
+                slug="tempe-joint-review-committee",
+                body_code="tempe-jrc",
+                body_type="Committee",
+            ),
+        ]
+        for pb in tempe_bodies:
+            existing = session.execute(
+                select(PublicBody).where(
+                    PublicBody.jurisdiction_id == tempe.id,
+                    PublicBody.slug == pb.slug,
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(pb)
+
         session.commit()
     finally:
         session.close()
