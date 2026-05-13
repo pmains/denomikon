@@ -5,9 +5,18 @@
 
 <form method="GET" action="/meetings" class="row g-3 mb-4 align-items-end">
     <div class="col-md-2">
+        <label class="form-label small" for="jurisdiction">Jurisdiction</label>
+        <select name="jurisdiction" id="jurisdiction" class="form-select form-select-sm" onchange="filterSourceOptions(); this.form.submit();">
+            <option value="" {% if not filter_jurisdiction %}selected{% endif %}>All</option>
+            <option value="maricopa-county" {% if filter_jurisdiction == 'maricopa-county' %}selected{% endif %}>Maricopa County</option>
+            <option value="tempe" {% if filter_jurisdiction == 'tempe' %}selected{% endif %}>City of Tempe</option>
+        </select>
+    </div>
+    <div class="col-md-2">
         <label class="form-label small" for="body">Source</label>
-        <select name="body" id="body" class="form-select form-select-sm">
+        <select name="body" id="body" class="form-select form-select-sm" onchange="this.form.submit();">
             <option value="" {% if not filter_body %}selected{% endif %}>All</option>
+            <optgroup label="Maricopa County">
             <option value="bos" {% if filter_body == 'bos' %}selected{% endif %}>BOS</option>
             <option value="pz" {% if filter_body == 'pz' %}selected{% endif %}>P&amp;Z</option>
             <option value="adj" {% if filter_body == 'adj' %}selected{% endif %}>Adjustment</option>
@@ -15,11 +24,22 @@
             <option value="health" {% if filter_body == 'health' %}selected{% endif %}>Health</option>
             <option value="tab" {% if filter_body == 'tab' %}selected{% endif %}>Transportation</option>
             <option value="ida" {% if filter_body == 'ida' %}selected{% endif %}>IDA</option>
+            </optgroup>
+            <optgroup label="City of Tempe">
+            <option value="tempe-cc" {% if filter_body == 'tempe-cc' %}selected{% endif %}>City Council</option>
+            <option value="tempe-drc" {% if filter_body == 'tempe-drc' %}selected{% endif %}>Dev Review Comm</option>
+            <option value="tempe-boa" {% if filter_body == 'tempe-boa' %}selected{% endif %}>Board of Adjustment</option>
+            <option value="tempe-hpc" {% if filter_body == 'tempe-hpc' %}selected{% endif %}>Historic Preservation</option>
+            <option value="tempe-ha" {% if filter_body == 'tempe-ha' %}selected{% endif %}>Housing Authority</option>
+            <option value="tempe-rio" {% if filter_body == 'tempe-rio' %}selected{% endif %}>Rio Salado CFD</option>
+            <option value="tempe-rmt" {% if filter_body == 'tempe-rmt' %}selected{% endif %}>Risk Mgmt Trust</option>
+            <option value="tempe-jrc" {% if filter_body == 'tempe-jrc' %}selected{% endif %}>Joint Review Comm</option>
+            </optgroup>
         </select>
     </div>
     <div class="col-md-2">
         <label class="form-label small" for="type">Type</label>
-        <select name="type" id="type" class="form-select form-select-sm">
+        <select name="type" id="type" class="form-select form-select-sm" onchange="this.form.submit();">
             <option value="" {% if not filter_type %}selected{% endif %}>All</option>
             {% for t in distinct_types %}
             <option value="{{ t }}" {% if filter_type == t %}selected{% endif %}>{{ t }}</option>
@@ -36,13 +56,68 @@
         <input type="date" name="end_date" id="end_date" class="form-control form-control-sm"
                value="{{ filter_end }}">
     </div>
-    <div class="col-md-2">
+    <div class="col-md-1">
         <button type="submit" class="btn btn-primary btn-sm w-100">Filter</button>
     </div>
-    <div class="col-md-2">
+    <div class="col-md-1">
         <a href="/meetings" class="btn btn-outline-secondary btn-sm w-100">Clear</a>
     </div>
+    <div class="col-md-2">
+        <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" name="hide_upcoming" value="1" onchange="this.form.submit();"
+                   id="hide_upcoming" {% if hide_upcoming %}checked{% endif %}>
+            <label class="form-check-label small" for="hide_upcoming">
+                Hide upcoming
+            </label>
+        </div>
+    </div>
 </form>
+
+<script>
+function filterSourceOptions() {
+    var jur = document.getElementById('jurisdiction').value;
+    var bodySelect = document.getElementById('body');
+    var optgroups = bodySelect.querySelectorAll('optgroup');
+    
+    // Show/hide optgroups based on jurisdiction
+    for (var i = 0; i < optgroups.length; i++) {
+        var og = optgroups[i];
+        var label = og.label || '';
+        if (jur === 'tempe') {
+            og.style.display = (label === 'City of Tempe') ? '' : 'none';
+        } else if (jur === 'maricopa-county') {
+            og.style.display = (label === 'Maricopa County') ? '' : 'none';
+        } else {
+            // No jurisdiction filter — show all
+            og.style.display = '';
+        }
+    }
+    
+    // If current selection is hidden, reset to first visible option
+    var selectedVal = bodySelect.value;
+    var firstVisible = null;
+    for (var j = 0; j < bodySelect.options.length; j++) {
+        var opt = bodySelect.options[j];
+        var parent = opt.parentElement;
+        if (parent && parent.tagName === 'OPTGROUP' && parent.style.display === 'none') {
+            opt.style.display = 'none';
+        } else {
+            opt.style.display = '';
+            if (!firstVisible && opt.value) firstVisible = opt.value;
+        }
+    }
+    if (selectedVal && bodySelect.querySelector('option[value="' + selectedVal + '"]') &&
+        bodySelect.querySelector('option[value="' + selectedVal + '"]').style.display === 'none') {
+        bodySelect.value = firstVisible || '';
+    }
+}
+
+// Run on page load
+document.addEventListener('DOMContentLoaded', function() {
+    filterSourceOptions();
+});
+</script>
+
 
 {% if meetings %}
 <div class="table-responsive">
@@ -52,7 +127,7 @@
                 <th>ID</th>
                 <th>Date</th>
                 <th>Type</th>
-                <th>Title</th>
+                <th>Jurisdiction</th>
                 <th>Source</th>
                 <th>Status</th>
                 <th class="text-center">Items</th>
@@ -65,7 +140,7 @@
                 <td><code><a href="/meetings/{{ m.body }}/{{ m.meeting_id }}">{{ m.meeting_id }}</a></code></td>
                 <td>{{ m.meeting_date }}</td>
                 <td>{{ m.meeting_type }}</td>
-                <td><a href="/meetings/{{ m.body }}/{{ m.meeting_id }}">{{ m.title }}</a></td>
+                <td><a href="/meetings?jurisdiction={{ m.jurisdiction_slug }}" class="text-decoration-none link-secondary">{{ m.jurisdiction }}</a></td>
                 <td><span class="badge bg-{{ m.source_badge }}{% if m.source == 'IDA' %} text-dark{% endif %}">{{ m.source }}</span></td>
                 <td>
                     <span class="badge bg-{{ m.badge_class }}">{{ m.sync_status }}</span>
@@ -83,10 +158,10 @@
   <ul class="pagination pagination-sm justify-content-center mt-3">
     {% if page > 1 %}
     <li class="page-item">
-      <a class="page-link" href="?page=1&amp;per_page={{ per_page }}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}{% if filter_type %}&amp;type={{ filter_type }}{% endif %}{% if filter_start %}&amp;start_date={{ filter_start }}{% endif %}{% if filter_end %}&amp;end_date={{ filter_end }}{% endif %}">&laquo;</a>
+      <a class="page-link" href="?page=1&amp;per_page={{ per_page }}{% if filter_jurisdiction %}&amp;jurisdiction={{ filter_jurisdiction }}{% endif %}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}{% if filter_type %}&amp;type={{ filter_type }}{% endif %}{% if filter_start %}&amp;start_date={{ filter_start }}{% endif %}{% if filter_end %}&amp;end_date={{ filter_end }}{% endif %}{% if hide_upcoming %}&amp;hide_upcoming=1{% endif %}">&laquo;</a>
     </li>
     <li class="page-item">
-      <a class="page-link" href="?page={{ page - 1 }}&amp;per_page={{ per_page }}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}{% if filter_type %}&amp;type={{ filter_type }}{% endif %}{% if filter_start %}&amp;start_date={{ filter_start }}{% endif %}{% if filter_end %}&amp;end_date={{ filter_end }}{% endif %}">&lsaquo;</a>
+      <a class="page-link" href="?page={{ page - 1 }}&amp;per_page={{ per_page }}{% if filter_jurisdiction %}&amp;jurisdiction={{ filter_jurisdiction }}{% endif %}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}{% if filter_type %}&amp;type={{ filter_type }}{% endif %}{% if filter_start %}&amp;start_date={{ filter_start }}{% endif %}{% if filter_end %}&amp;end_date={{ filter_end }}{% endif %}{% if hide_upcoming %}&amp;hide_upcoming=1{% endif %}">&lsaquo;</a>
     </li>
     {% endif %}
 
@@ -99,7 +174,7 @@
     {% endif %}
     {% for p in range(start_page, end_page + 1) %}
     <li class="page-item {% if p == page %}active{% endif %}">
-      <a class="page-link" href="?page={{ p }}&amp;per_page={{ per_page }}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}{% if filter_type %}&amp;type={{ filter_type }}{% endif %}{% if filter_start %}&amp;start_date={{ filter_start }}{% endif %}{% if filter_end %}&amp;end_date={{ filter_end }}{% endif %}">{{ p }}</a>
+      <a class="page-link" href="?page={{ p }}&amp;per_page={{ per_page }}{% if filter_jurisdiction %}&amp;jurisdiction={{ filter_jurisdiction }}{% endif %}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}{% if filter_type %}&amp;type={{ filter_type }}{% endif %}{% if filter_start %}&amp;start_date={{ filter_start }}{% endif %}{% if filter_end %}&amp;end_date={{ filter_end }}{% endif %}{% if hide_upcoming %}&amp;hide_upcoming=1{% endif %}">{{ p }}</a>
     </li>
     {% endfor %}
     {% if end_page < total_pages %}
@@ -108,10 +183,10 @@
 
     {% if page < total_pages %}
     <li class="page-item">
-      <a class="page-link" href="?page={{ page + 1 }}&amp;per_page={{ per_page }}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}{% if filter_type %}&amp;type={{ filter_type }}{% endif %}{% if filter_start %}&amp;start_date={{ filter_start }}{% endif %}{% if filter_end %}&amp;end_date={{ filter_end }}{% endif %}">&rsaquo;</a>
+      <a class="page-link" href="?page={{ page + 1 }}&amp;per_page={{ per_page }}{% if filter_jurisdiction %}&amp;jurisdiction={{ filter_jurisdiction }}{% endif %}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}{% if filter_type %}&amp;type={{ filter_type }}{% endif %}{% if filter_start %}&amp;start_date={{ filter_start }}{% endif %}{% if filter_end %}&amp;end_date={{ filter_end }}{% endif %}{% if hide_upcoming %}&amp;hide_upcoming=1{% endif %}">&rsaquo;</a>
     </li>
     <li class="page-item">
-      <a class="page-link" href="?page={{ total_pages }}&amp;per_page={{ per_page }}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}{% if filter_type %}&amp;type={{ filter_type }}{% endif %}{% if filter_start %}&amp;start_date={{ filter_start }}{% endif %}{% if filter_end %}&amp;end_date={{ filter_end }}{% endif %}">&raquo;</a>
+      <a class="page-link" href="?page={{ total_pages }}&amp;per_page={{ per_page }}{% if filter_jurisdiction %}&amp;jurisdiction={{ filter_jurisdiction }}{% endif %}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}{% if filter_type %}&amp;type={{ filter_type }}{% endif %}{% if filter_start %}&amp;start_date={{ filter_start }}{% endif %}{% if filter_end %}&amp;end_date={{ filter_end }}{% endif %}{% if hide_upcoming %}&amp;hide_upcoming=1{% endif %}">&raquo;</a>
     </li>
     {% endif %}
   </ul>

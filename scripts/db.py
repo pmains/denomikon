@@ -318,7 +318,7 @@ class AgendaItem(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     body = Column(String(16), nullable=False, default="", index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
-    agenda_item_number = Column(Integer, nullable=False)
+    agenda_item_number = Column(String(32), nullable=False, default="", index=True)
     agenda_item_id = Column(String(128), nullable=False, unique=True)
     agenda_item_title = Column(Text, nullable=False, default="")
     agenda_item_text = Column(Text, nullable=False, default="")
@@ -470,7 +470,7 @@ class SupportingDocument(Base):
     body = Column(String(16), nullable=False, default="", index=True)
     agenda_item_id = Column(Integer, nullable=False, index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
-    agenda_item_number = Column(Integer, nullable=False, index=True)
+    agenda_item_number = Column(String(32), nullable=False, default="", index=True)
     c_number = Column(String(32), nullable=True, default=None, index=True)
     c_number_base = Column(String(48), nullable=True, default=None, index=True)
     c_number_revision = Column(String(16), nullable=True, default=None)
@@ -1334,7 +1334,7 @@ def persist_meeting(
         item = AgendaItem(
             body=body,
             meeting_id=meeting_id,
-            agenda_item_number=int(item_dict.get("agenda_item_number", 0)),
+            agenda_item_number=str(item_dict.get("agenda_item_number", "0") or "0"),
             agenda_item_id=aii,
             agenda_item_title=item_dict.get("agenda_item_title", ""),
             agenda_item_text=item_dict.get("agenda_item_text", ""),
@@ -1356,7 +1356,7 @@ def persist_meeting(
                 body=body,
                 agenda_item_id=doc_dict.get("agenda_item_id", 0),
                 meeting_id=meeting_id,
-                agenda_item_number=int(doc_dict.get("agenda_item_number", 0)),
+                agenda_item_number=str(doc_dict.get("agenda_item_number", "0") or "0"),
                 c_number=doc_dict.get("c_number"),
                 c_number_base=doc_dict.get("c_number_base"),
                 c_number_revision=doc_dict.get("c_number_revision"),

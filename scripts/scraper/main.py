@@ -237,6 +237,181 @@ async def main() -> int:
         print("Database tables created.")
         return 0
 
+
+    if args.source == "tempe" and args.sync:
+        from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
+        from scraper.tempe import (
+            search_tempe_meetings,
+            JURISDICTION_ID,
+            PUBLIC_BODY_CODE,
+        )
+        import datetime as _dt
+        import time
+
+        from db import Meeting as MeetingModel
+        from db import PublicBody as PublicBodyModel
+        from sqlalchemy import select
+
+        init_db()
+
+        # Format dates for OnBase (MM/DD/YYYY)
+        now = _dt.date.today()
+        if args.start_date:
+            d = _dt.date.fromisoformat(args.start_date)
+            pz_start = f"{d.month:02d}/{d.day:02d}/{d.year}"
+        else:
+            three_months_ago = now - _dt.timedelta(days=90)
+            pz_start = f"{three_months_ago.month:02d}/01/{three_months_ago.year}"
+
+        if args.end_date:
+            d = _dt.date.fromisoformat(args.end_date)
+            pz_end = f"{d.month:02d}/{d.day:02d}/{d.year}"
+        else:
+            pz_end = f"{now.month:02d}/{min(28, now.day):02d}/{now.year}"
+
+        print(f"Tempe search: {pz_start} to {pz_end}")
+        meetings = await search_tempe_meetings(None, pz_start, pz_end)
+        if not meetings:
+            print("No Tempe meetings found.")
+            return 0
+
+        if args.limit:
+            meetings = meetings[:args.limit]
+
+        print(f"Found {len(meetings)} Tempe meeting(s)")
+
+        session = get_session()
+        total_items = 0
+        meeting_count = len(meetings)
+
+        # Pre-resolve public_body_id to avoid per-meeting DB lookups
+        pb_map = {}
+        for pb in session.execute(select(PublicBodyModel)).scalars().all():
+            pb_map[pb.body_code] = pb
+
+        # Pre-resolve jurisdiction_id
+        from db import Jurisdiction as JurisdictionModel
+        jur = session.execute(
+            select(JurisdictionModel).where(JurisdictionModel.slug == "tempe")
+        ).scalar_one_or_none()
+        jur_id = jur.id if jur else JURISDICTION_ID
+
+        for idx, m in enumerate(meetings, 1):
+            meeting_id = m["meeting_id"]
+            meeting_date = m.get("meeting_date", "")
+            meeting_title = m.get("meeting_title", "")
+            meeting_type = m.get("meeting_type", "")
+            body_code = m.get("body", PUBLIC_BODY_CODE)
+
+            # Check if already synced
+            db_m = session.execute(
+                select(MeetingModel).where(
+                    MeetingModel.body == body_code,
+                    MeetingModel.meeting_id == meeting_id,
+                )
+            ).scalar_one_or_none()
+
+            if db_m and db_m.sync_status == "complete" and not args.force:
+                print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: already synced (skip)")
+                total_items += db_m.item_count_actual or 0
+                continue
+
+            # Ensure meeting row exists
+            meeting_dict = {
+                "meeting_id": meeting_id,
+                "meeting_date": meeting_date,
+                "meeting_type": meeting_type,
+                "meeting_title": meeting_title,
+                "source_url": TEMPE_CONFIG.build_meeting_view_url(int(meeting_id)),
+            }
+
+            meeting_row = None
+            if db_m:
+                for key, val in meeting_dict.items():
+                    setattr(db_m, key, val)
+                db_m.sync_status = "pending"
+                db_m.last_attempted_at = None
+                db_m.last_error = None
+                db_m.retry_count = 0
+                session.flush()
+                meeting_row = db_m
+            else:
+                pb = pb_map.get(body_code)
+                meeting_row = MeetingModel(
+                    body=body_code,
+                    meeting_id=meeting_id,
+                    meeting_date=meeting_date,
+                    meeting_type=meeting_type,
+                    meeting_title=meeting_title,
+                    source_url=meeting_dict["source_url"],
+                    sync_status="pending",
+                    jurisdiction_id=jur_id,
+                    public_body_id=pb.id if pb else None,
+                )
+                session.add(meeting_row)
+            session.commit()
+
+            # Fetch agenda items via direct HTTP GET (no Playwright)
+            update_sync_status(session, body_code, meeting_id, "in_progress")
+            session.commit()
+
+            try:
+                from scraper.onbase import fetch_agenda_sync, parse_agenda_html, TEMPE_CONFIG
+                html = fetch_agenda_sync(TEMPE_CONFIG, int(meeting_id))
+                items = parse_agenda_html(html, meeting_id, body_code)
+                for item in items:
+                    item["source_url"] = meeting_dict["source_url"]
+                    item["body"] = body_code
+            except Exception as e:
+                update_sync_status(session, body_code, meeting_id, "failed", error=str(e)[:500])
+                session.commit()
+                print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: FAILED - {e}")
+                continue
+
+            if not items:
+                update_sync_status(session, body_code, meeting_id, "failed", error="No agenda items parsed")
+                session.commit()
+                print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: 0 items (skipped)")
+                continue
+
+            # Persist
+            replace_meeting_data_safe(
+                session, body_code, meeting_id, meeting_dict, items,
+                supporting_doc_dicts=[],
+            )
+            total_items += len(items)
+
+            detail_items = [i for i in items if i["item_type"] == "item"]
+
+            # Download documents if --download flag is set
+            doc_summary = ""
+            if getattr(args, "download", False):
+                try:
+                    from scraper.tempe import download_tempe_documents
+                    doc_results = download_tempe_documents(
+                        meeting_id, meeting_date,
+                        doc_dir=str(ROOT / "data"),
+                    )
+                    parts = []
+                    if doc_results.get("agenda_pdf_path"):
+                        parts.append("agenda")
+                    if doc_results.get("packet_pdf_path"):
+                        parts.append("packet")
+                    if parts:
+                        doc_summary = " (" + " + ".join(parts) + " downloaded)"
+                except Exception as de:
+                    log.warning("Document download failed for %s: %s", meeting_id, de)
+
+            ts = time.strftime("%H:%M:%S")
+            ts_items_detail = len(items)
+            print(f"{ts} [{idx}/{meeting_count}] {meeting_id} {meeting_date}: {ts_items_detail} item(s) ({len(detail_items)} actionable){doc_summary}")
+
+        session.close()
+        ts = time.strftime("%H:%M:%S")
+        print(f"{ts} Synced {total_items} Tempe agenda items across {meeting_count} meeting(s)")
+        return 0
+
+
     if args.source in ("pz", "adj", "drain", "health", "tab", "ida") and args.sync:
         from db import get_session, init_db, replace_meeting_data_safe
 
@@ -301,6 +476,21 @@ async def main() -> int:
             # IDA is a static page — no search URL or date formatting needed
             def fmt_date_fn(x): return x
             def build_search_url_fn(start, end): return "https://mcida.com/about-us/public-meetings/"
+        elif args.source == "tempe":
+            source_body = "tempe-cc"
+            source_type = "City Council"
+            source_label = "Tempe"
+            from scraper.tempe import (
+                search_tempe_meetings as extract_meetings_fn,
+                extract_tempe_agenda_items as extract_items_fn,
+                normalize_tempe_meeting_title as normalize_title_fn,
+                extract_meeting_type_from_title,
+                JURISDICTION_ID,
+                PUBLIC_BODY_CODE,
+            )
+            def fmt_date_fn(x): return x
+            from scraper.onbase import TEMPE_CONFIG
+            def build_search_url_fn(start, end): return TEMPE_CONFIG.build_search_url(start, end)
 
         # If --meeting-id is provided, bypass search and use direct meeting URL
         if args.meeting_id:

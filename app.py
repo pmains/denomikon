@@ -154,31 +154,52 @@ def index():
     return render_template("home.html")
 
 
-def get_distinct_meeting_types(body=None):
+def get_distinct_meeting_types(body=None, jurisdiction=None):
     """Get all distinct meeting_type values from the database, optionally filtered by body."""
     session = get_session()
     q = select(Meeting.meeting_type).distinct().order_by(Meeting.meeting_type)
+
+    # Filter by jurisdiction if given
+    if jurisdiction and jurisdiction.lower() not in ("", "all"):
+        jur_slug = jurisdiction.strip().lower()
+        jur = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == jur_slug)
+        ).scalar_one_or_none()
+        if jur:
+            q = q.where(Meeting.jurisdiction_id == jur.id)
+
+    # Filter by body (now also handles tempe-* codes)
     if body and body.lower() != "all":
-        if body.lower() in ("bz", "pz", "planning"):
-            q = q.where(Meeting.body == "pz")
-        elif body.lower() in ("adj", "board of adjustment"):
-            q = q.where(Meeting.body == "adj")
-        elif body.lower() in ("drain", "drainage", "drb"):
-            q = q.where(Meeting.body == "drain")
-        elif body.lower() in ("health", "board of health", "boh"):
-            q = q.where(Meeting.body == "health")
-        elif body.lower() in ("tab", "transportation advisory board"):
-            q = q.where(Meeting.body == "tab")
-        elif body.lower() in ("ida", "industrial development authority"):
-            q = q.where(Meeting.body == "ida")
+        b = body.lower()
+        body_map = {
+            "bz": "pz", "pz": "pz", "planning": "pz",
+            "adj": "adj", "board of adjustment": "adj",
+            "drain": "drain", "drainage": "drain", "drb": "drain",
+            "health": "health", "board of health": "health", "boh": "health",
+            "tab": "tab", "transportation advisory board": "tab",
+            "ida": "ida", "industrial development authority": "ida",
+            "bos": "bos", "board of supervisors": "bos",
+            "tempe-cc": "tempe-cc", "tempe city council": "tempe-cc",
+            "tempe-drc": "tempe-drc", "development review commission": "tempe-drc",
+            "tempe-boa": "tempe-boa", "tempe board of adjustment": "tempe-boa",
+            "tempe-hpc": "tempe-hpc", "tempe historic preservation": "tempe-hpc",
+            "tempe-ha": "tempe-ha", "tempe housing authority": "tempe-ha",
+            "tempe-rio": "tempe-rio", "rio salado": "tempe-rio",
+            "tempe-rmt": "tempe-rmt", "risk management trust": "tempe-rmt",
+            "tempe-jrc": "tempe-jrc", "joint review committee": "tempe-jrc",
+        }
+        res = body_map.get(b)
+        if res:
+            q = q.where(Meeting.body == res)
         else:
-            q = q.where(Meeting.body == "bos")
+            q = q.where(Meeting.body == body)
+
     rows = session.execute(q).scalars().all()
     session.close()
     return [r for r in rows if r]
 
 
-def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_date=None, page=1, per_page=25):
+def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_date=None, page=1, per_page=25, jurisdiction=None, hide_upcoming=False):
     """Query meetings with optional filters and pagination. Returns (meetings_list, total_count, page, total_pages)."""
     session = get_session()
 
@@ -192,25 +213,49 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
         Meeting.meeting_body,
         Meeting.display_name,
         Meeting.sync_status,
+        Meeting.jurisdiction_id,
         func.coalesce(Meeting.item_count_actual, 0).label("item_count"),
         func.coalesce(Meeting.supporting_doc_count, 0).label("doc_count"),
     )
 
+    # Normalize body code (now also handles tempe-* codes)
     if body and body.lower() != "all":
-        if body.lower() in ("bz", "pz", "planning"):
-            base_q = base_q.where(Meeting.body == "pz")
-        elif body.lower() in ("adj", "board of adjustment"):
-            base_q = base_q.where(Meeting.body == "adj")
-        elif body.lower() in ("drain", "drainage", "drb"):
-            base_q = base_q.where(Meeting.body == "drain")
-        elif body.lower() in ("health", "board of health", "boh"):
-            base_q = base_q.where(Meeting.body == "health")
-        elif body.lower() in ("tab", "transportation advisory board"):
-            base_q = base_q.where(Meeting.body == "tab")
-        elif body.lower() in ("ida", "industrial development authority"):
-            base_q = base_q.where(Meeting.body == "ida")
+        b = body.lower()
+        body_map = {
+            "bz": "pz", "pz": "pz", "planning": "pz",
+            "adj": "adj", "board of adjustment": "adj",
+            "drain": "drain", "drainage": "drain", "drb": "drain",
+            "health": "health", "board of health": "health", "boh": "health",
+            "tab": "tab", "transportation advisory board": "tab",
+            "ida": "ida", "industrial development authority": "ida",
+            "bos": "bos", "board of supervisors": "bos",
+            "tempe-cc": "tempe-cc", "tempe city council": "tempe-cc",
+            "tempe-drc": "tempe-drc", "development review commission": "tempe-drc",
+            "tempe-boa": "tempe-boa", "tempe board of adjustment": "tempe-boa",
+            "tempe-hpc": "tempe-hpc", "tempe historic preservation": "tempe-hpc",
+            "tempe-ha": "tempe-ha", "tempe housing authority": "tempe-ha",
+            "tempe-rio": "tempe-rio", "rio salado": "tempe-rio",
+            "tempe-rmt": "tempe-rmt", "risk management trust": "tempe-rmt",
+            "tempe-jrc": "tempe-jrc", "joint review committee": "tempe-jrc",
+        }
+        res = body_map.get(b)
+        if res:
+            base_q = base_q.where(Meeting.body == res)
         else:
-            base_q = base_q.where(Meeting.body == "bos")
+            base_q = base_q.where(Meeting.body == body)
+
+    # Filter by jurisdiction
+    if jurisdiction and jurisdiction.lower() not in ("", "all"):
+        jur_slug = jurisdiction.strip().lower()
+        jur = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == jur_slug)
+        ).scalar_one_or_none()
+        if jur:
+            base_q = base_q.where(Meeting.jurisdiction_id == jur.id)
+
+    # Hide upcoming/future meetings
+    if hide_upcoming:
+        base_q = base_q.where(Meeting.meeting_date <= str(date.today()))
 
     if meeting_type and meeting_type.lower() != "all":
         # Normalise the filter value: "planning" → "Planning & Zoning",
@@ -239,20 +284,50 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
 
     meetings_list = []
     for row in rows:
-        is_pz = (row.body or "") == "pz"
-        is_adj = (row.body or "") == "adj"
-        is_drain = (row.body or "") == "drain"
-        is_health = (row.body or "") == "health"
-        is_tab = (row.body or "") == "tab"
-        is_ida = (row.body or "") == "ida"
+        body_val = row.body or "bos"
+        is_pz = body_val == "pz"
+        is_adj = body_val == "adj"
+        is_drain = body_val == "drain"
+        is_health = body_val == "health"
+        is_tab = body_val == "tab"
+        is_ida = body_val == "ida"
+        is_tempe = body_val.startswith("tempe-")
+        # Derive source label and badge from body value
+        if is_tempe:
+            source_labels = {
+                "tempe-cc": "City Council",
+                "tempe-drc": "Dev Review",
+                "tempe-boa": "Board of Adj",
+                "tempe-hpc": "Hist Preserv",
+                "tempe-ha": "Housing Auth",
+                "tempe-rio": "Rio Salado",
+                "tempe-rmt": "Risk Mgmt",
+                "tempe-jrc": "Joint Review",
+            }
+            source = source_labels.get(body_val, "Tempe")
+            source_badge = "info"
+        else:
+            source = "IDA" if is_ida else ("TAB" if is_tab else ("BOH" if is_health else ("DRB" if is_drain else ("ADJ" if is_adj else ("PZ" if is_pz else "BOS")))))
+            source_badge = "light" if is_ida else ("warning" if is_tab else ("success" if is_health else ("info" if is_drain else ("dark" if is_adj else ("secondary" if is_pz else "primary")))))
+        # Resolve jurisdiction name from meeting.jurisdiction_id
+        jur_id = row.jurisdiction_id or 1
+        if jur_id == 2:
+            jur_name = "Tempe"
+            jur_slug = "tempe"
+        else:
+            jur_name = "Maricopa County"
+            jur_slug = "maricopa-county"
+
         meetings_list.append({
-            "body": row.body or "bos",
+            "body": body_val,
             "meeting_id": row.meeting_id,
             "meeting_date": row.meeting_date or "",
             "meeting_type": row.meeting_type or "",
             "title": row.meeting_title or row.display_name or row.meeting_id,
-            "source": "IDA" if is_ida else ("TAB" if is_tab else ("BOH" if is_health else ("DRB" if is_drain else ("ADJ" if is_adj else ("PZ" if is_pz else "BOS"))))),
-            "source_badge": "light" if is_ida else ("warning" if is_tab else ("success" if is_health else ("info" if is_drain else ("dark" if is_adj else ("secondary" if is_pz else "primary"))))),
+            "jurisdiction": jur_name,
+            "jurisdiction_slug": jur_slug,
+            "source": source,
+            "source_badge": source_badge,
             "sync_status": row.sync_status or "pending",
             "badge_class": SYNC_STATUS_BADGES.get((row.sync_status or "").lower(), "secondary"),
             "item_count": row.item_count,
@@ -271,6 +346,12 @@ def meetings():
     meeting_type = request.args.get("type", "")
     start_date = request.args.get("start_date", "")
     end_date = request.args.get("end_date", "")
+    jurisdiction = request.args.get("jurisdiction", "")
+    hide_upcoming = request.args.get("hide_upcoming", "") == "1"
+
+    # Default end_date to today when hide_upcoming is active
+    if hide_upcoming and not end_date:
+        end_date = str(date.today())
 
     try:
         page = int(request.args.get("page", "1"))
@@ -291,11 +372,13 @@ def meetings():
         meeting_type=meeting_type or None,
         start_date=start_date or None,
         end_date=end_date or None,
+        jurisdiction=jurisdiction or None,
+        hide_upcoming=hide_upcoming,
         page=page,
         per_page=per_page,
     )
 
-    distinct_types = get_distinct_meeting_types(body=body or None)
+    distinct_types = get_distinct_meeting_types(body=body or None, jurisdiction=jurisdiction or None)
 
     return render_template(
         "meetings.html",
@@ -305,6 +388,8 @@ def meetings():
         filter_type=meeting_type,
         filter_start=start_date,
         filter_end=end_date,
+        filter_jurisdiction=jurisdiction,
+        hide_upcoming=hide_upcoming,
         page=current_page,
         per_page=per_page,
         total_count=total_count,

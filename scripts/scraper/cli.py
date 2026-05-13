@@ -20,6 +20,7 @@ def _print_top_level_help() -> None:
     print("  health    Board of Health")
     print("  tab       Transportation Advisory Board")
     print("  ida       Industrial Development Authority (WordPress site)")
+    print("  tempe     City of Tempe City Council")
     print("  all       Sync all boards: BOS, PZ, ADJ, Drain, Health, TAB, IDA")
     print()
     print("Common options (varies per subcommand; use <subcommand> --help for details):")
@@ -96,7 +97,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "all"):
+    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "all"):
         source = rest.pop(0)
 
     if source == "bos":
@@ -111,6 +112,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         args = _parse_tab_args(rest)
     elif source == "ida":
         args = _parse_ida_args(rest)
+    elif source == "tempe":
+        args = _parse_tempe_args(rest)
     elif source == "all":
         args = _parse_bos_args(rest)
     else:
@@ -155,6 +158,7 @@ def _parse_bos_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--force", action="store_true", help="Re-sync meetings even if sync_status = complete")
     p.add_argument("--skip-complete", action="store_true", help="Skip meetings with sync_status=complete when using --meeting-id")
     p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
+    p.add_argument("--download", action="store_true", help="Download agenda PDF and packet PDF")
     p.add_argument("--sync-votes", action="store_true", help="Extract vote results from meeting summaries")
     # Deprecated PZ flags (kept for backward compatibility)
     p.add_argument("--sync-pz", action="store_true", help=argparse.SUPPRESS)
@@ -193,6 +197,7 @@ def _parse_pz_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--status", action="store_true", help="Print summary counts of meetings by sync_status")
     p.add_argument("--failed", action="store_true", help="List failed/partial meetings with errors")
     p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
+    p.add_argument("--download", action="store_true", help="Download agenda PDF and packet PDF")
     p.add_argument("--skip-complete", action="store_true", help="Skip meetings with sync_status=complete when using --meeting-id")
     args = p.parse_args(rest)
     # Normalize --date into --start-date/--end-date
@@ -226,6 +231,7 @@ def _parse_adj_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--status", action="store_true", help="Print summary counts of meetings by sync_status")
     p.add_argument("--failed", action="store_true", help="List failed/partial meetings with errors")
     p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
+    p.add_argument("--download", action="store_true", help="Download agenda PDF and packet PDF")
     p.add_argument("--skip-complete", action="store_true", help="Skip meetings with sync_status=complete when using --meeting-id")
     args = p.parse_args(rest)
     # Normalize --date into --start-date/--end-date
@@ -262,6 +268,7 @@ def _parse_drain_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--status", action="store_true", help="Print summary counts of meetings by sync_status")
     p.add_argument("--failed", action="store_true", help="List failed/partial meetings with errors")
     p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
+    p.add_argument("--download", action="store_true", help="Download agenda PDF and packet PDF")
     p.add_argument("--skip-complete", action="store_true", help="Skip meetings with sync_status=complete when using --meeting-id")
     args = p.parse_args(rest)
     # Normalize --date into --start-date/--end-date
@@ -298,6 +305,7 @@ def _parse_health_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--status", action="store_true", help="Print summary counts of meetings by sync_status")
     p.add_argument("--failed", action="store_true", help="List failed/partial meetings with errors")
     p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
+    p.add_argument("--download", action="store_true", help="Download agenda PDF and packet PDF")
     p.add_argument("--skip-complete", action="store_true", help="Skip meetings with sync_status=complete when using --meeting-id")
     args = p.parse_args(rest)
     # Normalize --date into --start-date/--end-date
@@ -334,9 +342,44 @@ def _parse_tab_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--status", action="store_true", help="Print summary counts of meetings by sync_status")
     p.add_argument("--failed", action="store_true", help="List failed/partial meetings with errors")
     p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
+    p.add_argument("--download", action="store_true", help="Download agenda PDF and packet PDF")
     p.add_argument("--skip-complete", action="store_true", help="Skip meetings with sync_status=complete when using --meeting-id")
     args = p.parse_args(rest)
     # Normalize --date into --start-date/--end-date
+    if args.date:
+        if args.start_date or args.end_date:
+            p.error("--date cannot be combined with --start-date or --end-date")
+        args.start_date = args.date
+        args.end_date = args.date
+    _normalize_year_month(args, p)
+    return args
+
+
+def _parse_tempe_args(rest: list[str]) -> argparse.Namespace:
+    """Parse Tempe City Council arguments."""
+    p = argparse.ArgumentParser(
+        description="Scrape City of Tempe City Council meeting materials (via OnBase Agenda Online)",
+        prog="tempe",
+    )
+    p.add_argument("--start-date", help="Start date in YYYY-MM-DD")
+    p.add_argument("--end-date", help="End date in YYYY-MM-DD")
+    p.add_argument("--year", help="Sync an entire year (e.g. --year=2026)")
+    p.add_argument("--month", help="Sync an entire month (e.g. --month=2026-04)")
+    p.add_argument("--date", help="Single date in YYYY-MM-DD (shorthand for --start-date=DATE --end-date=DATE)")
+    p.add_argument("--sync", action="store_true", help="Search online, extract agenda items, and persist to database")
+    p.add_argument("--headed", action="store_true", help="Run Playwright headed")
+    p.add_argument("--limit", type=int, default=None, help="Optional meeting limit")
+    p.add_argument("--meeting-id", help="Single meeting ID to sync (bypasses date search)")
+    p.add_argument("--init-db", action="store_true", help="Create database tables")
+    p.add_argument("--status", action="store_true", help="Print summary counts of meetings by sync_status")
+    p.add_argument("--failed", action="store_true", help="List failed/partial meetings with errors")
+    p.add_argument("--retry-failed", action="store_true", help="Sync only meetings with status failed, partial, or pending")
+    p.add_argument("--force", action="store_true", help="Re-sync meetings even if sync_status = complete")
+    p.add_argument("--skip-complete", action="store_true", help="Skip meetings with sync_status=complete when using --meeting-id")
+    p.add_argument("--retry-count", type=int, default=3, help="Max retry attempts")
+    p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
+    p.add_argument("--download", action="store_true", help="Download agenda PDF and packet PDF")
+    args = p.parse_args(rest)
     if args.date:
         if args.start_date or args.end_date:
             p.error("--date cannot be combined with --start-date or --end-date")
@@ -370,6 +413,7 @@ def _parse_ida_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--status", action="store_true", help="Print summary counts of meetings by sync_status")
     p.add_argument("--failed", action="store_true", help="List failed/partial meetings with errors")
     p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
+    p.add_argument("--download", action="store_true", help="Download agenda PDF and packet PDF")
     p.add_argument("--skip-complete", action="store_true", help="Skip meetings with sync_status=complete when using --meeting-id")
     args = p.parse_args(rest)
     if args.date:

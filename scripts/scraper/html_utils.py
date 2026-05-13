@@ -55,6 +55,20 @@ def _find_all(node: _HtmlNode, tag: Optional[str] = None) -> list[_HtmlNode]:
     return found
 
 
+def _find_one(node: _HtmlNode, tag: str) -> Optional[_HtmlNode]:
+    """Return the first direct or descendant element matching *tag*."""
+    wanted = tag.lower()
+    if node.tag == wanted:
+        return node
+    for child in node.children:
+        if not isinstance(child, _HtmlNode):
+            continue
+        result = _find_one(child, wanted)
+        if result is not None:
+            return result
+    return None
+
+
 def _has_class(node: _HtmlNode, class_name: str) -> bool:
     return class_name in (node.attrs.get("class") or "").split()
 
