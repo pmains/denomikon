@@ -434,13 +434,16 @@ _HEADER_PATTERNS = {
     "job_zip": ["job zip", "zip", "zip code"],
     "owner_name": ["owner name", "owner", "property owner"],
     "contractor_name": ["contractor name", "contractor", "builder"],
-    "contractor_phone": ["contractor phone", "phone", "contractor phone number", "contactor phone number"],
     "contractor_email": ["contractor email", "email", "contractor email address", "contact email"],
     "contractor_phone": ["contractor phone", "phone", "contractor phone number", "contactor phone number", "contact business phone"],
 
     # 2024+ columns not caught above
     "application_date": ["permit application date"],
     "job_zip": ["job zip", "zip", "zip code", "postal code"],
+    "permit_status": ["permit status"],
+    "permit_last_inspection_date": ["permit last inspection date"],
+    "permit_expiration_date": ["permit expiration date"],
+    "assessor_code": ["assessor's code"],
 }
 
 
@@ -808,6 +811,16 @@ def _sync_single_report(session, record: dict, output_dir: str) -> int:
 
         permit_type = row.get("permit_type")
 
+        # Clean no_units: values > 150 are almost certainly column alignment
+        # errors (parcel numbers, contract IDs, dates leaking into the field)
+        raw_units = row.get("no_units")
+        if raw_units is not None:
+            try:
+                if float(raw_units) > 150:
+                    raw_units = None
+            except (ValueError, TypeError):
+                raw_units = None
+
         rec = Permit(
             report_date=report_date,
             report_adid=adid,
@@ -820,7 +833,7 @@ def _sync_single_report(session, record: dict, output_dir: str) -> int:
             permit_valuation=row.get("permit_valuation"),
             permit_square_feet=row.get("permit_square_feet"),
             parcel_no=row.get("parcel_no"),
-            no_units=row.get("no_units"),
+            no_units=raw_units,
             job_address=row.get("job_address"),
             subdivision=row.get("subdivision"),
             lot=row.get("lot"),
@@ -836,6 +849,10 @@ def _sync_single_report(session, record: dict, output_dir: str) -> int:
             normalized_category=_normalize_permit_category(permit_type, row.get("native_category")),
             native_type=permit_type,
             native_category=row.get("native_category"),
+            permit_status=row.get("permit_status"),
+            permit_last_inspection_date=row.get("permit_last_inspection_date"),
+            permit_expiration_date=row.get("permit_expiration_date"),
+            assessor_code=row.get("assessor_code"),
         )
         session.add(rec)
         inserted += 1
