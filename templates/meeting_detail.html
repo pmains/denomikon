@@ -68,12 +68,30 @@
     </div>
 </div>
 
+{# ─── Meeting-level documents (packet, summary) ─── #}
+{% if meeting_docs %}
+<div class="mb-3">
+    <h6 class="mt-3 mb-2">Meeting Documents</h6>
+    <ul class="list-unstyled small mb-0">
+        {% for doc in meeting_docs %}
+        <li>
+            <a href="{{ doc.document_url }}" target="_blank" rel="noopener">
+                {{ doc.document_title or doc.file_name or 'Document' }} &nearr;
+            </a>
+            {% if doc.document_type %}<span class="badge bg-secondary text-white ms-1">{{ doc.document_type }}</span>{% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
 {# ─── Agenda items accordion ─── #}
 {% if items %}
 <div class="accordion" id="agendaAccordion">
     {% for item in items %}
     {% set item_docs = docs_by_item.get(item.agenda_item_number, []) %}
-    {% set item_vote = votes_by_item.get(item.agenda_item_number, {}) %}
+    {% set item_key = item.agenda_item_number|string if item.agenda_item_number is not none else '' %}
+    {% set item_vote = votes_by_item.get(item_key, {}) %}
     <div class="accordion-item">
         <h2 class="accordion-header" id="heading{{ item.agenda_item_number }}">
             <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
@@ -81,6 +99,9 @@
                     aria-expanded="false" aria-controls="collapse{{ item.agenda_item_number }}">
                 <span class="fw-bold me-2">{{ item.agenda_item_number }}.</span>
                 <span class="flex-grow-1">{{ item.agenda_item_title }}</span>
+                {% if item.agenda_category in ('Consent', 'Non-Consent') %}
+                <span class="badge bg-secondary text-white ms-2 me-1 small">{{ item.agenda_category }}</span>
+                {% endif %}
                 {% if item_vote.get('motion_result') %}
                 <span class="badge bg-{% if item_vote.motion_result in ('approved',) %}success{% elif item_vote.motion_result in ('denied',) %}danger{% else %}secondary{% endif %} ms-2 me-1">
                     {{ item_vote.motion_result }}

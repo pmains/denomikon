@@ -74,7 +74,7 @@ if _diag_ok:
     from flask import Flask, render_template, redirect, request, jsonify
     from datetime import date
     from db import get_session, Meeting, AgendaItem, SupportingDocument
-    from db import AgendaItemVote, SupervisorVote, Supervisor, MeetingSupervisor, PZItemDetail
+    from db import AgendaItemVote, SupervisorVote, Supervisor, MeetingSupervisor, PZItemDetail, BodyMembership, Person, _enhance_member_for_template
     from db import Case, CaseEvent
     from db import (
         get_bos_supervisors,
@@ -91,7 +91,7 @@ if _diag_ok:
         get_supervisor_swing_votes,
         get_supervisor_controversial_votes,
     )
-    from db import Jurisdiction, PublicBody, PublicBodyMember, Permit, PermitReport
+    from db import Jurisdiction, PublicBody, Supervisor, Permit, PermitReport
     from db import seed_default_jurisdictions, get_public_bodies_by_jurisdiction, get_body_members
     from sqlalchemy import select, func, or_, Float, text as sa_text
 else:
@@ -422,11 +422,12 @@ def meeting_detail(meeting_id, body=None):
             AgendaItem.body == meeting_body_val,
             AgendaItem.meeting_id == meeting_id,
         )
-        .order_by(AgendaItem.agenda_item_number)
+        .order_by(AgendaItem.sort_order.asc().nulls_last(), AgendaItem.agenda_item_number)
     ).scalars().all()
 
     # --- Batch-load supporting docs per item ---
     docs_by_item: dict[int, list] = {}
+    meeting_docs: list = []
     docs = session.execute(
         select(SupportingDocument)
         .where(
@@ -436,7 +437,10 @@ def meeting_detail(meeting_id, body=None):
         .order_by(SupportingDocument.agenda_item_number, SupportingDocument.id)
     ).scalars().all()
     for d in docs:
-        docs_by_item.setdefault(d.agenda_item_number, []).append(d)
+        if not d.agenda_item_number or d.agenda_item_number == "0" or d.agenda_item_number == 0:
+            meeting_docs.append(d)
+        else:
+            docs_by_item.setdefault(d.agenda_item_number, []).append(d)
 
     # --- Batch-load votes per item ---
     votes_by_item: dict[int, dict] = {}
@@ -464,7 +468,9 @@ def meeting_detail(meeting_id, body=None):
             )
 
     for av in item_votes:
-        votes_by_item[av.agenda_item_number] = {
+        # Normalize to string key for lookup
+        vote_key = str(av.agenda_item_number) if av.agenda_item_number is not None else ""
+        votes_by_item[vote_key] = {
             "motion_result": av.motion_result,
             "vote_text": (av.vote_text or "")[:500],
             "conditions": av.conditions,
@@ -525,6 +531,7 @@ def meeting_detail(meeting_id, body=None):
         meeting_id=meeting_id,
         items=items,
         docs_by_item=docs_by_item,
+        meeting_docs=meeting_docs,
         votes_by_item=votes_by_item,
         vote_count=vote_count,
         badge_class=badge,
@@ -658,22 +665,41 @@ def body_detail(slug):
     page = request.args.get("page", 1, type=int)
     per_page = 10
 
+    today = date.today()
+
+    # Get total count of distinct people with memberships in this body
     total = session.execute(
-        select(func.count(PublicBodyMember.id))
-        .where(PublicBodyMember.body == body.body_code)
+        select(func.count(BodyMembership.person_id.distinct()))
+        .where(BodyMembership.public_body_id == body.id)
     ).scalar() or 0
 
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = max(1, min(page, total_pages))
     offset = (page - 1) * per_page
+
+    # Get latest membership per person (for display), sorted by term_start desc
+    # then name.  This shows current+past members, like the old query.
     members = session.execute(
-        select(PublicBodyMember)
-        .where(PublicBodyMember.body == body.body_code)
-        .order_by(PublicBodyMember.active_from.desc().nullslast(), PublicBodyMember.name)
+        select(Person)
+        .join(BodyMembership, BodyMembership.person_id == Person.id)
+        .where(BodyMembership.public_body_id == body.id)
+        .order_by(BodyMembership.term_start.desc().nullslast(), Person.name)
         .offset(offset).limit(per_page)
     ).scalars().all()
 
-    tomorrow = date.today()
+    # Deduplicate by person_id (a person might have multiple memberships)
+    seen = set()
+    deduped = []
+    for m in members:
+        if m.id not in seen:
+            seen.add(m.id)
+            deduped.append(m)
+    members = deduped
+
+    # Add computed fields for template compatibility
+    # (active_from/active_to/role/body pulled from most recent membership)
+    from db import _enhance_member_for_template
+    members = [_enhance_member_for_template(m, body.id) for m in members]
 
     session.close()
     return render_template(
@@ -685,7 +711,7 @@ def body_detail(slug):
         total_pages=total_pages,
         total=total,
         per_page=per_page,
-        today=tomorrow,
+        today=today,
     )
 
 

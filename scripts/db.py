@@ -102,15 +102,17 @@ class Base(DeclarativeBase):
     pass
 
 
-class Supervisor(Base):
-    __tablename__ = "supervisors"
+class Person(Base):
+    """Generic person/member registry for any public body.
+
+    Memberships (which body they serve on, term dates, roles, seats)
+    are stored in ``body_memberships``.  This table holds only identity.
+    """
+    __tablename__ = "persons"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(128), nullable=False, index=True)
     normalized_name = Column(String(128), nullable=False, index=True)
-    district = Column(String(16), nullable=True, default=None)
-    active_from = Column(Date, nullable=True, default=None)
-    active_to = Column(Date, nullable=True, default=None)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -120,6 +122,10 @@ class Supervisor(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+
+# Backward-compatible alias for existing code that references "Supervisor"
+Supervisor = Person
 
 
 class MeetingSupervisor(Base):
@@ -153,7 +159,7 @@ class AgendaItemVote(Base):
     body = Column(String(16), nullable=False, default="", index=True)
     agenda_item_id = Column(Integer, nullable=False, index=True, unique=True)
     meeting_id = Column(String(32), nullable=False, index=True)
-    agenda_item_number = Column(Integer, nullable=False, index=True)
+    agenda_item_number = Column(String(32), nullable=False, index=True)
     c_number = Column(String(32), nullable=True, default=None, index=True)
     c_number_base = Column(String(48), nullable=True, default=None, index=True)
     motion_result = Column(String(64), nullable=True, default=None)
@@ -330,6 +336,11 @@ class AgendaItem(Base):
     c_number_base = Column(String(48), nullable=False, default="", index=True)
     c_number_revision = Column(String(16), nullable=True, default=None, index=True)
     case_number = Column(String(32), nullable=False, default="", index=True)
+    # Structural / semantic fields (OnBase, PZ, Tempe)
+    item_type = Column(String(16), nullable=False, default="", index=True)
+    section_level = Column(Integer, nullable=True, default=None)
+    sort_order = Column(Integer, nullable=True, default=None, index=True)
+    agenda_category = Column(String(32), nullable=False, default="", index=True)
     # Multi-jurisdiction FK columns
     jurisdiction_id = Column(Integer, nullable=True, default=None, index=True)
     public_body_id = Column(Integer, nullable=True, default=None, index=True)
@@ -341,7 +352,7 @@ class AgendaItem(Base):
         None,
     )
 class PublicBodyMember(Base):
-    """Body-scoped membership roster for any public body (BOS, PZ, ADJ, DRAIN, HEALTH, TAB, IDA)."""
+    """DEPRECATED — merged into supervisors table. Kept for migration only."""
     __tablename__ = "public_body_members"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -555,6 +566,83 @@ class PublicBody(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     __table_args__ = (UniqueConstraint("jurisdiction_id", "slug", name="uq_public_body_slug"),)
+
+
+class BodySeat(Base):
+    """A named seat or district within a public body.
+
+    Examples: "District 1" (BOS), "At-Large" (Tempe Council),
+    "Chair" (P&Z), "Alternate" (Board of Adjustment).
+
+    Not all bodies have stable seat concepts.  When a body doesn't,
+    this table stays empty and memberships reference only the body.
+    """
+    __tablename__ = "body_seats"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    public_body_id = Column(Integer, nullable=False, index=True)
+    seat_name = Column(String(128), nullable=True, default=None)
+    district_number = Column(String(16), nullable=True, default=None)
+    seat_type = Column(String(32), nullable=True, default=None,
+                       comment="elected|appointed|ex-officio")
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("public_body_id", "seat_name", name="uq_body_seat_name"),
+    )
+
+
+class BodyMembership(Base):
+    """A person's term of service on a public body.
+
+    A person may have multiple non-consecutive memberships on the
+    same body (e.g. two non-adjacent council terms).  Each term
+    is a separate row.
+
+    Membership validity for a given meeting date ``md``::
+
+        term_start <= md AND (term_end IS NULL OR term_end >= md)
+
+    ``term_end`` is NULL for currently-serving members or when the
+    end date is unknown.
+    """
+    __tablename__ = "body_memberships"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    person_id = Column(Integer, nullable=False, index=True)
+    public_body_id = Column(Integer, nullable=False, index=True)
+    body_seat_id = Column(Integer, nullable=True, default=None, index=True)
+    role = Column(String(64), nullable=True, default=None,
+                  comment="Supervisor, Councilmember, Mayor, Chair, etc.")
+    term_start = Column(Date, nullable=False)
+    term_end = Column(Date, nullable=True, default=None)
+    selection_method = Column(String(32), nullable=True, default=None,
+                              comment="elected|appointed|ex-officio")
+    source_url = Column(String(512), nullable=True, default=None)
+    notes = Column(Text, nullable=True, default=None)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_membership_body_term", "public_body_id", "term_start", "term_end"),
+        Index("ix_membership_person_body", "person_id", "public_body_id"),
+        Index("ix_membership_body_term_end", "public_body_id", "term_end"),
+    )
 
 
 class Permit(Base):
@@ -809,7 +897,7 @@ def init_db():
 
     _migrate_col(engine, "agenda_items", "case_number", "VARCHAR(32) NOT NULL DEFAULT ''")
 
-    _migrate_table("supervisors")
+    _migrate_table("persons")
     _migrate_table("meeting_supervisors")
     _migrate_table("agenda_item_votes")
     _migrate_col(engine, "agenda_item_votes", "conditions", "TEXT DEFAULT NULL")
@@ -893,6 +981,12 @@ def init_db():
 
     # Backfill existing records to body='bos' and determine pz from meeting_type
     backfill_body_column(engine)
+
+    # Drop deprecated Person columns and legacy tables
+    _drop_deprecated_person_columns()
+
+    # Migrate to historical membership model (BodySeat + BodyMembership)
+    _migrate_membership_model()
 
 
 def backfill_multi_jurisdiction_columns(engine):
@@ -1101,8 +1195,22 @@ def _ensure_index(engine, table: str, index_name: str, column_expr: str):
             conn.commit()
 
 
+def _resolve_jurisdiction_id(session: Session, body: str) -> Optional[int]:
+    """Resolve a meeting's jurisdiction_id from its public body code."""
+    pb = session.execute(
+        select(PublicBody).where(PublicBody.body_code == body)
+    ).scalar_one_or_none()
+    if pb:
+        return pb.jurisdiction_id
+    return None
+
+
 def create_or_get_meeting(session: Session, body: str, meeting_dict: dict) -> Meeting:
-    """Get or create a meeting row, setting sync_status=pending for new rows."""
+    """Get or create a meeting row, setting sync_status=pending for new rows.
+
+    Jurisdiction ID is resolved from the public body table so that every
+    meeting gets the correct jurisdiction regardless of sync code path.
+    """
     meeting_id = meeting_dict.get("meeting_id", "")
     existing = session.execute(
         select(Meeting).where(
@@ -1112,6 +1220,7 @@ def create_or_get_meeting(session: Session, body: str, meeting_dict: dict) -> Me
     ).scalar_one_or_none()
     if existing:
         return existing
+    jurisdiction_id = _resolve_jurisdiction_id(session, body)
     meeting = Meeting(
         body=body,
         meeting_id=meeting_id,
@@ -1121,6 +1230,7 @@ def create_or_get_meeting(session: Session, body: str, meeting_dict: dict) -> Me
         meeting_title_raw=meeting_dict.get("meeting_title", ""),
         source_url=meeting_dict.get("source_url", ""),
         sync_status="pending",
+        jurisdiction_id=jurisdiction_id,
     )
     session.add(meeting)
     return meeting
@@ -1158,10 +1268,13 @@ def update_sync_status(
         meeting.last_synced_at = now
         meeting.retry_count = 0
         meeting.last_error = None
-    elif status == "manual_review":
-        # manual_review is a classification, not a failure; don't increment retries
+    elif status in ("manual_review", "no_agenda"):
+        # These are classifications, not failures; don't increment retries
+        meeting.retry_count = 0
         if error:
             meeting.last_error = error
+        if status == "no_agenda":
+            meeting.last_synced_at = now
     else:
         meeting.retry_count = (meeting.retry_count or 0) + 1
         if error:
@@ -1321,7 +1434,7 @@ def persist_meeting(
     )
 
     seen_item_ids: set[str] = set()
-    for item_dict in agenda_item_dicts:
+    for sort_idx, item_dict in enumerate(agenda_item_dicts):
         aii = item_dict.get("agenda_item_id", "")
         if aii:
             if aii in seen_item_ids:
@@ -1346,6 +1459,10 @@ def persist_meeting(
             c_number_base=item_dict.get("c_number_base", ""),
             c_number_revision=item_dict.get("c_number_revision", None),
             case_number=item_dict.get("case_number", ""),
+            item_type=item_dict.get("item_type", ""),
+            section_level=item_dict.get("section_level"),
+            sort_order=sort_idx,
+            agenda_category=item_dict.get("agenda_category", ""),
         )
         session.add(item)
         inserted_item_count += 1
@@ -1544,7 +1661,7 @@ def _detect_vote_attributes(aiv_list: list[AgendaItemVote]) -> None:
     if not aiv_list:
         return
     session = Session.object_session(aiv_list[0])
-    if not session:
+    if not session or aiv_list[0] is None:
         return
     for aiv in aiv_list:
         # Gather supervisor votes for this aiv
@@ -1590,6 +1707,55 @@ def _detect_vote_attributes(aiv_list: list[AgendaItemVote]) -> None:
                     sv.is_dissent = True
 
 
+def _ensure_membership(
+    session: Session,
+    person_id: int,
+    body: str,
+    meeting_date: Optional[date] = None,
+) -> Optional[BodyMembership]:
+    """Ensure a BodyMembership row exists for this person + body.
+
+    Creates a membership using meeting_date (or today) as term_start if
+    one doesn't already exist.  Returns the existing or new membership.
+    """
+    # Resolve public_body_id from body code
+    pb = session.execute(
+        select(PublicBody).where(PublicBody.body_code == body)
+    ).scalar_one_or_none()
+    if pb is None:
+        return None
+
+    # Check existing membership
+    existing = session.execute(
+        select(BodyMembership)
+        .where(BodyMembership.person_id == person_id)
+        .where(BodyMembership.public_body_id == pb.id)
+        .order_by(BodyMembership.term_start.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    # Look up person for role/title info
+    person = session.execute(
+        select(Person).where(Person.id == person_id)
+    ).scalar_one_or_none()
+    if person is None:
+        return None
+
+    term_start = meeting_date or date.today()
+    membership = BodyMembership(
+        person_id=person_id,
+        public_body_id=pb.id,
+        role=getattr(person, 'title', None) or None,
+        term_start=term_start,
+        selection_method="elected" if body == "bos" else "appointed",
+    )
+    session.add(membership)
+    session.flush()
+    return membership
+
+
 def persist_votes(
     session: Session,
     body: str,
@@ -1611,6 +1777,20 @@ def persist_votes(
 
     Returns the number of vote records persisted.
     """
+    # Look up meeting date for membership creation
+    meeting_date = None
+    meeting_row = session.execute(
+        select(Meeting).where(
+            Meeting.body == body,
+            Meeting.meeting_id == meeting_id,
+        )
+    ).scalar_one_or_none()
+    if meeting_row and meeting_row.meeting_date:
+        try:
+            meeting_date = date.fromisoformat(meeting_row.meeting_date)
+        except (ValueError, TypeError):
+            pass
+
     # 1. Upsert supervisors
     supervisor_map: dict[str, int] = {}
     for sup in supervisors:
@@ -1623,25 +1803,29 @@ def persist_votes(
             ).scalar_one_or_none()
         if existing:
             existing.name = sup.get("name", existing.name)
-            # Only update district when the new value is not None — a
-            # subsequent meeting with a truncated or unparseable summary
-            # should not erase a previously captured district.
-            new_district = sup.get("district")
-            if new_district is not None:
-                existing.district = new_district
             existing.updated_at = datetime.now(timezone.utc)
+            # Ensure BodyMembership exists for this person + body
+            _ensure_membership(session, existing.id, body, meeting_date)
             supervisor_map[norm] = existing.id
         else:
             new = Supervisor(
                 name=sup.get("name", ""),
                 normalized_name=norm,
-                district=sup.get("district"),
-                active_from=sup.get("active_from"),
-                active_to=sup.get("active_to"),
             )
             session.add(new)
             session.flush()
             supervisor_map[norm] = new.id
+
+            # If Tempe council member, pass role info to membership
+            role = None
+            if "tempe" in body:
+                titler_map = {"woods": "Mayor", "garlid": "Vice Mayor"}
+                role = titler_map.get(norm, "Councilmember")
+
+            # Ensure BodyMembership exists for new person + body
+            membership = _ensure_membership(session, new.id, body, meeting_date)
+            if membership and role:
+                membership.role = role
 
     # 2. Delete existing records for this meeting (body-scoped)
     # Use no_autoflush to prevent stale pending objects from a previous
@@ -1696,7 +1880,7 @@ def persist_votes(
     # 4. Insert vote records
     seen_item_db_ids: set[int] = set()
     for vote in votes:
-        item_number = int(vote.get("agenda_item_number", 0))
+        item_number = str(vote.get("agenda_item_number", "0"))
         # Look up the actual AgendaItem database row for FK reference
         with session.no_autoflush:
             db_agenda_item = session.execute(
@@ -1749,11 +1933,15 @@ def persist_votes(
                     new = Supervisor(
                         name=name,
                         normalized_name=norm_name,
+                        body=body,
                     )
                     session.add(new)
                     session.flush()
                     sup_id = new.id
                     supervisor_map[norm_name] = sup_id
+
+                    # Ensure BodyMembership for this new person
+                    _ensure_membership(session, new.id, body, meeting_date)
 
             sv_rec = SupervisorVote(
                 agenda_item_vote_id=aiv.id,
@@ -1768,12 +1956,12 @@ def persist_votes(
     # 5. Flush to get AIV IDs, then detect vote attributes
     session.flush()
     # Reload AIVs to get their IDs for attribute detection
-    aiv_rows = session.execute(
+    aiv_rows = [r for r in session.execute(
         select(AgendaItemVote).where(
             AgendaItemVote.body == body,
             AgendaItemVote.meeting_id == meeting_id,
         )
-    ).scalars().all()
+    ).scalars().all() if r is not None]
     _detect_vote_attributes(aiv_rows)
 
     # 6. Infer absences and abstentions from missing votes
@@ -3157,56 +3345,9 @@ def _migrate_existing_tables(engine=None):
 
 
 def _migrate_supervisors_to_public_body_members():
-    """Copy legacy Supervisor rows into public_body_members for the BOS body.
-
-    The supervisors table predates the generalized public_body_members model.
-    This migration copies its rows so the new body-detail route works without
-    a legacy fallback, while the old /members routes continue to query
-    Supervisor directly (unchanged).
-    """
-    session = get_session()
-    try:
-        # Remove stale BOS rows (e.g. from a previous run that copied
-        # non-board attendees before the district filter was added).
-        session.execute(
-            text("DELETE FROM public_body_members WHERE body = 'bos'")
-        )
-        session.flush()
-
-        # Only copy supervisors that have a district assigned — the parsing
-        # logic that populates the supervisors table sometimes grabs
-        # non-board attendees from executive session "Also present" sections.
-        # Also look up the Maricopa County jurisdiction and BOS public body
-        # so we can set the FK fields for URL resolution.
-        mc_jurisdiction = session.execute(
-            select(Jurisdiction).where(Jurisdiction.slug == "maricopa-county")
-        ).scalar_one_or_none()
-        bos_body = session.execute(
-            select(PublicBody).where(PublicBody.body_code == "bos")
-        ).scalar_one_or_none()
-
-        supervisors = session.execute(
-            select(Supervisor)
-            .where(Supervisor.district.isnot(None))
-            .order_by(Supervisor.district.asc().nullslast(), Supervisor.name)
-        ).scalars().all()
-
-        for s in supervisors:
-            member = PublicBodyMember(
-                body="bos",
-                name=s.name,
-                normalized_name=s.normalized_name,
-                title=f"District {s.district}" if s.district else "Supervisor",
-                district_or_seat=s.district,
-                active_from=s.active_from,
-                active_to=s.active_to,
-                jurisdiction_id=mc_jurisdiction.id if mc_jurisdiction else None,
-                public_body_id=bos_body.id if bos_body else None,
-            )
-            session.add(member)
-        session.commit()
-    finally:
-        session.close()
+    """DEPRECATED — membership data now lives in BodyMembership.
+    Kept as a true no-op."""
+    pass
 
 
 def seed_default_jurisdictions():
@@ -3402,19 +3543,302 @@ def get_public_bodies_by_jurisdiction(slug):
         session.close()
 
 
-def get_body_members(body_code, page=1, per_page=10):
-    """Get paginated members of a public body by body_code."""
+def is_canceled_meeting(meeting_dict_or_title) -> bool:
+    """Check whether a meeting title/type indicates it was canceled.
+
+    Accepts either a string (title) or a dict with 'meeting_title' and/or
+    'meeting_type' keys.  Returns True if the title contains CANCELED,
+    CANCELLED, or CANCEL (case-insensitive).
+    """
+    import re
+    if isinstance(meeting_dict_or_title, dict):
+        title = meeting_dict_or_title.get("meeting_title", "") or ""
+        mtype = meeting_dict_or_title.get("meeting_type", "") or ""
+        text = title + " " + mtype
+    else:
+        text = str(meeting_dict_or_title)
+    return bool(re.search(r"\bCANCEL(?:LED|LED|ED)?\b", text, re.IGNORECASE))
+
+
+def mark_meeting_canceled(session, body: str, meeting_id: str) -> None:
+    """Mark a meeting as canceled (no_agenda) in the database."""
+    from sqlalchemy import update as sa_update
+    session.execute(
+        sa_update(Meeting)
+        .where(Meeting.body == body, Meeting.meeting_id == meeting_id)
+        .values(
+            sync_status="no_agenda",
+            last_error="Meeting was canceled",
+            last_attempted_at=None,
+            retry_count=0,
+        )
+    )
+    session.commit()
+
+
+def _parse_date(val) -> Optional[date]:
+    """Parse a value into a date, handling SQLite string returns."""
+    if val is None:
+        return None
+    if isinstance(val, date):
+        return val
+    if isinstance(val, str):
+        try:
+            return date.fromisoformat(val)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _drop_deprecated_person_columns():
+    """Drop legacy Person columns migrated to BodyMembership, and the
+    legacy public_body_members table.
+
+    Deprecated columns dropped:
+      active_from, active_to, body, title, district, district_or_seat,
+      jurisdiction_id, public_body_id, _person_dates_backfilled,
+      _membership_migrated
+    """
+    engine = get_engine()
+    inspector = sa_inspect(engine)
+    if "persons" not in inspector.get_table_names():
+        return
+
+    existing_cols = {c["name"] for c in inspector.get_columns("persons")}
+    to_drop = [
+        "active_from", "active_to", "body", "title", "district",
+        "district_or_seat", "jurisdiction_id", "public_body_id",
+        "_person_dates_backfilled", "_membership_migrated",
+    ]
+    existing_to_drop = [c for c in to_drop if c in existing_cols]
+
+    if not existing_to_drop:
+        pass  # Already clean
+    else:
+        try:
+            with engine.connect() as conn:
+                for col in existing_to_drop:
+                    conn.execute(text(f"ALTER TABLE persons DROP COLUMN {col}"))
+                conn.commit()
+            log.info(f"_drop_deprecated_person_columns: dropped {len(existing_to_drop)} column(s)")
+        except Exception as e:
+            log.warning(f"_drop_deprecated_person_columns: partial failure: {e}")
+
+    # Drop legacy table
+    if "public_body_members" in inspector.get_table_names():
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("DROP TABLE IF EXISTS public_body_members"))
+                conn.commit()
+            log.info("_drop_deprecated_person_columns: dropped public_body_members table")
+        except Exception as e:
+            log.warning(f"_drop_deprecated_person_columns: drop public_body_members failed: {e}")
+
+
+def _migrate_membership_model():
+    """One-time migration from flat Person fields to BodyMembership rows.
+
+    Creates BodyMembership rows for every person who has attended meetings
+    (recorded in meeting_supervisors) or who has explicit term data on their
+    Person record (active_from/active_to).
+
+    Uses `_membership_migrated` marker column on persons to run once.
+    """
+    engine = get_engine()
+    inspector = sa_inspect(engine)
+    needed = {"persons", "public_bodies", "meeting_supervisors", "meetings"}
+    existing_tables = set(inspector.get_table_names())
+    if not needed.issubset(existing_tables):
+        return
+
+    # Ensure the new tables exist
+    init_poliscopic_models(engine)
+
+    # Check if migration is still relevant — the deprecated columns
+    # (active_from, active_to, public_body_id, title, district, etc.)
+    # may have already been dropped by _drop_deprecated_person_columns().
+    existing_cols = {c["name"] for c in inspector.get_columns("persons")}
+    if "active_from" not in existing_cols:
+        # Columns already gone; nothing to migrate.
+        return
+
+    # Add marker column
+    _migrate_col(engine, "persons", "_membership_migrated", "BOOLEAN NOT NULL DEFAULT 0")
+
     session = get_session()
     try:
+        with engine.connect() as conn:
+            already = conn.execute(
+                text("SELECT COUNT(*) FROM persons WHERE _membership_migrated = 1")
+            ).scalar() or 0
+            if already > 0:
+                return
+
+        # Map body code → public_body_id
+        body_map = {}
+        for pb in session.execute(select(PublicBody)).scalars().all():
+            if pb.body_code:
+                body_map[pb.body_code] = pb.id
+
+        created = 0
+        already_covered_ids = set()
+
+        # 1) Create memberships from persons with explicit public_body_id + active_from
+        rows = session.execute(text("""
+            SELECT id, public_body_id, title, district_or_seat, district,
+                   active_from, active_to
+            FROM persons
+            WHERE _membership_migrated = 0
+              AND public_body_id IS NOT NULL
+              AND active_from IS NOT NULL
+        """)).fetchall()
+        for row in rows:
+            already_covered_ids.add(row.id)
+            membership = BodyMembership(
+                person_id=row.id,
+                public_body_id=row.public_body_id,
+                role=row.title or None,
+                term_start=_parse_date(row.active_from) or date(2000, 1, 1),
+                term_end=_parse_date(row.active_to) if row.active_to else None,
+                selection_method="elected",
+            )
+            session.add(membership)
+            created += 1
+
+        # 2) Create memberships from persons who have attended meetings
+        meeting_rows = session.execute(text("""
+            SELECT p.id, ms.body, p.name,
+                   COALESCE(p.active_from, MIN(m.meeting_date)) AS term_start,
+                   p.active_to,
+                   COUNT(ms.id) AS attendance
+            FROM persons p
+            JOIN meeting_supervisors ms ON ms.supervisor_id = p.id
+            JOIN meetings m ON m.meeting_id = ms.meeting_id AND m.body = ms.body
+            WHERE p._membership_migrated = 0
+              AND LENGTH(p.name) < 40
+              AND p.name NOT GLOB '*[0-9]*'
+            GROUP BY p.id, ms.body
+            HAVING COUNT(ms.id) >= 3
+        """)).fetchall()
+        for mr in meeting_rows:
+            if mr.id in already_covered_ids:
+                continue
+            pb_id = body_map.get(mr.body)
+            if pb_id is None:
+                continue
+            if mr.name.lower().startswith("also present") or mr.name.lower().startswith("also "):
+                continue
+            membership = BodyMembership(
+                person_id=mr.id,
+                public_body_id=pb_id,
+                role=session.execute(
+                    text("SELECT title FROM persons WHERE id = :pid"),
+                    {"pid": mr.id}
+                ).scalar() or None,
+                term_start=_parse_date(mr.term_start) or date(2000, 1, 1),
+                term_end=_parse_date(mr.active_to) if mr.active_to else None,
+                selection_method="elected" if mr.body == "bos" else "appointed",
+            )
+            session.add(membership)
+            created += 1
+
+        # Mark all persons as migrated
+        session.execute(
+            text("UPDATE persons SET _membership_migrated = 1")
+        )
+        session.commit()
+        if created:
+            log.info(f"_migrate_membership_model: created {created} membership(s)")
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _enhance_member_for_template(person: Person, public_body_id: int) -> Person:
+    """Add backward-compatible attributes to a Person for template rendering.
+
+    Sets active_from, active_to, title, district_or_seat, body from the
+    person's most recent BodyMembership so existing templates still work
+    without those database columns.
+
+    Uses setattr on the object's __dict__ since the columns no longer
+    exist on the Person model.
+    """
+    session = get_session()
+    try:
+        membership = session.execute(
+            select(BodyMembership)
+            .where(BodyMembership.person_id == person.id)
+            .where(BodyMembership.public_body_id == public_body_id)
+            .order_by(BodyMembership.term_start.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if membership:
+            person.__dict__["active_from"] = membership.term_start
+            person.__dict__["active_to"] = membership.term_end
+            person.__dict__["title"] = membership.role
+            # Look up body_code from public_body_id
+            pb = session.execute(
+                select(PublicBody).where(PublicBody.id == public_body_id)
+            ).scalar_one_or_none()
+            if pb:
+                person.__dict__["body"] = pb.body_code or ""
+            # Look up district_or_seat from BodySeat if set
+            if membership.body_seat_id:
+                seat = session.execute(
+                    select(BodySeat).where(BodySeat.id == membership.body_seat_id)
+                ).scalar_one_or_none()
+                if seat:
+                    person.__dict__["district_or_seat"] = seat.seat_name
+    finally:
+        session.close()
+    return person
+
+
+def get_body_members(body_code, page=1, per_page=10):
+    """Get paginated members of a public body by body_code.
+
+    Returns currently active members (no term_end or term_end in the future)
+    ordered by most recent term start date.
+    """
+    session = get_session()
+    try:
+        today = date.today()
         offset = (page - 1) * per_page
+
+        pb = session.execute(
+            select(PublicBody).where(PublicBody.body_code == body_code)
+        ).scalar_one_or_none()
+        if not pb:
+            return [], 0
+
+        # Get active member ids for counting
+        active_subq = (
+            select(BodyMembership.person_id)
+            .where(BodyMembership.public_body_id == pb.id)
+            .where(BodyMembership.term_start <= today)
+            .where(
+                (BodyMembership.term_end.is_(None))
+                | (BodyMembership.term_end >= today)
+            )
+        ).subquery()
+
         total = session.execute(
-            select(func.count(PublicBodyMember.id))
-            .where(PublicBodyMember.body == body_code)
+            select(func.count(active_subq.c.person_id.distinct()))
         ).scalar() or 0
+
         members = session.execute(
-            select(PublicBodyMember)
-            .where(PublicBodyMember.body == body_code)
-            .order_by(PublicBodyMember.active_from.desc().nullslast(), PublicBodyMember.name)
+            select(Person)
+            .join(BodyMembership, BodyMembership.person_id == Person.id)
+            .where(BodyMembership.public_body_id == pb.id)
+            .where(BodyMembership.term_start <= today)
+            .where(
+                (BodyMembership.term_end.is_(None))
+                | (BodyMembership.term_end >= today)
+            )
+            .order_by(BodyMembership.term_start.desc().nullslast(), Person.name)
             .offset(offset).limit(per_page)
         ).scalars().all()
         return list(members), total

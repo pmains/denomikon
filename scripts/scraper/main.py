@@ -239,14 +239,16 @@ async def main() -> int:
 
 
     if args.source == "tempe" and args.sync:
-        from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
+        from db import get_session, init_db, update_sync_status, replace_meeting_data_safe, persist_votes
+        from db import Supervisor, PublicBody
+        from scraper.tempe_summary import fetch_and_parse_summary
         from scraper.tempe import (
             search_tempe_meetings,
             JURISDICTION_ID,
             PUBLIC_BODY_CODE,
         )
+        from scraper.onbase import TEMPE_CONFIG
         import datetime as _dt
-        import time
 
         from db import Meeting as MeetingModel
         from db import PublicBody as PublicBodyModel
@@ -270,7 +272,8 @@ async def main() -> int:
             pz_end = f"{now.month:02d}/{min(28, now.day):02d}/{now.year}"
 
         print(f"Tempe search: {pz_start} to {pz_end}")
-        meetings = await search_tempe_meetings(None, pz_start, pz_end)
+        body_group = getattr(args, "bodies", None) or "all"
+        meetings = await search_tempe_meetings(None, pz_start, pz_end, body_group=body_group)
         if not meetings:
             print("No Tempe meetings found.")
             return 0
@@ -279,6 +282,10 @@ async def main() -> int:
             meetings = meetings[:args.limit]
 
         print(f"Found {len(meetings)} Tempe meeting(s)")
+        if len(meetings) >= 100:
+            print(f"  ⚠  OnBase returned the maximum number of results. Meetings at the")
+            print(f"     start of the date range may have been silently truncated.")
+            print(f"     Consider syncing one year at a time (e.g. --year=2024 --year=2025).")
 
         session = get_session()
         total_items = 0
@@ -296,6 +303,44 @@ async def main() -> int:
         ).scalar_one_or_none()
         jur_id = jur.id if jur else JURISDICTION_ID
 
+        def _ensure_tempe_members(session, sup_list):
+            """Ensure Tempe council members have BodyMembership rows.
+            persist_votes creates the Supervisor rows; this ensures
+            BodyMembership records exist with correct roles."""
+            pb = session.execute(
+                select(PublicBody).where(PublicBody.slug == "tempe-city-council")
+            ).scalar_one_or_none()
+            if not pb:
+                return
+            titler_map = {"woods": "Mayor", "garlid": "Vice Mayor"}
+            from db import BodyMembership, _ensure_membership
+            for sup in sup_list:
+                norm = sup.get("normalized_name", "").strip().lower()
+                if not norm:
+                    continue
+                existing = session.execute(
+                    select(Supervisor).where(Supervisor.normalized_name == norm)
+                ).scalar_one_or_none()
+                role = titler_map.get(norm, "Councilmember")
+                name = sup.get("name", norm.capitalize())
+                person_id = None
+                if existing:
+                    person_id = existing.id
+                else:
+                    new_person = Supervisor(
+                        name=name,
+                        normalized_name=norm,
+                    )
+                    session.add(new_person)
+                    session.flush()
+                    person_id = new_person.id
+
+                if person_id:
+                    membership = _ensure_membership(session, person_id, "tempe-cc")
+                    if membership and role:
+                        membership.role = role
+            session.flush()
+
         for idx, m in enumerate(meetings, 1):
             meeting_id = m["meeting_id"]
             meeting_date = m.get("meeting_date", "")
@@ -303,7 +348,7 @@ async def main() -> int:
             meeting_type = m.get("meeting_type", "")
             body_code = m.get("body", PUBLIC_BODY_CODE)
 
-            # Check if already synced
+            # Check if already synced (skip complete/no_agenda unless --force)
             db_m = session.execute(
                 select(MeetingModel).where(
                     MeetingModel.body == body_code,
@@ -311,9 +356,36 @@ async def main() -> int:
                 )
             ).scalar_one_or_none()
 
-            if db_m and db_m.sync_status == "complete" and not args.force:
-                print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: already synced (skip)")
-                total_items += db_m.item_count_actual or 0
+            if db_m and db_m.sync_status in ("complete", "no_agenda") and not args.force:
+                print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: {db_m.sync_status} (skip)")
+                if db_m.sync_status == "complete":
+                    total_items += db_m.item_count_actual or 0
+                continue
+
+            # Canceled meetings — skip immediately
+            if m.get("canceled"):
+                if db_m:
+                    db_m.sync_status = "no_agenda"
+                    db_m.last_error = "Meeting was canceled"
+                    db_m.last_attempted_at = None
+                    db_m.updated_at = dt.datetime.now(dt.timezone.utc)
+                else:
+                    pb = pb_map.get(body_code)
+                    meeting_row = MeetingModel(
+                        body=body_code,
+                        meeting_id=meeting_id,
+                        meeting_date=meeting_date,
+                        meeting_type=meeting_type,
+                        meeting_title=meeting_title,
+                        source_url=TEMPE_CONFIG.build_meeting_view_url(int(meeting_id)),
+                        sync_status="no_agenda",
+                        last_error="Meeting was canceled",
+                        jurisdiction_id=pb.jurisdiction_id if pb else None,
+                        public_body_id=pb.id if pb else None,
+                    )
+                    session.add(meeting_row)
+                session.commit()
+                print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: canceled (no_agenda)")
                 continue
 
             # Ensure meeting row exists
@@ -345,7 +417,7 @@ async def main() -> int:
                     meeting_title=meeting_title,
                     source_url=meeting_dict["source_url"],
                     sync_status="pending",
-                    jurisdiction_id=jur_id,
+                    jurisdiction_id=pb.jurisdiction_id if pb else None,
                     public_body_id=pb.id if pb else None,
                 )
                 session.add(meeting_row)
@@ -356,12 +428,48 @@ async def main() -> int:
             session.commit()
 
             try:
-                from scraper.onbase import fetch_agenda_sync, parse_agenda_html, TEMPE_CONFIG
+                from scraper.onbase import fetch_agenda_sync, parse_agenda_html
                 html = fetch_agenda_sync(TEMPE_CONFIG, int(meeting_id))
+
+                # Tempe OnBase returns a 200 with "Document unavailable" when the
+                # agenda hasn't been published yet (future or recently posted meetings).
+                # Mark as pending so future syncs retry, unless the meeting is old
+                # and has been retried multiple times — then it's likely canceled.
+                if "Document unavailable" in html:
+                    import datetime as _dt
+                    # Re-fetch the meeting row to get current retry_count
+                    current_meeting = session.execute(
+                        select(MeetingModel).where(
+                            MeetingModel.body == body_code,
+                            MeetingModel.meeting_id == meeting_id,
+                        )
+                    ).scalar_one_or_none()
+                    retry_count = current_meeting.retry_count if current_meeting else 0
+                    try:
+                        meeting_age_days = (_dt.date.today() - _dt.date.fromisoformat(meeting_date)).days
+                    except (ValueError, TypeError, AttributeError):
+                        meeting_age_days = 0
+
+                    if meeting_age_days > 60 and retry_count >= 1:
+                        update_sync_status(session, body_code, meeting_id, "no_agenda",
+                                           error="Agenda never published (likely canceled)")
+                        session.commit()
+                        print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: agenda never published (no_agenda)")
+                    else:
+                        update_sync_status(session, body_code, meeting_id, "pending",
+                                           error="Agenda not yet published")
+                        session.commit()
+                        print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: agenda not yet published (pending)")
+                    continue
+
                 items = parse_agenda_html(html, meeting_id, body_code)
                 for item in items:
                     item["source_url"] = meeting_dict["source_url"]
                     item["body"] = body_code
+
+                # Propagate consent/non-consent category labels
+                from scraper.tempe import _assign_tempe_categories
+                _assign_tempe_categories(items)
             except Exception as e:
                 update_sync_status(session, body_code, meeting_id, "failed", error=str(e)[:500])
                 session.commit()
@@ -369,15 +477,54 @@ async def main() -> int:
                 continue
 
             if not items:
-                update_sync_status(session, body_code, meeting_id, "failed", error="No agenda items parsed")
-                session.commit()
-                print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: 0 items (skipped)")
+                # Check if the page has a meeting header but no sections —
+                # indicates a procedural meeting (joint meetings, special
+                # sessions) with no formal agenda items.
+                import re
+                has_header = bool(re.search(r"<h1[^>]*>[^<]+</h1>", html))
+                has_sections = bool(re.search(r"accessible-section", html))
+
+                if has_header and not has_sections:
+                    update_sync_status(session, body_code, meeting_id, "no_agenda",
+                                       error="Meeting had no published agenda items")
+                    session.commit()
+                    print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: no agenda items (no_agenda)")
+                else:
+                    update_sync_status(session, body_code, meeting_id, "pending",
+                                       error="Agenda format not recognized")
+                    session.commit()
+                    print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: 0 items (pending)")
                 continue
+
+            # Build supporting documents (packet PDF, summary PDF)
+            supp_docs = []
+            packet_url = m.get("agenda_packet_url", "")
+            summary_url = m.get("summary_url", "")
+            if packet_url:
+                supp_docs.append({
+                    "agenda_item_id": 0,
+                    "agenda_item_number": "0",
+                    "document_title": "Agenda Packet",
+                    "document_url": packet_url,
+                    "document_type": "Packet",
+                    "file_name": f"{meeting_id}_packet.pdf",
+                    "file_extension": ".pdf",
+                })
+            if summary_url:
+                supp_docs.append({
+                    "agenda_item_id": 0,
+                    "agenda_item_number": "0",
+                    "document_title": "Legal Action Summary",
+                    "document_url": summary_url,
+                    "document_type": "Summary",
+                    "file_name": f"{meeting_id}_summary.pdf",
+                    "file_extension": ".pdf",
+                })
 
             # Persist
             replace_meeting_data_safe(
                 session, body_code, meeting_id, meeting_dict, items,
-                supporting_doc_dicts=[],
+                supporting_doc_dicts=supp_docs,
             )
             total_items += len(items)
 
@@ -402,9 +549,29 @@ async def main() -> int:
                 except Exception as de:
                     log.warning("Document download failed for %s: %s", meeting_id, de)
 
+            # Fetch and persist vote data from Legal Action Summary PDF
+            # Only Regular City Council meetings have published summary PDFs
+            vote_str = ""
+            if body_code == "tempe-cc" and meeting_type == "Regular City Council Meeting":
+                try:
+                    vote_data = fetch_and_parse_summary(
+                        int(meeting_id), meeting_date, meeting_type,
+                    )
+                    if vote_data["votes"]:
+                        persist_votes(
+                            session, body_code, meeting_id,
+                            vote_data["supervisors"],
+                            vote_data["votes"],
+                        )
+                        # Ensure vote supervisors are registered as public body members
+                        _ensure_tempe_members(session, vote_data["supervisors"])
+                        vote_str = f" ({len(vote_data['votes'])} votes)"
+                except Exception as ve:
+                    log.warning("Vote extraction failed for %s: %s", meeting_id, ve)
+
             ts = time.strftime("%H:%M:%S")
             ts_items_detail = len(items)
-            print(f"{ts} [{idx}/{meeting_count}] {meeting_id} {meeting_date}: {ts_items_detail} item(s) ({len(detail_items)} actionable){doc_summary}")
+            print(f"{ts} [{idx}/{meeting_count}] {meeting_id} {meeting_date}: {ts_items_detail} item(s) ({len(detail_items)} actionable){doc_summary}{vote_str}")
 
         session.close()
         ts = time.strftime("%H:%M:%S")
@@ -929,6 +1096,14 @@ async def main() -> int:
                 meeting = create_or_get_meeting(session, args.source, meeting_dict)
                 session.commit()
 
+                # Cancel detection
+                from db import is_canceled_meeting, mark_meeting_canceled
+                if is_canceled_meeting(meeting_dict):
+                    mark_meeting_canceled(session, args.source, meeting_id)
+                    log.info("%s canceled (no_agenda)", meeting_prefix)
+                    session.close()
+                    return 0
+
                 # Check if we should skip complete
                 if args.skip_complete and meeting.sync_status == "complete":
                     log.info("%s status=complete skipping", meeting_prefix)
@@ -1420,6 +1595,15 @@ async def main() -> int:
                     # Ensure meeting row exists
                     db_meeting = create_or_get_meeting(session, args.source, meeting_dict)
                     session.commit()
+
+                    # Canceled meeting detection — applies to meetings from
+                    # search results, retry-failed, and the --meeting-id path.
+                    from db import is_canceled_meeting, mark_meeting_canceled
+                    if is_canceled_meeting(meeting_dict):
+                        mark_meeting_canceled(session, args.source, meeting_id)
+                        log.info("%s canceled (no_agenda)", meeting_prefix)
+                        skipped += 1
+                        continue
 
                     # Determine which statuses to retry
                     retry_statuses = ["failed", "partial", "pending"]

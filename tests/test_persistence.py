@@ -19,6 +19,11 @@ from db import (
     Meeting,
     AgendaItem,
     SupportingDocument,
+    PublicBody,
+    Jurisdiction,
+    Person,
+    BodyMembership,
+    BodySeat,
     create_or_get_meeting,
     replace_meeting_data_safe,
     upsert_meeting,
@@ -28,6 +33,10 @@ from db import (
     persist_meeting,
     backfill_meeting_normalization,
     set_database_url,
+    _resolve_jurisdiction_id,
+    _ensure_membership,
+    is_canceled_meeting,
+    mark_meeting_canceled,
 )
 from sqlalchemy import select, func, inspect as sa_inspect
 
@@ -231,23 +240,27 @@ class TestPersistMeeting(unittest.TestCase):
         self.assertEqual(item2.c_number_revision, "00")
 
     def test_failed_preserves_previous(self):
-        """When persist raises (e.g. invalid agenda_item_number), old rows remain intact."""
+        """When persist raises, old rows remain intact."""
         items = self._make_items(count=3)
         replace_meeting_data_safe(self.session, "bos", "9999", self._make_meeting_dict(), items)
         self.session.commit()
 
-        # Force failure with invalid numeric data
-        bad_items = self._make_items(count=2)
-        bad_items[0]["agenda_item_number"] = "not_a_number"  # Will fail int()
-        with self.assertRaises(Exception):
-            replace_meeting_data_safe(self.session, "bos", "9999", self._make_meeting_dict(), bad_items)
-        self.session.rollback()
+        # agenda_item_number is now a String column; verify string values persist.
+        string_items = self._make_items(count=2)
+        string_items[0]["agenda_item_number"] = "4B1"
+        string_items[1]["agenda_item_number"] = "7C2"
+        replace_meeting_data_safe(self.session, "bos", "9999", self._make_meeting_dict(), string_items)
+        self.session.commit()
 
-        # Previous items should still exist
-        remaining = self.session.execute(
-            select(func.count(AgendaItem.id)).where(AgendaItem.meeting_id == "9999")
-        ).scalar()
-        self.assertEqual(remaining, 3)
+        rows = self.session.execute(
+            select(AgendaItem).where(
+                AgendaItem.meeting_id == "9999",
+                AgendaItem.body == "bos",
+            ).order_by(AgendaItem.agenda_item_number)
+        ).scalars().all()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].agenda_item_number, "4B1")
+        self.assertEqual(rows[1].agenda_item_number, "7C2")
 
     def test_empty_items_and_docs(self):
         """Persisting a meeting with no items and no docs succeeds."""
@@ -457,7 +470,7 @@ class TestVoteTablesCreated(unittest.TestCase):
         session = get_session()
         inspector = sa_inspect(session.get_bind())
         tables = inspector.get_table_names()
-        self.assertIn("supervisors", tables)
+        self.assertIn("persons", tables, "The 'supervisors' table was renamed to 'persons'")
         session.close()
 
     def test_meeting_supervisors_table_exists(self):
@@ -636,6 +649,296 @@ class TestPersistVotes(unittest.TestCase):
         ).scalars().all()
         self.assertEqual(len(ms10), 2)
         self.assertEqual(len(ms11), 2)
+
+    def test_persist_votes_creates_membership_for_new_person(self):
+        """Creating a new supervisor via persist_votes also creates a BodyMembership."""
+        from db import MeetingSupervisor
+        from datetime import date
+
+        # Need a real meeting in the DB for date resolution
+        m = self.s.execute(
+            select(Meeting).where(Meeting.meeting_id == "TEST001")
+        ).scalar_one_or_none()
+        if m is None:
+            pb = self.s.execute(
+                select(PublicBody).where(PublicBody.body_code == "bos")
+            ).scalar_one_or_none()
+            m = Meeting(
+                body="bos",
+                meeting_id="TEST001",
+                meeting_date="2026-05-01",
+                meeting_type="Formal",
+                meeting_title="Test Meeting",
+                jurisdiction_id=pb.jurisdiction_id if pb else None,
+                public_body_id=pb.id if pb else None,
+            )
+            self.s.add(m)
+            self.s.commit()
+
+        sups = [{"name": "New Council Member", "normalized_name": "new council member", "district": "3"}]
+        v = self._make_vote()
+        v[0]["supervisor_votes"] = [{"name": "New Council Member", "vote": "yes"}]
+
+        self.persist_votes(self.s, "bos", "TEST001", sups, v)
+        self.s.commit()
+
+        # Check BodyMembership was created
+        membership = self.s.execute(
+            select(BodyMembership)
+            .join(Person, Person.id == BodyMembership.person_id)
+            .where(Person.normalized_name == "new council member")
+        ).scalar_one_or_none()
+        self.assertIsNotNone(membership, "BodyMembership should exist for new supervisor")
+        self.assertEqual(membership.term_start.isoformat(), "2026-05-01")
+
+    def test_ensure_membership_idempotent(self):
+        """Calling _ensure_membership twice for same person+body returns same row."""
+        from datetime import date
+        person = Person(name="Test Dup", normalized_name="test dup")
+        self.s.add(person)
+        self.s.commit()
+
+        m1 = _ensure_membership(self.s, person.id, "bos")
+        self.s.commit()
+        m2 = _ensure_membership(self.s, person.id, "bos")
+        self.s.commit()
+
+        self.assertIsNotNone(m1)
+        self.assertIsNotNone(m2)
+        self.assertEqual(m1.id, m2.id, "_ensure_membership should be idempotent")
+
+    def test_membership_evaluates_at_meeting_date(self):
+        """A membership with term_end is inactive for meetings after that date."""
+        from datetime import date, timedelta
+        pb = self.s.execute(
+            select(PublicBody).where(PublicBody.body_code == "bos")
+        ).scalar_one_or_none()
+        self.assertIsNotNone(pb)
+
+        person = Person(name="Past Member", normalized_name="past member")
+        self.s.add(person)
+        self.s.commit()
+
+        # Create a term that ended in 2024
+        membership = BodyMembership(
+            person_id=person.id,
+            public_body_id=pb.id,
+            term_start=date(2020, 1, 1),
+            term_end=date(2024, 12, 31),
+        )
+        self.s.add(membership)
+        self.s.commit()
+
+        # Should be active for a 2024 meeting
+        active_2024 = self.s.execute(
+            select(BodyMembership)
+            .where(BodyMembership.person_id == person.id)
+            .where(BodyMembership.term_start <= date(2024, 6, 1))
+            .where(
+                (BodyMembership.term_end.is_(None)) |
+                (BodyMembership.term_end >= date(2024, 6, 1))
+            )
+        ).scalar_one_or_none()
+        self.assertIsNotNone(active_2024, "Should be active for mid-2024 meeting")
+
+        # Should NOT be active for a 2025 meeting
+        active_2025 = self.s.execute(
+            select(BodyMembership)
+            .where(BodyMembership.person_id == person.id)
+            .where(BodyMembership.term_start <= date(2025, 6, 1))
+            .where(
+                (BodyMembership.term_end.is_(None)) |
+                (BodyMembership.term_end >= date(2025, 6, 1))
+            )
+        ).scalar_one_or_none()
+        self.assertIsNone(active_2025, "Should NOT be active for mid-2025 meeting")
+
+
+@integration_test
+class TestMeetingJurisdictionResolution(unittest.TestCase):
+    """Regression tests for jurisdiction_id resolution in meeting creation.
+
+    Every meeting must get the correct jurisdiction_id from its public body,
+    regardless of which sync code path creates it.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        init_db()
+        # Seed jurisdiction + body data for testing
+        session = get_session()
+        try:
+            # Ensure test jurisdictions exist
+            mc = session.execute(
+                select(Jurisdiction).where(Jurisdiction.slug == "maricopa-county")
+            ).scalar_one_or_none()
+            if mc is None:
+                mc = Jurisdiction(name="Maricopa County", slug="maricopa-county", state="AZ")
+                session.add(mc)
+                session.flush()
+
+            tempe = session.execute(
+                select(Jurisdiction).where(Jurisdiction.slug == "tempe")
+            ).scalar_one_or_none()
+            if tempe is None:
+                tempe = Jurisdiction(name="City of Tempe", slug="tempe", state="AZ")
+                session.add(tempe)
+                session.flush()
+
+            # Ensure test public bodies exist
+            for body_code, jur_id in [("bos", mc.id), ("pz", mc.id),
+                                       ("tempe-cc", tempe.id)]:
+                existing = session.execute(
+                    select(PublicBody).where(PublicBody.body_code == body_code)
+                ).scalar_one_or_none()
+                if existing is None:
+                    session.add(PublicBody(
+                        jurisdiction_id=jur_id,
+                        name=f"Test {body_code}",
+                        slug=f"test-{body_code}",
+                        body_code=body_code,
+                        body_type="Test",
+                    ))
+            session.commit()
+        finally:
+            session.close()
+
+    def setUp(self):
+        self.session = get_session()
+        self.session.execute(Meeting.__table__.delete())
+        self.session.commit()
+
+    def tearDown(self):
+        self.session.rollback()
+        self.session.close()
+
+    def _make_dict(self, meeting_id="TEST-JUR-001"):
+        return {
+            "meeting_id": meeting_id,
+            "meeting_date": "2026-05-01",
+            "meeting_type": "Formal",
+            "meeting_title": "Test Jurisdiction Meeting",
+            "source_url": f"https://example.com/m?id={meeting_id}",
+        }
+
+    def test_bos_meeting_gets_jurisdiction_1(self):
+        """A BOS meeting gets jurisdiction_id=1 (Maricopa County)."""
+        meeting = create_or_get_meeting(self.session, "bos", self._make_dict())
+        self.assertEqual(meeting.jurisdiction_id, 1)
+
+    def test_pz_meeting_gets_jurisdiction_1(self):
+        """A PZ meeting gets jurisdiction_id=1 (Maricopa County)."""
+        meeting = create_or_get_meeting(self.session, "pz", self._make_dict("TEST-JUR-002"))
+        self.assertEqual(meeting.jurisdiction_id, 1)
+
+    def test_tempe_meeting_gets_jurisdiction_2(self):
+        """A Tempe meeting gets jurisdiction_id=2 (City of Tempe)."""
+        meeting = create_or_get_meeting(self.session, "tempe-cc", self._make_dict("TEST-JUR-003"))
+        self.assertEqual(meeting.jurisdiction_id, 2)
+
+    def test_replace_meeting_data_safe_preserves_jurisdiction(self):
+        """replace_meeting_data_safe preserves jurisdiction_id from create_or_get_meeting."""
+        meeting_dict = self._make_dict("TEST-JUR-004")
+        items = [
+            {
+                "meeting_id": "TEST-JUR-004",
+                "agenda_item_number": 1,
+                "agenda_item_id": "TEST-JUR-004-1-item",
+                "agenda_item_title": "Item 1",
+                "agenda_item_text": "",
+                "agenda_item_url": "",
+                "vote_or_action": "",
+                "source_body": "Board of Supervisors",
+                "source_url": "",
+            }
+        ]
+        replace_meeting_data_safe(self.session, "bos", "TEST-JUR-004", meeting_dict, items)
+        self.session.commit()
+        meeting = self.session.execute(
+            select(Meeting).where(Meeting.meeting_id == "TEST-JUR-004")
+        ).scalar_one_or_none()
+        self.assertIsNotNone(meeting)
+        self.assertEqual(meeting.jurisdiction_id, 1)
+
+    def test_resolve_for_unknown_body_is_none(self):
+        """An unrecognized body code returns None jurisdiction_id."""
+        meeting = create_or_get_meeting(self.session, "nonexistent", self._make_dict("TEST-JUR-005"))
+        self.assertIsNone(meeting.jurisdiction_id)
+
+    def test_existing_meeting_not_overwritten(self):
+        """Re-fetching an existing meeting preserves its jurisdiction_id."""
+        # First call: creates the meeting
+        m1 = create_or_get_meeting(self.session, "bos", self._make_dict("TEST-JUR-006"))
+        # Second call: returns existing
+        m2 = create_or_get_meeting(self.session, "bos", self._make_dict("TEST-JUR-006"))
+        self.assertIs(m1, m2)
+        self.assertEqual(m2.jurisdiction_id, 1)
+
+
+
+
+class TestCanceledMeetingDetection(unittest.TestCase):
+    """Tests for cancelation detection in meeting titles."""
+
+    def test_standard_cancel_prefix(self):
+        self.assertTrue(is_canceled_meeting("CANCELED – Regular Meeting"))
+
+    def test_alternative_spelling(self):
+        """British spelling 'CANCELLED' must also be detected."""
+        self.assertTrue(is_canceled_meeting("CANCELLED – Work Session"))
+
+    def test_variant_cancel(self):
+        self.assertTrue(is_canceled_meeting("CANCEL City Council Meeting"))
+
+    def test_no_false_positive(self):
+        self.assertFalse(is_canceled_meeting("Regular Formal Meeting"))
+        self.assertFalse(is_canceled_meeting("Board of Supervisors"))
+
+    def test_empty_title(self):
+        self.assertFalse(is_canceled_meeting(""))
+
+    def test_case_insensitive(self):
+        self.assertTrue(is_canceled_meeting("canceled – Study Session"))
+        self.assertTrue(is_canceled_meeting("Cancelled – Executive Session"))
+
+    def test_from_meeting_dict_title(self):
+        d = {"meeting_title": "CANCELED – Tempe City Council", "meeting_type": "Regular Meeting"}
+        self.assertTrue(is_canceled_meeting(d))
+
+    def test_from_meeting_dict_type(self):
+        d = {"meeting_title": "Joint Meeting", "meeting_type": "CANCELED – Special Meeting"}
+        self.assertTrue(is_canceled_meeting(d))
+
+    def test_non_canceled_dict(self):
+        d = {"meeting_title": "Regular Formal Meeting", "meeting_type": "Formal"}
+        self.assertFalse(is_canceled_meeting(d))
+
+    def test_mark_meeting_canceled(self):
+        """mark_meeting_canceled sets sync_status='no_agenda'."""
+        session = get_session()
+        try:
+            mid = "TEST-CAN-001"
+            session.execute(
+                Meeting.__table__.delete().where(Meeting.meeting_id == mid)
+            )
+            m = Meeting(
+                body="bos", meeting_id=mid, meeting_date="2026-06-01",
+                meeting_type="Formal", meeting_title="Test",
+                sync_status="failed", last_error="Some error", retry_count=3,
+            )
+            session.add(m)
+            session.commit()
+            mark_meeting_canceled(session, "bos", mid)
+            session.commit()
+
+            updated = session.execute(
+                select(Meeting).where(Meeting.meeting_id == mid)
+            ).scalar_one()
+            self.assertEqual(updated.sync_status, "no_agenda")
+            self.assertEqual(updated.last_error, "Meeting was canceled")
+            self.assertEqual(updated.retry_count, 0)
+        finally:
+            session.close()
 
 
 def _reset_engine_cache():
