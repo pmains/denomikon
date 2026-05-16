@@ -3,94 +3,148 @@
 {% block content %}
 <h1 class="mb-4">Permits</h1>
 
-<!-- View toggle + core controls -->
-<div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
+<!-- View toggle row -->
+<div class="d-flex mb-3">
   <div class="btn-group" role="group">
     <a href="?view=aggregate{% if jurisdiction_filter %}&jurisdiction={{ jurisdiction_filter }}{% endif %}{% if year_filter %}&year={{ year_filter }}{% endif %}{% if categories_filter %}&categories={{ categories_filter }}{% endif %}{% if work_types_filter %}&work_types={{ work_types_filter }}{% endif %}" class="btn btn-sm {{ 'btn-primary' if view == 'aggregate' else 'btn-outline-primary' }}">Summary</a>
     <a href="?view=raw{% if jurisdiction_filter %}&jurisdiction={{ jurisdiction_filter }}{% endif %}{% if year_filter %}&year={{ year_filter }}{% endif %}{% if categories_filter %}&categories={{ categories_filter }}{% endif %}{% if work_types_filter %}&work_types={{ work_types_filter }}{% endif %}" class="btn btn-sm {{ 'btn-primary' if view == 'raw' else 'btn-outline-primary' }}">All Permits</a>
   </div>
+</div>
 
-  <div class="d-flex gap-2 align-items-center flex-wrap">
-    <select name="year" class="form-select form-select-sm" onchange="navigateWithFilter('year', this.value)">
-      <option value="">All Years</option>
-      {% for y in years %}
-      <option value="{{ y }}" {{ 'selected' if year_filter == y }}>{{ y }}</option>
-      {% endfor %}
-    </select>
-    <select name="jurisdiction" class="form-select form-select-sm" onchange="navigateWithFilter('jurisdiction', this.value)">
-      <option value="">All Jurisdictions</option>
-      {% for j in jurisdictions %}
-      <option value="{{ j }}" {{ 'selected' if jurisdiction_filter == j }}>{{ j }}</option>
-      {% endfor %}
-    </select>
+<!-- Main responsive row: filter card + overview card -->
+<div class="row g-3 align-items-stretch mb-4">
+  <!-- Filter Card -->
+  <div class="col-12 col-lg-5 d-flex order-1">
+    <div class="card shadow-sm flex-fill">
+      <div class="card-header">
+        <h5 class="mb-0">Filter Permits</h5>
+      </div>
+      <div class="card-body">
+        <div class="d-flex gap-2 align-items-center flex-wrap mb-2">
+          <select name="year" class="form-select form-select-sm" style="max-width: 160px;" onchange="navigateWithFilter('year', this.value)">
+            <option value="">All Years</option>
+            {% for y in years %}
+            <option value="{{ y }}" {{ 'selected' if year_filter == y }}>{{ y }}</option>
+            {% endfor %}
+          </select>
+          <select name="jurisdiction" class="form-select form-select-sm" style="max-width: 200px;" onchange="navigateWithFilter('jurisdiction', this.value)">
+            <option value="">All Jurisdictions</option>
+            {% for j in jurisdictions %}
+            <option value="{{ j }}" {{ 'selected' if jurisdiction_filter == j }}>{{ j }}</option>
+            {% endfor %}
+          </select>
+          <div class="dropdown">
+            <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+              <i class="bi bi-funnel"></i> Filters
+            </button>
+            <div class="dropdown-menu dropdown-menu-end p-3" style="min-width: 280px;">
+              <h6 class="dropdown-header px-0 pt-0">Category</h6>
+              <div class="mb-2">
+                {% for c in categories %}
+                <div class="form-check">
+                  <input class="form-check-input filter-checkbox" type="checkbox" data-group="categories" value="{{ c }}" id="cat-{{ loop.index }}" {{ 'checked' if c in selected_categories else '' }}>
+                  <label class="form-check-label" for="cat-{{ loop.index }}">{{ c }}</label>
+                </div>
+                {% endfor %}
+              </div>
+              <hr class="my-2">
+              <h6 class="dropdown-header px-0">Work Type</h6>
+              <div class="mb-2">
+                {% for wt in work_types_all %}
+                <div class="form-check">
+                  <input class="form-check-input filter-checkbox" type="checkbox" data-group="work_types" value="{{ wt }}" id="wt-{{ loop.index }}" {{ 'checked' if wt in selected_work_types else '' }}>
+                  <label class="form-check-label" for="wt-{{ loop.index }}">{{ wt }}</label>
+                </div>
+                {% endfor %}
+              </div>
+              <hr class="my-2">
+              <div class="d-flex justify-content-between">
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearFilters()">Clear Filters</button>
+                <button type="button" class="btn btn-sm btn-primary" onclick="applyFilters()">Apply</button>
+              </div>
+            </div>
+          </div>
+          <a href="/permits" class="btn btn-sm btn-outline-secondary">Clear</a>
+        </div>
 
-    <!-- Filters dropdown -->
-    <div class="dropdown">
-      <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
-        <i class="bi bi-funnel"></i> Filters
-      </button>
-      <div class="dropdown-menu dropdown-menu-end p-3" style="min-width: 280px;">
-        <h6 class="dropdown-header px-0 pt-0">Category</h6>
-        <div class="mb-2">
-          {% for c in categories %}
-          <div class="form-check">
-            <input class="form-check-input filter-checkbox" type="checkbox" data-group="categories" value="{{ c }}" id="cat-{{ loop.index }}" {{ 'checked' if c in selected_categories else '' }}>
-            <label class="form-check-label" for="cat-{{ loop.index }}">{{ c }}</label>
+        <!-- Active filter summary (inside filter card) -->
+        {% if selected_categories or selected_work_types %}
+        <div class="mt-2 small">
+          <span class="text-muted">Showing:</span>
+          {% if selected_categories %}
+          <span>{{ selected_categories|join(', ') }}</span>
+          {% if selected_work_types %}<span class="text-muted mx-1">·</span>{% endif %}
+          {% endif %}
+          {% if selected_work_types %}
+          <span>Work: {{ selected_work_types|join(', ') }}</span>
+          {% endif %}
+        </div>
+        {% else %}
+        <div class="mt-2 small text-muted">
+          All categories · All work types
+        </div>
+        {% endif %}
+
+        <!-- Zero-match note -->
+        {% if zero_categories and selected_work_types %}
+        <div class="mt-1 small text-muted">
+          <i class="bi bi-info-circle"></i>
+          No matching {{ selected_work_types|join(', ') }} permits found for {{ zero_categories|join(' or ') }} in{% if year_filter %} {{ year_filter }}{% else %} any year{% endif %}.
+        </div>
+        {% elif zero_categories %}
+        <div class="mt-1 small text-muted">
+          <i class="bi bi-info-circle"></i>
+          No matching permits found for {{ zero_categories|join(' or ') }} in{% if year_filter %} {{ year_filter }}{% else %} any year{% endif %}.
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Jurisdiction Overview Card (aggregate view only) -->
+  {% if view == 'aggregate' and by_jurisdiction %}
+  <div class="col-12 col-lg-7 d-flex order-2">
+    <div class="card shadow-sm flex-fill">
+      <div class="card-header"><h5 class="mb-0">Jurisdiction Overview</h5></div>
+      <div class="card-body">
+        <div class="row g-3">
+          {% for row in by_jurisdiction %}
+          <div class="col-12{% if by_jurisdiction|length == 1 %} col-md-12{% else %} col-md-6{% endif %}{% if by_jurisdiction|length > 1 and not loop.last %} border-end{% endif %}">
+            <h6>{{ row.jurisdiction or 'Unknown' }}</h6>
+            <div class="row text-center">
+              <div class="col-4 mb-2">
+                <div class="small text-muted">Permits</div>
+                <strong>{{ '{:,}'.format(row.count) }}</strong>
+              </div>
+              <div class="col-4 mb-2">
+                <div class="small text-muted">Sq Ft</div>
+                <strong>{{ '{:,.0f}'.format(row.total_sqft) if row.total_sqft else '0' }}</strong>
+              </div>
+              <div class="col-4 mb-2">
+                <div class="small text-muted">Valuation</div>
+                <strong>${{ '{:,.0f}'.format(row.total_valuation) if row.total_valuation else '0' }}</strong>
+              </div>
+              <div class="col-4">
+                <div class="small text-muted">Units</div>
+                <strong>{{ '{:,.0f}'.format(row.total_units) if row.total_units else '0' }}</strong>
+              </div>
+              <div class="col-4">
+                <div class="small text-muted">Completed</div>
+                <strong>{{ '{:,}'.format(row.completed_count) if row.completed_count else '0' }}</strong>
+              </div>
+              <div class="col-4">
+                <div class="small text-muted">CO Issued</div>
+                <strong>{{ '{:,}'.format(row.co_issued_count) if row.co_issued_count else '0' }}</strong>
+              </div>
+            </div>
           </div>
           {% endfor %}
-        </div>
-        <hr class="my-2">
-        <h6 class="dropdown-header px-0">Work Type</h6>
-        <div class="mb-2">
-          {% for wt in work_types_all %}
-          <div class="form-check">
-            <input class="form-check-input filter-checkbox" type="checkbox" data-group="work_types" value="{{ wt }}" id="wt-{{ loop.index }}" {{ 'checked' if wt in selected_work_types else '' }}>
-            <label class="form-check-label" for="wt-{{ loop.index }}">{{ wt }}</label>
-          </div>
-          {% endfor %}
-        </div>
-        <hr class="my-2">
-        <div class="d-flex justify-content-between">
-          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearFilters()">Clear Filters</button>
-          <button type="button" class="btn btn-sm btn-primary" onclick="applyFilters()">Apply</button>
         </div>
       </div>
     </div>
-
-    <a href="/permits" class="btn btn-sm btn-outline-secondary">Clear</a>
   </div>
-</div>
-
-<!-- Active filter summary -->
-{% if selected_categories or selected_work_types %}
-<div class="mb-3 d-flex flex-wrap gap-1 align-items-center">
-  <span class="small text-muted me-1">Showing:</span>
-  {% if selected_categories %}
-  <span class="small">
-    {{ selected_categories|join(', ') }}
-    {% if selected_work_types %}<span class="text-muted mx-1">·</span>{% endif %}
-  </span>
-  {% endif %}
-  {% if selected_work_types %}
-  <span class="small">
-    Work: {{ selected_work_types|join(', ') }}
-  </span>
   {% endif %}
 </div>
-
-<!-- Zero-match note -->
-{% if zero_categories and selected_work_types %}
-<div class="mb-3 small text-muted">
-  <i class="bi bi-info-circle"></i>
-  No matching {{ selected_work_types|join(', ') }} permits found for {{ zero_categories|join(' or ') }} in{% if year_filter %} {{ year_filter }}{% else %} any year{% endif %}.
-</div>
-{% elif zero_categories %}
-<div class="mb-3 small text-muted">
-  <i class="bi bi-info-circle"></i>
-  No matching permits found for {{ zero_categories|join(' or ') }} in{% if year_filter %} {{ year_filter }}{% else %} any year{% endif %}.
-</div>
-{% endif %}
-{% endif %}
 
 {% if view == 'aggregate' %}
 
@@ -98,46 +152,8 @@
   <p class="text-muted">No permits found matching the current filters.</p>
   {% else %}
 
-  <!-- Jurisdiction Comparison Summary -->
-  <div class="row g-3 mb-4">
-    {% for row in by_jurisdiction %}
-    <div class="col-md-6 d-flex">
-      <div class="card shadow-sm flex-fill">
-        <div class="card-header"><h5 class="mb-0">{{ row.jurisdiction or 'Unknown' }}</h5></div>
-        <div class="card-body">
-          <div class="row text-center">
-            <div class="col-4 mb-2">
-              <div class="small text-muted">Permits</div>
-              <strong>{{ '{:,}'.format(row.count) }}</strong>
-            </div>
-            <div class="col-4 mb-2">
-              <div class="small text-muted">Total Sq Ft</div>
-              <strong>{{ '{:,.0f}'.format(row.total_sqft) if row.total_sqft else '0' }}</strong>
-            </div>
-            <div class="col-4 mb-2">
-              <div class="small text-muted">Valuation</div>
-              <strong>${{ '{:,.0f}'.format(row.total_valuation) if row.total_valuation else '0' }}</strong>
-            </div>
-            <div class="col-4">
-              <div class="small text-muted">Housing Units</div>
-              <strong>{{ '{:,.0f}'.format(row.total_units) if row.total_units else '0' }}</strong>
-            </div>
-            <div class="col-4">
-              <div class="small text-muted">Completed</div>
-              <strong>{{ '{:,}'.format(row.completed_count) if row.completed_count else '0' }}</strong>
-            </div>
-            <div class="col-4">
-              <div class="small text-muted">CO Issued</div>
-              <strong>{{ '{:,}'.format(row.co_issued_count) if row.co_issued_count else '0' }}</strong>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-    {% endfor %}
-  </div>
-
   <!-- By Jurisdiction (detail table) -->
+  {% if by_jurisdiction %}
   <div class="card shadow-sm mb-4">
     <div class="card-header"><h5 class="mb-0">By Jurisdiction — Detail</h5></div>
     <div class="table-responsive">
@@ -171,6 +187,7 @@
       </table>
     </div>
   </div>
+  {% endif %}
 
   <!-- By Category -->
   <div class="card shadow-sm mb-4">
