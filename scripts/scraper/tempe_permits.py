@@ -282,7 +282,11 @@ def normalize_row(arcgis_row: dict) -> dict:
 
     # Normalized category based on raw permit type
     record["normalized_category"] = categorize_permit(
-        raw_permit_type, raw_permit_type_desc, description
+        raw_permit_type, raw_permit_type_desc, description,
+        raw_permit_class=arcgis_row.get("PermitClass"),
+    )
+    record["work_type"] = classify_work_type(
+        arcgis_row.get("PermitClass"), description, raw_permit_type,
     )
 
     # Row hash for dedup
@@ -308,21 +312,72 @@ def categorize_permit(
     raw_permit_type: Optional[str] = None,
     raw_permit_type_desc: Optional[str] = None,
     description: Optional[str] = None,
+    raw_permit_class: Optional[str] = None,
 ) -> str:
     """Categorize a Tempe permit into cross-jurisdiction category.
 
-    Priority: raw_permit_type → PermitTypeDesc → Description
+    Priority: raw_permit_class (most specific) → raw_permit_type →
+              raw_permit_type_desc → description
 
-    Returns one of: Residential, Commercial, Industrial, Mixed-Use, Other
+    raw_permit_class contains codes like "106 New - Ten or more Family"
+    (Residential), "437 - Additions and Alterations - Non-Residential"
+    (Commercial), "330 - Commercial Buildings" (Commercial), etc.
+
+    Returns one of: Residential, Commercial, Industrial, Mixed-Use,
+    Infrastructure, Trade, Demolition, Other
     """
     # Collect all text sources, filtering out None
     candidates = [raw_permit_type, raw_permit_type_desc, description]
     text = " ".join(c.strip().lower() for c in candidates if c and c.strip())
 
+    # Check raw_permit_class separately with higher priority
+    pclass = (raw_permit_class or "").strip().lower()
+
+    if not text and not pclass:
+        return "Other"
+
+    # Check class first (most specific signal)
+    if pclass:
+        # Check "non-residential" before "residential" to avoid substring overlap
+        if "non-residential" in pclass:
+            return "Commercial"
+        if "residential" in pclass or "single family" in pclass or "ten or more family" in pclass:
+            return "Residential"
+        if "guesthouse" in pclass or "pool - residential" in pclass:
+            return "Residential"
+        if "commercial" in pclass or "pool - non-residential" in pclass:
+            return "Commercial"
+        if "industrial" in pclass:
+            return "Industrial"
+        if "mixed" in pclass:
+            return "Mixed-Use"
+        if "water" in pclass or "sewer" in pclass or "drainage" in pclass or "paving" in pclass:
+            return "Infrastructure"
+        # Trade permits (electrical, plumbing, mechanical, maintenance)
+        # "No Value" suffix indicates trade work, not new construction
+        if "electrical" in pclass or "plumbing" in pclass or "mechanical" in pclass:
+            return "Trade"
+        if "foundation only" in pclass:
+            return "Commercial"
+        if "hotel" in pclass or "motel" in pclass:
+            return "Commercial"
+        if "parking garage" in pclass:
+            return "Commercial"
+        if "educational" in pclass or "customer service" in pclass:
+            return "Commercial"
+        if "demolition" in pclass:
+            return "Demolition"
+
+        # Photovoltaic + Residential class code
+        if "photovoltaic" in pclass and "residential" in pclass:
+            return "Residential"
+        if "photovoltaic" in pclass and "commercial" in pclass:
+            return "Commercial"
+
+    # Fall back to text fields
     if not text:
         return "Other"
 
-    # Check for specific patterns
     if "mixed" in text or "mixed use" in text or "mixed-use" in text:
         return "Mixed-Use"
 
@@ -339,6 +394,126 @@ def categorize_permit(
         return "Infrastructure"
 
     return "Other"
+
+
+def classify_work_type(
+    raw_permit_class: Optional[str] = None,
+    description: Optional[str] = None,
+    raw_permit_type: Optional[str] = None,
+) -> str:
+    """Classify a Tempe permit by work type: New Construction, Addition,
+    Alteration, Trade, Demolition, Infrastructure, or Unknown.
+
+    Uses a priority chain: raw_permit_class (codes) → description (free text)
+    """
+    pclass = (raw_permit_class or "").strip().lower()
+    desc = (description or "").upper().strip()
+    ptype = (raw_permit_type or "").lower()
+
+    # ── Trade permits ──
+    if any(t in pclass for t in ["electrical", "plumbing", "mechanical", "photovoltaic"]):
+        return "Trade"
+    if pclass in ("uf - underground fire", "rae - engineering revisions", "st - street lights"):
+        return "Trade"
+    if ("replace" in desc.lower() or "panel upgrade" in desc.lower()) and "panel" in desc.lower():
+        return "Trade"
+
+    # ── Demolition ──
+    if "demolition" in pclass or desc.startswith("DEMO") or "site demo" in desc.lower():
+        return "Demolition"
+
+    # ── Infrastructure ──
+    if any(t in pclass for t in ["water", "sewer", "drainage", "paving"]):
+        return "Infrastructure"
+    if "sewer" in desc.lower() or "water" in desc.lower():
+        return "Infrastructure"
+
+    # ── New Construction ──
+    if pclass.startswith("10") and "new" in pclass:
+        return "New Construction"
+    if "foundation only" in pclass:
+        return "New Construction"
+    if "hotel" in pclass or "motel" in pclass:
+        return "New Construction"
+    if pclass.startswith("330") and "commercial" in pclass:
+        return "New Construction"
+    if "industrial or warehouse" in pclass or "churches" in pclass:
+        return "New Construction"
+    if "mobile home" in pclass:
+        return "New Construction"
+    if "customer service" in pclass:
+        return "New Construction"
+    # ── Addition (check BEFORE general "NEW" to catch ADU/guesthouse) ──
+    if "guesthouse" in pclass:
+        return "Addition"
+    if "carport" in pclass:
+        return "Addition"
+    if "pool" in pclass or "spa" in pclass:
+        return "Addition"
+    if "walls or fences" in pclass:
+        return "Addition"
+    if "new garage" in pclass or "new carport" in pclass:
+        return "Addition"
+    if desc:
+        if "ADDITION" in desc and "REMOV" not in desc:
+            return "Addition"
+        if "NEW ADU" in desc or "NEW GUEST HOUSE" in desc or "NEW DETACHED" in desc:
+            return "Addition"
+        if "NEW SHADE" in desc or "NEW CANOP" in desc:
+            return "Addition"
+
+    # ── New Construction ──
+    if desc:
+        if desc.startswith("NEW ") or desc.startswith("CONSTRUCT NEW "):
+            return "New Construction"
+        if "PHASED" in desc and ("FOUNDATION" in desc or "CONSTRUCTION" in desc):
+            return "New Construction"
+        if "AT RISK GRADING" in desc:
+            return "New Construction"
+
+    # ── Alteration (renovation of existing space) ──
+    if "additions and alterations - non-residential" in pclass:
+        return "Alteration"
+    if "additions or alterations - residential" in pclass:
+        return "Alteration"
+    if desc:
+        if desc.startswith("TI") or "TENANT IMPROVEMENT" in desc:
+            return "Alteration"
+        if "REMODEL" in desc or "RENOVATION" in desc or "RENOVATE" in desc:
+            return "Alteration"
+        if "UPGRADE" in desc or "REPLACEMENT" in desc or "REPLACE" in desc:
+            return "Alteration"
+        if "REPAIR" in desc:
+            return "Alteration"
+        if "RESTORE" in desc or "INTERIOR" in desc:
+            return "Alteration"
+        if "INSTALL" in desc:
+            return "Alteration"
+
+    if "educational" in pclass:
+        return "Alteration"
+    if "renewal" in pclass:
+        return "Alteration"
+    if "sign" in pclass:
+        return "Alteration"
+    if "non-structural" in pclass:
+        return "Alteration"
+
+    # ── Ambiguous ──
+    if pclass.startswith("999") or pclass.startswith("misc"):
+        if desc:
+            if "GRADING" in desc and ("NEW" in desc or "AT RISK" in desc):
+                return "New Construction"
+            if "DEMO" in desc or "DEMOLITION" in desc:
+                return "Demolition"
+            if "CONSTRUCT PEDESTRIAN" in desc:
+                return "Infrastructure"
+        return "Unknown"
+
+    if "single family residence" in pclass or pclass in ("", None):
+        return "Unknown"
+
+    return "Unknown"
 
 
 # ── Inspection ──────────────────────────────────────────────────────────────

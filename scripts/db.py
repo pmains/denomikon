@@ -690,6 +690,7 @@ class Permit(Base):
     native_type = Column(Text, nullable=True, default=None, comment="Original jurisdiction-specific permit type label")
     native_category = Column(Text, nullable=True, default=None, comment="Original jurisdiction-specific category label")
     normalized_category = Column(String(64), nullable=True, default=None, index=True, comment="Cross-jurisdiction category: Residential, Commercial, Industrial, Mixed-Use, Other")
+    work_type = Column(String(32), nullable=True, default=None, index=True, comment="New Construction, Addition, Alteration, Trade, Demolition, Infrastructure, Unknown")
 
     # Tempe ArcGIS permit fields
     applied_date = Column(String(32), nullable=True, default=None)
@@ -3343,6 +3344,7 @@ def _migrate_existing_tables(engine=None):
         ("permits", "native_type", "TEXT DEFAULT NULL"),
         ("permits", "native_category", "TEXT DEFAULT NULL"),
         ("permits", "normalized_category", "VARCHAR(64) DEFAULT NULL"),
+        ("permits", "work_type", "VARCHAR(32) DEFAULT NULL"),
         ("permits", "applied_date", "VARCHAR(32) DEFAULT NULL"),
         ("permits", "completed_date", "VARCHAR(32) DEFAULT NULL"),
         ("permits", "certificate_of_occupancy_date", "VARCHAR(32) DEFAULT NULL"),

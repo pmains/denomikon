@@ -3,47 +3,98 @@
 {% block content %}
 <h1 class="mb-4">Permits</h1>
 
-<!-- View toggle + filters -->
-<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+<!-- View toggle + core controls -->
+<div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
   <div class="btn-group" role="group">
-    <a href="/permits?view=aggregate{% if jurisdiction_filter %}&jurisdiction={{ jurisdiction_filter }}{% endif %}{% if category_filter %}&category={{ category_filter }}{% endif %}{% if year_filter %}&year={{ year_filter }}{% endif %}" class="btn btn-sm {{ 'btn-primary' if view == 'aggregate' else 'btn-outline-primary' }}">Summary</a>
-    <a href="/permits?view=raw{% if jurisdiction_filter %}&jurisdiction={{ jurisdiction_filter }}{% endif %}{% if category_filter %}&category={{ category_filter }}{% endif %}{% if year_filter %}&year={{ year_filter }}{% endif %}" class="btn btn-sm {{ 'btn-primary' if view == 'raw' else 'btn-outline-primary' }}">All Permits</a>
+    <a href="?view=aggregate{% if jurisdiction_filter %}&jurisdiction={{ jurisdiction_filter }}{% endif %}{% if year_filter %}&year={{ year_filter }}{% endif %}{% if categories_filter %}&categories={{ categories_filter }}{% endif %}{% if work_types_filter %}&work_types={{ work_types_filter }}{% endif %}" class="btn btn-sm {{ 'btn-primary' if view == 'aggregate' else 'btn-outline-primary' }}">Summary</a>
+    <a href="?view=raw{% if jurisdiction_filter %}&jurisdiction={{ jurisdiction_filter }}{% endif %}{% if year_filter %}&year={{ year_filter }}{% endif %}{% if categories_filter %}&categories={{ categories_filter }}{% endif %}{% if work_types_filter %}&work_types={{ work_types_filter }}{% endif %}" class="btn btn-sm {{ 'btn-primary' if view == 'raw' else 'btn-outline-primary' }}">All Permits</a>
   </div>
 
-  <form class="row g-2 align-items-end" method="get">
-    <input type="hidden" name="view" value="{{ view }}">
-    <div class="col-auto">
-      <select name="year" class="form-select form-select-sm" onchange="this.form.submit()">
-        <option value="">All Years</option>
-        {% for y in years %}
-        <option value="{{ y }}" {{ 'selected' if year_filter == y }}>{{ y }}</option>
-        {% endfor %}
-      </select>
+  <div class="d-flex gap-2 align-items-center flex-wrap">
+    <select name="year" class="form-select form-select-sm" onchange="navigateWithFilter('year', this.value)">
+      <option value="">All Years</option>
+      {% for y in years %}
+      <option value="{{ y }}" {{ 'selected' if year_filter == y }}>{{ y }}</option>
+      {% endfor %}
+    </select>
+    <select name="jurisdiction" class="form-select form-select-sm" onchange="navigateWithFilter('jurisdiction', this.value)">
+      <option value="">All Jurisdictions</option>
+      {% for j in jurisdictions %}
+      <option value="{{ j }}" {{ 'selected' if jurisdiction_filter == j }}>{{ j }}</option>
+      {% endfor %}
+    </select>
+
+    <!-- Filters dropdown -->
+    <div class="dropdown">
+      <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+        <i class="bi bi-funnel"></i> Filters
+      </button>
+      <div class="dropdown-menu dropdown-menu-end p-3" style="min-width: 280px;">
+        <h6 class="dropdown-header px-0 pt-0">Category</h6>
+        <div class="mb-2">
+          {% for c in categories %}
+          <div class="form-check">
+            <input class="form-check-input filter-checkbox" type="checkbox" data-group="categories" value="{{ c }}" id="cat-{{ loop.index }}" {{ 'checked' if c in selected_categories else '' }}>
+            <label class="form-check-label" for="cat-{{ loop.index }}">{{ c }}</label>
+          </div>
+          {% endfor %}
+        </div>
+        <hr class="my-2">
+        <h6 class="dropdown-header px-0">Work Type</h6>
+        <div class="mb-2">
+          {% for wt in work_types_all %}
+          <div class="form-check">
+            <input class="form-check-input filter-checkbox" type="checkbox" data-group="work_types" value="{{ wt }}" id="wt-{{ loop.index }}" {{ 'checked' if wt in selected_work_types else '' }}>
+            <label class="form-check-label" for="wt-{{ loop.index }}">{{ wt }}</label>
+          </div>
+          {% endfor %}
+        </div>
+        <hr class="my-2">
+        <div class="d-flex justify-content-between">
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearFilters()">Clear Filters</button>
+          <button type="button" class="btn btn-sm btn-primary" onclick="applyFilters()">Apply</button>
+        </div>
+      </div>
     </div>
-    <div class="col-auto">
-      <select name="jurisdiction" class="form-select form-select-sm" onchange="this.form.submit()">
-        <option value="">All Jurisdictions</option>
-        {% for j in jurisdictions %}
-        <option value="{{ j }}" {{ 'selected' if jurisdiction_filter == j }}>{{ j }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div class="col-auto">
-      <select name="category" class="form-select form-select-sm" onchange="this.form.submit()">
-        <option value="">All Categories</option>
-        {% for c in categories %}
-        <option value="{{ c }}" {{ 'selected' if category_filter == c }}>{{ c }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div class="col-auto">
-      <a href="/permits" class="btn btn-outline-secondary btn-sm">Clear</a>
-    </div>
-  </form>
+
+    <a href="/permits" class="btn btn-sm btn-outline-secondary">Clear</a>
+  </div>
 </div>
 
+<!-- Active filter summary -->
+{% if selected_categories or selected_work_types %}
+<div class="mb-3 d-flex flex-wrap gap-1 align-items-center">
+  <span class="small text-muted me-1">Showing:</span>
+  {% if selected_categories %}
+  <span class="small">
+    {{ selected_categories|join(', ') }}
+    {% if selected_work_types %}<span class="text-muted mx-1">·</span>{% endif %}
+  </span>
+  {% endif %}
+  {% if selected_work_types %}
+  <span class="small">
+    Work: {{ selected_work_types|join(', ') }}
+  </span>
+  {% endif %}
+</div>
+
+<!-- Zero-match note -->
+{% if zero_categories and selected_work_types %}
+<div class="mb-3 small text-muted">
+  <i class="bi bi-info-circle"></i>
+  No matching {{ selected_work_types|join(', ') }} permits found for {{ zero_categories|join(' or ') }} in{% if year_filter %} {{ year_filter }}{% else %} any year{% endif %}.
+</div>
+{% elif zero_categories %}
+<div class="mb-3 small text-muted">
+  <i class="bi bi-info-circle"></i>
+  No matching permits found for {{ zero_categories|join(' or ') }} in{% if year_filter %} {{ year_filter }}{% else %} any year{% endif %}.
+</div>
+{% endif %}
+{% endif %}
+
 {% if view == 'aggregate' %}
-  {% if not by_jurisdiction and not by_category %}
+
+{% if not by_jurisdiction and not by_category %}
   <p class="text-muted">No permits found matching the current filters.</p>
   {% else %}
 
@@ -248,7 +299,12 @@
 
   <!-- Pagination (sliding window) -->
   {% if total_pages > 1 %}
-  {% macro _qs() %}{% if jurisdiction_filter %}&jurisdiction={{ jurisdiction_filter }}{% endif %}{% if category_filter %}&category={{ category_filter }}{% endif %}{% if year_filter %}&year={{ year_filter }}{% endif %}{% endmacro %}
+  {% macro _qs() %}
+    {%- if jurisdiction_filter %}&jurisdiction={{ jurisdiction_filter }}{% endif -%}
+    {%- if year_filter %}&year={{ year_filter }}{% endif -%}
+    {%- if categories_filter %}&categories={{ categories_filter }}{% endif -%}
+    {%- if work_types_filter %}&work_types={{ work_types_filter }}{% endif -%}
+  {% endmacro %}
   <nav>
     <ul class="pagination justify-content-center">
       <li class="page-item {{ 'disabled' if page <= 1 }}">
@@ -293,7 +349,11 @@
 const COLORS = {
   'Residential': '#0d6efd',
   'Commercial': '#198754',
+  'Mixed-Use': '#fd7e14',
   'Industrial': '#dc3545',
+  'Infrastructure': '#6f42c1',
+  'Trade': '#ffc107',
+  'Demolition': '#adb5bd',
   'Other': '#6c757d',
 };
 
@@ -329,5 +389,72 @@ function makeCatBar(id, label, accessor, fmt) {
 makeCatBar('sqftByCatChart', 'Sq Ft', 'sqft', v => Number(v).toLocaleString() + ' sqft');
 makeCatBar('countByCatChart', 'Permits', 'count', v => Number(v).toLocaleString() + ' permits');
 makeCatBar('valByCatChart', 'Dollars', 'valuation', v => '$' + Number(v).toLocaleString());
+
+// ── Filter panel helpers ──────────────────────────────────────────────────
+
+/**
+ * Read current filter params from the URL into an object.
+ */
+function getCurrentParams() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    view: params.get('view') || 'aggregate',
+    jurisdiction: params.get('jurisdiction') || '',
+    year: params.get('year') || '',
+    categories: params.get('categories') || '',
+    work_types: params.get('work_types') || '',
+  };
+}
+
+/**
+ * Build a URL from current params, overriding specific keys.
+ */
+function buildUrl(overrides) {
+  const p = getCurrentParams();
+  for (const [k, v] of Object.entries(overrides)) {
+    p[k] = v;
+  }
+  const parts = [];
+  for (const [k, v] of Object.entries(p)) {
+    if (v) parts.push(k + '=' + encodeURIComponent(v));
+  }
+  return '/permits?' + parts.join('&');
+}
+
+/**
+ * Navigate preserving all current filter state (for year/jurisdiction dropdowns).
+ */
+function navigateWithFilter(key, value) {
+  const p = getCurrentParams();
+  p[key] = value;
+  window.location.href = buildUrl(p);
+}
+
+/**
+ * Collect checked checkboxes from a group, return comma-separated string.
+ */
+function getChecked(group) {
+  const checked = [];
+  document.querySelectorAll(`.filter-checkbox[data-group="${group}"]:checked`).forEach(cb => {
+    checked.push(cb.value);
+  });
+  return checked.join(',');
+}
+
+/**
+ * Apply filters: collect checked boxes, navigate to new URL.
+ */
+function applyFilters() {
+  const cats = getChecked('categories');
+  const wts = getChecked('work_types');
+  window.location.href = buildUrl({ categories: cats, work_types: wts });
+}
+
+/**
+ * Clear filters: remove categories & work_types, keep view/jurisdiction/year.
+ */
+function clearFilters() {
+  window.location.href = buildUrl({ categories: '', work_types: '' });
+}
 </script>
 {% endblock %}

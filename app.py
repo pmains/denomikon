@@ -722,15 +722,81 @@ def permits_index():
     session = get_session()
     view = request.args.get("view", "aggregate")
     jurisdiction_filter = request.args.get("jurisdiction", "")
-    category_filter = request.args.get("category", "")
+    category_filter = request.args.get("category", "")  # legacy single-category filter
     year_filter = request.args.get("year", "")
+
+    # ── New positive inclusion filters ──
+    categories_filter = request.args.get("categories", "").strip()
+    work_types_filter = request.args.get("work_types", "").strip()
+
+    # ── Legacy exclusion filters (backward compat) ──
+    exclude_filter = request.args.get("exclude", "").strip()
+    exclude_wt_filter = request.args.get("exclude_work_type", "").strip()
+
+    # Convert legacy exclusion to inclusion when possible
+    from sqlalchemy import text as _sa_text
+    all_categories = sorted(set(
+        r[0] for r in session.execute(
+            _sa_text("SELECT DISTINCT normalized_category FROM permits WHERE normalized_category IS NOT NULL")
+        ).all()
+    ))
+    all_work_types = sorted(set(
+        r[0] for r in session.execute(
+            _sa_text("SELECT DISTINCT work_type FROM permits WHERE work_type IS NOT NULL AND work_type != ''")
+        ).all()
+    ))
+
+    if exclude_filter and not categories_filter:
+        excluded = set(c.strip() for c in exclude_filter.split(",") if c.strip())
+        included = [c for c in all_categories if c not in excluded]
+        if included:
+            categories_filter = ",".join(included)
+        exclude_filter = ""  # clear so template doesn't show old UI
+
+    if exclude_wt_filter and not work_types_filter:
+        excluded = set(w.strip() for w in exclude_wt_filter.split(",") if w.strip())
+        included = [w for w in all_work_types if w not in excluded]
+        if included:
+            work_types_filter = ",".join(included)
+        exclude_wt_filter = ""  # clear
+
+    # Parse inclusion lists
+    selected_categories = [c.strip() for c in categories_filter.split(",") if c.strip()]
+    selected_work_types = [w.strip() for w in work_types_filter.split(",") if w.strip()]
+
+    # Gather distinct work_types for filter UI
+    work_types_all = all_work_types
+
+    # ── Helper: build inclusion-based WHERE clause parts ────────────────
+    def _build_parts():
+        parts = []
+        params = {}
+        if jurisdiction_filter:
+            parts.append("p.jurisdiction = :jur")
+            params["jur"] = jurisdiction_filter
+        if selected_categories:
+            phs = ",".join(f":cat_{i}" for i in range(len(selected_categories)))
+            parts.append(f"p.normalized_category IN ({phs})")
+            for i, c in enumerate(selected_categories):
+                params[f"cat_{i}"] = c
+        if selected_work_types:
+            phs = ",".join(f":wt_{i}" for i in range(len(selected_work_types)))
+            parts.append(f"p.work_type IN ({phs})")
+            for i, w in enumerate(selected_work_types):
+                params[f"wt_{i}"] = w
+        if year_filter:
+            parts.append("p.permit_issue_date LIKE :yr")
+            params["yr"] = f"{year_filter}%"
+        return parts, params
 
     # ── Filter builder for raw-list mode (non-deduped) ──────────────────
     def _base_filter(q):
         if jurisdiction_filter:
             q = q.where(Permit.jurisdiction == jurisdiction_filter)
-        if category_filter:
-            q = q.where(Permit.normalized_category == category_filter)
+        if selected_categories:
+            q = q.where(Permit.normalized_category.in_(selected_categories))
+        if selected_work_types:
+            q = q.where(Permit.work_type.in_(selected_work_types))
         if year_filter:
             q = q.where(Permit.permit_issue_date.startswith(year_filter))
         return q
@@ -739,20 +805,10 @@ def permits_index():
     # Weekly reports are cumulative snapshots — the same permit can appear
     # in many reports.  We run the dedup CTE ONCE and compute all three
     # aggregate tables in Python to avoid 3x table scans.
-    from sqlalchemy import text
+    from sqlalchemy import text as _sa_text
     from collections import defaultdict
 
-    parts = []
-    params = {}
-    if jurisdiction_filter:
-        parts.append("p.jurisdiction = :jur")
-        params["jur"] = jurisdiction_filter
-    if category_filter:
-        parts.append("p.normalized_category = :cat")
-        params["cat"] = category_filter
-    if year_filter:
-        parts.append("p.permit_issue_date LIKE :yr")
-        params["yr"] = f"{year_filter}%"
+    parts, params = _build_parts()
     where = " AND ".join(parts) if parts else "1=1"
 
     sql = f"""
@@ -784,7 +840,7 @@ def permits_index():
     cnt_by_year: dict = defaultdict(lambda: defaultdict(int))
     all_cats: set = set()
 
-    for r in session.execute(text(sql), params).all():
+    for r in session.execute(_sa_text(sql), params).all():
         j, c, t, v, s, yr = r
         v = v or 0.0
         s = s or 0.0
@@ -808,7 +864,7 @@ def permits_index():
 
     # ── Additional per-jurisdiction aggregates ─────────────────────────
     # Housing units, completed count, CO-issued count
-    units_sql = text(f"""
+    units_sql = _sa_text(f"""
         WITH deduped AS (
             SELECT *,
                    ROW_NUMBER() OVER (
@@ -834,6 +890,13 @@ def permits_index():
             jur_tot[j]["completed"] = cc
             jur_tot[j]["co_issued"] = co
 
+    # Ensure explicitly selected categories appear in chart data even with zero records
+    if selected_categories:
+        for c in selected_categories:
+            all_cats.add(c)
+            if c not in cat_tot:
+                cat_tot[c] = {"count": 0, "sqft": 0.0, "val": 0.0}
+
     years = sorted(sqft_by_year.keys())
 
     # Build chart-data structures inline (no extra API round-trip)
@@ -857,10 +920,13 @@ def permits_index():
         key=lambda r: r["count"], reverse=True,
     )
 
+    # all_categories already queried above for backward-compat conversion
     by_category = sorted(
-        [{"normalized_category": k, "count": v["count"],
-          "total_valuation": v["val"], "total_sqft": v["sqft"]}
-         for k, v in cat_tot.items()],
+        [{"normalized_category": c,
+          "count": cat_tot[c]["count"] if c in cat_tot else 0,
+          "total_valuation": cat_tot[c]["val"] if c in cat_tot else 0,
+          "total_sqft": cat_tot[c]["sqft"] if c in cat_tot else 0}
+         for c in all_categories],
         key=lambda r: r["count"], reverse=True,
     )
 
@@ -879,13 +945,14 @@ def permits_index():
     # Extract unique years from ISO dates
     years = sorted(set(d[:4] for d in years if d and len(d) >= 4), reverse=True)
 
+    # Compute zero-categories note: selected categories with zero matching records
+    zero_categories = [c for c in selected_categories if cat_tot.get(c, {}).get("count", 0) == 0]
+
     jurisdictions = session.execute(
         select(Permit.jurisdiction).distinct().where(Permit.jurisdiction.isnot(None)).order_by(Permit.jurisdiction)
     ).scalars().all()
 
-    categories = session.execute(
-        select(Permit.normalized_category).distinct().where(Permit.normalized_category.isnot(None), Permit.normalized_category != "").order_by(Permit.normalized_category)
-    ).scalars().all()
+    categories = all_categories  # from backward-compat query above
 
     # Raw list mode
     permits_raw = []
@@ -924,6 +991,12 @@ def permits_index():
         jurisdiction_filter=jurisdiction_filter,
         category_filter=category_filter,
         year_filter=year_filter,
+        categories_filter=categories_filter,
+        work_types_filter=work_types_filter,
+        selected_categories=selected_categories,
+        selected_work_types=selected_work_types,
+        zero_categories=zero_categories,
+        work_types_all=work_types_all,
         chart_data={
             "years": years,
             "sqft_by_year": chart_sqft_by_year,
@@ -938,12 +1011,49 @@ def permits_chart_data():
     """JSON endpoint with deduped chart data for the permits template.
 
     Returns sqft_by_year, permits_by_year, and category_totals,
-    optionally filtered by jurisdiction, category, or year.
+    optionally filtered by jurisdiction, category, work type, or year.
     """
+    from sqlalchemy import text
     session = get_session()
     jf = request.args.get("jurisdiction", "")
     cf = request.args.get("category", "")
     yf = request.args.get("year", "")
+
+    # New positive inclusion filters
+    categories_filter = request.args.get("categories", "").strip()
+    work_types_filter = request.args.get("work_types", "").strip()
+
+    # Legacy exclusion filters (backward compat)
+    ef = request.args.get("exclude", "").strip()
+    ewtf = request.args.get("exclude_work_type", "").strip()
+
+    # Convert legacy exclusion to inclusion
+    if ef and not categories_filter:
+        all_cats = sorted(set(
+            r[0] for r in session.execute(
+                text("SELECT DISTINCT normalized_category FROM permits WHERE normalized_category IS NOT NULL")
+            ).all()
+        ))
+        excluded = set(c.strip() for c in ef.split(",") if c.strip())
+        included = [c for c in all_cats if c not in excluded]
+        if included:
+            categories_filter = ",".join(included)
+        ef = ""
+
+    if ewtf and not work_types_filter:
+        all_wts = sorted(set(
+            r[0] for r in session.execute(
+                text("SELECT DISTINCT work_type FROM permits WHERE work_type IS NOT NULL AND work_type != ''")
+            ).all()
+        ))
+        excluded = set(w.strip() for w in ewtf.split(",") if w.strip())
+        included = [w for w in all_wts if w not in excluded]
+        if included:
+            work_types_filter = ",".join(included)
+        ewtf = ""
+
+    selected_cats = [c.strip() for c in categories_filter.split(",") if c.strip()]
+    selected_wts = [w.strip() for w in work_types_filter.split(",") if w.strip()]
 
     parts = ["1=1"]
     params = {}
@@ -953,12 +1063,20 @@ def permits_chart_data():
     if cf:
         parts.append("p.normalized_category = :cat")
         params["cat"] = cf
+    if selected_cats:
+        phs = ",".join(f":cat_{i}" for i in range(len(selected_cats)))
+        parts.append(f"p.normalized_category IN ({phs})")
+        for i, c in enumerate(selected_cats):
+            params[f"cat_{i}"] = c
+    if selected_wts:
+        phs = ",".join(f":wt_{i}" for i in range(len(selected_wts)))
+        parts.append(f"p.work_type IN ({phs})")
+        for i, w in enumerate(selected_wts):
+            params[f"wt_{i}"] = w
     if yf:
         parts.append("p.permit_issue_date LIKE :yr")
         params["yr"] = f"{yf}%"
     where = " AND ".join(parts)
-
-    from sqlalchemy import text
 
     # Years that have data, sorted
     years_sql = text(f"""
@@ -1041,12 +1159,19 @@ def permit_category_detail(category_name):
     """
     session = get_session()
     jurisdiction_filter = request.args.get("jurisdiction", "")
+    exclude_filter = request.args.get("exclude", "").strip()
+    exclude_cats = [c.strip() for c in exclude_filter.split(",") if c.strip()]
 
     parts = ["1=1", "d.rn = 1"]
     params = {"cat": category_name}
     if jurisdiction_filter:
         parts.append("d.jurisdiction = :jur")
         params["jur"] = jurisdiction_filter
+    if exclude_cats:
+        placeholders = ",".join(f":exc_{i}" for i in range(len(exclude_cats)))
+        parts.append(f"d.normalized_category NOT IN ({placeholders})")
+        for i, c in enumerate(exclude_cats):
+            params[f"exc_{i}"] = c
     where = " AND ".join(parts)
 
     from sqlalchemy import text

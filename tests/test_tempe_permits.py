@@ -26,6 +26,7 @@ from scraper.tempe_permits import (
     _build_query_url,
     normalize_row,
     categorize_permit,
+    classify_work_type,
     sync_permits,
     ARCGIS_URL,
     MAX_RECORD_COUNT,
@@ -336,6 +337,67 @@ class TestCategorizePermit(unittest.TestCase):
         result = categorize_permit(None, None, None)
         self.assertEqual(result, "Other")
 
+    # ── raw_permit_class tests ──────────────────────────────────────────
+    def test_class_non_residential(self):
+        cat = categorize_permit(None, None, None,
+                                raw_permit_class="437 - Additions and Alterations - Non-Residential")
+        self.assertEqual(cat, "Commercial")
+
+    def test_class_ten_or_more_family(self):
+        cat = categorize_permit(None, None, None,
+                                raw_permit_class="106 New - Ten or more Family")
+        self.assertEqual(cat, "Residential")
+
+    def test_class_single_family_attached(self):
+        cat = categorize_permit(None, None, None,
+                                raw_permit_class="102 New - Single Family Attached")
+        self.assertEqual(cat, "Residential")
+
+    def test_class_commercial_building(self):
+        cat = categorize_permit(None, None, None,
+                                raw_permit_class="330 - Commercial Buildings")
+        self.assertEqual(cat, "Commercial")
+
+    def test_class_photovoltaic_residential(self):
+        cat = categorize_permit(None, None, None,
+                                raw_permit_class="801 - Photovoltaic Residential")
+        self.assertEqual(cat, "Residential")
+
+    def test_class_photovoltaic_commercial(self):
+        cat = categorize_permit(None, None, None,
+                                raw_permit_class="806 - Photovoltaic Commercial")
+        self.assertEqual(cat, "Commercial")
+
+    def test_class_miscellaneous(self):
+        cat = categorize_permit(None, None, None,
+                                raw_permit_class="999 - Miscellaneous(...)")
+        self.assertEqual(cat, "Other")
+
+    def test_class_residential_alteration(self):
+        cat = categorize_permit(None, None, None,
+                                raw_permit_class="434 - Additions or Alterations - Residential")
+        self.assertEqual(cat, "Residential")
+
+    def test_class_pool_residential(self):
+        cat = categorize_permit(None, None, None,
+                                raw_permit_class="992 - Pool - Residential")
+        self.assertEqual(cat, "Residential")
+
+    def test_class_pool_non_residential(self):
+        cat = categorize_permit(None, None, None,
+                                raw_permit_class="993 - Pool - Non-Residential")
+        self.assertEqual(cat, "Commercial")
+
+    def test_class_infrastructure_water(self):
+        cat = categorize_permit(None, None, None,
+                                raw_permit_class="WA - Water")
+        self.assertEqual(cat, "Infrastructure")
+
+    def test_class_infrastructure_sewer(self):
+        cat = categorize_permit(None, None, None,
+                                raw_permit_class="SW - Sewer")
+        self.assertEqual(cat, "Infrastructure")
+
     def test_empty_strings(self):
         """Empty strings -> Other."""
         result = categorize_permit("", "", "")
@@ -348,6 +410,48 @@ class TestCategorizePermit(unittest.TestCase):
     def test_infrastructure_street(self):
         result = categorize_permit(None, "Street Improvements", None)
         self.assertEqual(result, "Infrastructure")
+
+    # ── work_type classification tests ──
+    def test_work_type_new_single_family(self):
+        self.assertEqual(classify_work_type("101 New - Single Family Detached"), "New Construction")
+
+    def test_work_type_new_multi_family(self):
+        self.assertEqual(classify_work_type("106 New - Ten or more Family"), "New Construction")
+
+    def test_work_type_foundation(self):
+        self.assertEqual(classify_work_type("107 - Foundation Only"), "New Construction")
+
+    def test_work_type_alteration_ti(self):
+        self.assertEqual(classify_work_type("437 - Additions and Alterations - Non-Residential",
+                                              "TI - SUITE 100"), "Alteration")
+
+    def test_work_type_alteration_remodel(self):
+        self.assertEqual(classify_work_type("434 - Additions or Alterations - Residential",
+                                              "RESIDENTIAL INTERIOR REMODEL"), "Alteration")
+
+    def test_work_type_add_adu(self):
+        self.assertEqual(classify_work_type("113 - Guesthouse", "NEW DETACHED ADU"), "Addition")
+
+    def test_work_type_add_carport(self):
+        self.assertEqual(classify_work_type("438 - Carports - Commercial and Cantilever"), "Addition")
+
+    def test_work_type_trade_electrical(self):
+        self.assertEqual(classify_work_type("997 - Electrical - No Value"), "Trade")
+
+    def test_work_type_demolition(self):
+        self.assertEqual(classify_work_type("644 - CM Demolition - All Building"), "Demolition")
+
+    def test_work_type_infrastructure_water(self):
+        self.assertEqual(classify_work_type("WA - Water"), "Infrastructure")
+
+    def test_work_type_new_construction_new_in_desc(self):
+        self.assertEqual(classify_work_type("999 - Miscellaneous", "NEW MIXED USE BUILDING"), "New Construction")
+
+    def test_work_type_unknown_misc(self):
+        self.assertEqual(classify_work_type("999 - Miscellaneous"), "Unknown")
+
+    def test_work_type_unknown_sfr(self):
+        self.assertEqual(classify_work_type("SFR - Single Family Residence"), "Unknown")
 
 
 # ── Database upsert ────────────────────────────────────────────────────────
@@ -459,6 +563,340 @@ class TestDatabaseUpsert(unittest.TestCase):
         self.assertEqual(existing.permit_number, "BLD-2024-TEST04")
 
         session.close()
+
+
+# =====================================================================
+# Filter behavior tests: zero-value categories in aggregate outputs
+# =====================================================================
+
+class TestPermitFilterAggregation(unittest.TestCase):
+    """
+    Test that selected categories with zero matching records still appear
+    in by_category table and chart_cat_totals.
+
+    These tests insert known permit data and verify the aggregation logic
+    used by app.py's permits_index route.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        _reset_db_engine()
+        set_database_url(f"sqlite:///{_test_db_path}")
+        init_db()
+
+    def setUp(self):
+        session = get_session()
+        session.query(Permit).delete()
+        session.commit()
+        session.close()
+
+    def _add_permit(self, session, **overrides):
+        """Insert a single permit row with defaults."""
+        defaults = dict(
+            jurisdiction="City of Tempe",
+            permit_issue_date="2026-03-15",
+            normalized_category="Residential",
+            work_type="New Construction",
+            permit_number="TEST-0001",
+            row_hash="hash1",
+            report_adid="rpt001",
+            report_date="2026-03-15",
+            permit_valuation="100000",
+            permit_square_feet="2000",
+        )
+        defaults.update(overrides)
+        session.add(Permit(**defaults))
+        session.commit()
+
+    def _run_aggregate(self, categories_filter="", work_types_filter="",
+                       jurisdiction_filter="", year_filter=""):
+        """
+        Run the same dedup + aggregation logic used by permits_index.
+        Returns (by_category, chart_cat_totals, data_rows) where
+        by_category is the list of dicts passed to the template.
+        """
+        from collections import defaultdict
+        from sqlalchemy import text as _sa
+
+        session = get_session()
+
+        selected_cats = [c.strip() for c in categories_filter.split(",") if c.strip()]
+        selected_wts = [w.strip() for w in work_types_filter.split(",") if w.strip()]
+
+        # Build filter parts (same as _build_parts in app.py)
+        parts = []
+        params = {}
+        if jurisdiction_filter:
+            parts.append("p.jurisdiction = :jur")
+            params["jur"] = jurisdiction_filter
+        if selected_cats:
+            phs = ",".join(f":cat_{i}" for i in range(len(selected_cats)))
+            parts.append(f"p.normalized_category IN ({phs})")
+            for i, c in enumerate(selected_cats):
+                params[f"cat_{i}"] = c
+        if selected_wts:
+            phs = ",".join(f":wt_{i}" for i in range(len(selected_wts)))
+            parts.append(f"p.work_type IN ({phs})")
+            for i, w in enumerate(selected_wts):
+                params[f"wt_{i}"] = w
+        if year_filter:
+            parts.append("p.permit_issue_date LIKE :yr")
+            params["yr"] = f"{year_filter}%"
+        where = " AND ".join(parts) if parts else "1=1"
+
+        sql = _sa(f"""
+            WITH deduped AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY COALESCE(p.permit_number, p.row_hash),
+                                         COALESCE(p.permit_square_feet, '')
+                           ORDER BY p.permit_issue_date
+                       ) AS rn
+                FROM permits p
+                WHERE {where}
+            )
+            SELECT d.normalized_category AS cat,
+                   CAST(NULLIF(d.permit_valuation, '') AS REAL) AS val,
+                   CAST(NULLIF(d.permit_square_feet, '') AS REAL) AS sqft
+            FROM deduped d
+            WHERE d.rn = 1
+              AND d.permit_issue_date IS NOT NULL
+        """)
+
+        cat_tot = defaultdict(lambda: {"count": 0, "sqft": 0.0, "val": 0.0})
+        all_cats = set()
+
+        for r in session.execute(sql, params).all():
+            c = r.cat or "Other"
+            v = r.val or 0.0
+            s = r.sqft or 0.0
+            all_cats.add(c)
+            ct = cat_tot[c]
+            ct["count"] += 1
+            ct["sqft"] += s
+            ct["val"] += v
+
+        # Ensure selected categories appear even with zero records
+        if selected_cats:
+            for c in selected_cats:
+                all_cats.add(c)
+                if c not in cat_tot:
+                    cat_tot[c] = {"count": 0, "sqft": 0.0, "val": 0.0}
+
+        # Query all distinct categories for the table
+        all_distinct = sorted(set(
+            r[0] for r in session.execute(
+                _sa("SELECT DISTINCT normalized_category FROM permits WHERE normalized_category IS NOT NULL")
+            ).all()
+        ))
+
+        # by_category (same as app.py)
+        by_category = sorted(
+            [{"normalized_category": c,
+              "count": cat_tot[c]["count"] if c in cat_tot else 0,
+              "total_valuation": cat_tot[c]["val"] if c in cat_tot else 0,
+              "total_sqft": cat_tot[c]["sqft"] if c in cat_tot else 0}
+             for c in all_distinct],
+            key=lambda r: r["count"], reverse=True,
+        )
+
+        # chart_cat_totals (same as app.py)
+        cats_ordered = sorted(all_cats, key=lambda x: -cat_tot[x]["count"])
+        chart_cat_totals = [
+            {"category": c, "sqft": cat_tot[c]["sqft"],
+             "valuation": cat_tot[c]["val"], "count": cat_tot[c]["count"]}
+            for c in cats_ordered
+        ]
+
+        # Zero-categories diagnostic
+        zero_cats = [c for c in selected_cats
+                     if cat_tot.get(c, {}).get("count", 0) == 0]
+
+        session.close()
+        return by_category, chart_cat_totals, zero_cats
+
+    # ── Tests ────────────────────────────────────────────────────────────
+
+    def test_selected_categories_with_zero_records_in_table(self):
+        """
+        Selected categories exist in DB (with other work types) but have
+        zero matching records for the work_type filter. They should still
+        appear in by_category with count=0.
+        """
+        session = get_session()
+        # Insert Residential (New Construction) and Commercial/Industrial
+        # with DIFFERENT work types so they exist in DB but don't match filter
+        self._add_permit(session, normalized_category="Residential",
+                         work_type="New Construction")
+        self._add_permit(session, normalized_category="Commercial",
+                         work_type="Trade",
+                         permit_number="TEST-0002", row_hash="hash2")
+        self._add_permit(session, normalized_category="Industrial",
+                         work_type="Demolition",
+                         permit_number="TEST-0003", row_hash="hash3")
+        session.close()
+
+        by_category, chart_totals, zero_cats = self._run_aggregate(
+            categories_filter="Commercial,Industrial,Residential",
+            work_types_filter="New Construction",
+        )
+
+        # All selected categories should be present in by_category
+        cat_names = [r["normalized_category"] for r in by_category]
+        self.assertIn("Commercial", cat_names)
+        self.assertIn("Industrial", cat_names)
+        self.assertIn("Residential", cat_names)
+
+        # Commercial and Industrial should have count=0 in filtered output
+        for r in by_category:
+            if r["normalized_category"] == "Commercial":
+                self.assertEqual(r["count"], 0)
+            if r["normalized_category"] == "Industrial":
+                self.assertEqual(r["count"], 0)
+
+    def test_selected_categories_with_zero_records_in_chart(self):
+        """
+        Selected categories exist in DB (with other work types) but have
+        zero matching records for the work_type filter. They should still
+        appear in chart_cat_totals with count=0.
+        """
+        session = get_session()
+        self._add_permit(session, normalized_category="Residential",
+                         work_type="New Construction")
+        self._add_permit(session, normalized_category="Commercial",
+                         work_type="Trade",
+                         permit_number="TEST-0004", row_hash="hash4")
+        self._add_permit(session, normalized_category="Industrial",
+                         work_type="Demolition",
+                         permit_number="TEST-0005", row_hash="hash5")
+        session.close()
+
+        by_category, chart_totals, zero_cats = self._run_aggregate(
+            categories_filter="Commercial,Industrial,Residential",
+            work_types_filter="New Construction",
+        )
+
+        chart_names = [r["category"] for r in chart_totals]
+        self.assertIn("Commercial", chart_names)
+        self.assertIn("Industrial", chart_names)
+        self.assertIn("Residential", chart_names)
+
+        for r in chart_totals:
+            if r["category"] in ("Commercial", "Industrial"):
+                self.assertEqual(r["count"], 0)
+
+    def test_zero_categories_diagnostic(self):
+        """zero_categories should list selected categories with 0 matching rows."""
+        session = get_session()
+        self._add_permit(session, normalized_category="Residential",
+                         work_type="New Construction")
+        self._add_permit(session, normalized_category="Commercial",
+                         work_type="Trade",
+                         permit_number="TEST-0006", row_hash="hash6")
+        self._add_permit(session, normalized_category="Industrial",
+                         work_type="Demolition",
+                         permit_number="TEST-0007", row_hash="hash7")
+        session.close()
+
+        by_category, chart_totals, zero_cats = self._run_aggregate(
+            categories_filter="Commercial,Industrial,Residential",
+            work_types_filter="New Construction",
+        )
+
+        self.assertIn("Commercial", zero_cats)
+        self.assertIn("Industrial", zero_cats)
+        self.assertNotIn("Residential", zero_cats)
+
+    def test_no_regression_unfiltered_aggregate(self):
+        """
+        Without filters, all categories present in data appear with
+        correct non-zero counts and no phantom zero rows.
+        """
+        session = get_session()
+        self._add_permit(session, normalized_category="Residential",
+                         work_type="New Construction")
+        self._add_permit(session, normalized_category="Commercial",
+                         work_type="Alteration",
+                         permit_number="TEST-0003", row_hash="hash3")
+        self._add_permit(session, normalized_category="Industrial",
+                         work_type="Trade",
+                         permit_number="TEST-0004", row_hash="hash4")
+        session.close()
+
+        by_category, chart_totals, zero_cats = self._run_aggregate()
+
+        # All three should have count >= 1
+        for r in by_category:
+            if r["normalized_category"] in ("Residential", "Commercial", "Industrial"):
+                self.assertGreater(r["count"], 0, f"{r['normalized_category']} should have data")
+
+        # No zero categories since no filters
+        self.assertEqual(zero_cats, [])
+
+    def test_diagnostic_aggregation_by_category_work_type(self):
+        """Diagnostic: verify count by (category, work_type) matrix matches."""
+        from sqlalchemy import text as _sa
+
+        session = get_session()
+        # Insert mixed data
+        self._add_permit(session, normalized_category="Residential",
+                         work_type="New Construction",
+                         permit_number="R1", row_hash="hr1")
+        self._add_permit(session, normalized_category="Residential",
+                         work_type="Addition",
+                         permit_number="R2", row_hash="hr2")
+        self._add_permit(session, normalized_category="Commercial",
+                         work_type="New Construction",
+                         permit_number="C1", row_hash="hc1")
+        self._add_permit(session, normalized_category="Industrial",
+                         work_type="Trade",
+                         permit_number="I1", row_hash="hi1")
+        session.close()
+
+        rows = session.execute(_sa("""
+            SELECT normalized_category, work_type, COUNT(*) AS cnt
+            FROM permits
+            WHERE normalized_category IS NOT NULL
+            GROUP BY normalized_category, work_type
+            ORDER BY normalized_category, work_type
+        """)).all()
+
+        result_map = {}
+        for r in rows:
+            result_map[(r[0], r[1])] = r[2]
+
+        self.assertEqual(result_map.get(("Residential", "New Construction")), 1)
+        self.assertEqual(result_map.get(("Residential", "Addition")), 1)
+        self.assertEqual(result_map.get(("Commercial", "New Construction")), 1)
+        self.assertEqual(result_map.get(("Industrial", "Trade")), 1)
+        self.assertEqual(len(rows), 4)
+
+    def test_selected_only_category_no_work_type_filter(self):
+        """
+        When only categories are selected (no work_type filter),
+        zero-category entries should still be in chart totals.
+        """
+        session = get_session()
+        self._add_permit(session, normalized_category="Residential",
+                         work_type="New Construction")
+        self._add_permit(session, normalized_category="Commercial",
+                         work_type="Alteration",
+                         permit_number="T-005", row_hash="h5")
+        session.close()
+
+        by_category, chart_totals, zero_cats = self._run_aggregate(
+            categories_filter="Residential,Commercial,Industrial,Mixed-Use",
+        )
+
+        # Industrial & Mixed-Use should be in charts with count=0
+        for r in chart_totals:
+            if r["category"] in ("Industrial", "Mixed-Use"):
+                self.assertEqual(r["count"], 0,
+                                 f"{r['category']} should have 0 count")
+
+        zero_names = set(zero_cats)
+        self.assertIn("Industrial", zero_names)
+        self.assertIn("Mixed-Use", zero_names)
 
 
 if __name__ == "__main__":
