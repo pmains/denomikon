@@ -13,8 +13,8 @@
 
 <!-- Main responsive row: filter card + overview card -->
 <div class="row g-3 align-items-stretch mb-4">
-  <!-- Filter Card -->
-  <div class="col-12 col-lg-5 d-flex order-1">
+  <!-- Filter Card (full width when overview is hidden) -->
+  <div class="col-12{% if view == 'aggregate' and by_jurisdiction and jurisdiction_filter %} col-lg-5{% endif %} d-flex order-1">
     <div class="card shadow-sm flex-fill">
       <div class="card-header">
         <h5 class="mb-0">Filter Permits</h5>
@@ -101,8 +101,8 @@
     </div>
   </div>
 
-  <!-- Jurisdiction Overview Card (aggregate view only) -->
-  {% if view == 'aggregate' and by_jurisdiction %}
+  <!-- Jurisdiction Overview Card (single jurisdiction only) -->
+  {% if view == 'aggregate' and by_jurisdiction and jurisdiction_filter %}
   <div class="col-12 col-lg-7 d-flex order-2">
     <div class="card shadow-sm flex-fill">
       <div class="card-header"><h5 class="mb-0">Jurisdiction Overview</h5></div>
@@ -152,10 +152,10 @@
   <p class="text-muted">No permits found matching the current filters.</p>
   {% else %}
 
-  <!-- By Jurisdiction (detail table) -->
-  {% if by_jurisdiction %}
+  <!-- By Jurisdiction detail table (all jurisdictions, no filter) -->
+  {% if by_jurisdiction and not jurisdiction_filter %}
   <div class="card shadow-sm mb-4">
-    <div class="card-header"><h5 class="mb-0">By Jurisdiction — Detail</h5></div>
+    <div class="card-header"><h5 class="mb-0">By Jurisdiction</h5></div>
     <div class="table-responsive">
       <table class="table table-hover align-middle small mb-0">
         <thead class="table-light">
@@ -203,7 +203,7 @@
           </tr>
         </thead>
         <tbody>
-          {% for row in by_category %}
+          {% for row in by_category if row.count > 0 or row.total_valuation > 0 or row.total_sqft > 0 %}
           <tr>
             <td>
               <strong>{{ row.normalized_category }}</strong>
@@ -376,36 +376,88 @@ const COLORS = {
 
 const chartData = {{ chart_data | tojson }};
 const totals = chartData.category_totals;
+const years = chartData.years;
 
-function makeCatBar(id, label, accessor, fmt) {
-  new Chart(document.getElementById(id), {
-    type: 'bar',
-    data: {
-      labels: totals.map(t => t.category),
-      datasets: [{
-        data: totals.map(t => t[accessor]),
-        backgroundColor: totals.map(t => COLORS[t.category] || '#adb5bd'),
-        borderRadius: 4,
-      }]
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: { callbacks: { label: ctx => fmt(ctx.raw) } }
+/**
+ * Pick chart type based on number of years.
+ * Multiple years → line chart (trend over time).
+ * Single year   → horizontal bar chart (category comparison).
+ */
+function makeCatChart(id, label, byYearAccessor, fmt) {
+  const ctx = document.getElementById(id);
+  const multiYear = years.length > 1;
+
+  if (multiYear) {
+    // Line chart: one dataset per category, years as x-axis
+    // Collect categories sorted by total value descending
+    const catOrder = [...totals].sort((a, b) => b.count - a.count).map(t => t.category);
+
+    new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: years,
+        datasets: catOrder.map(c => ({
+          label: c,
+          data: years.map(y => (chartData[byYearAccessor][y] || {})[c] || 0),
+          borderColor: COLORS[c] || '#adb5bd',
+          backgroundColor: COLORS[c] || '#adb5bd',
+          pointRadius: 3,
+          pointHoverRadius: 5,
+          tension: 0.3,
+          fill: false,
+        })),
       },
-      scales: {
-        x: { title: { display: true, text: label } }
-      }
-    }
-  });
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'bottom', labels: { boxWidth: 12, padding: 12 } },
+          tooltip: {
+            callbacks: {
+              label: ctx => ctx.dataset.label + ': ' + fmt(ctx.raw),
+            },
+          },
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: { display: true, text: label },
+            ticks: { callback: v => Number(v).toLocaleString() },
+          },
+        },
+      },
+    });
+  } else {
+    // Bar chart: one bar per category (horizontal)
+    new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: totals.map(t => t.category),
+        datasets: [{
+          data: totals.map(t => t[byYearAccessor]),
+          backgroundColor: totals.map(t => COLORS[t.category] || '#adb5bd'),
+          borderRadius: 4,
+        }],
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => fmt(ctx.raw) } },
+        },
+        scales: {
+          x: { title: { display: true, text: label } },
+        },
+      },
+    });
+  }
 }
 
-makeCatBar('sqftByCatChart', 'Sq Ft', 'sqft', v => Number(v).toLocaleString() + ' sqft');
-makeCatBar('countByCatChart', 'Permits', 'count', v => Number(v).toLocaleString() + ' permits');
-makeCatBar('valByCatChart', 'Dollars', 'valuation', v => '$' + Number(v).toLocaleString());
+makeCatChart('sqftByCatChart', 'Sq Ft', 'sqft_by_year', v => Number(v).toLocaleString() + ' sqft');
+makeCatChart('countByCatChart', 'Permits', 'permits_by_year', v => Number(v).toLocaleString() + ' permits');
+makeCatChart('valByCatChart', 'Valuation', 'valuation_by_year', v => '$' + Number(v).toLocaleString());
 
 // ── Filter panel helpers ──────────────────────────────────────────────────
 

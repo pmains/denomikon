@@ -838,6 +838,7 @@ def permits_index():
     type_cnt: dict = defaultdict(int)
     sqft_by_year: dict = defaultdict(lambda: defaultdict(float))
     cnt_by_year: dict = defaultdict(lambda: defaultdict(int))
+    val_by_year: dict = defaultdict(lambda: defaultdict(float))
     all_cats: set = set()
 
     for r in session.execute(_sa_text(sql), params).all():
@@ -859,6 +860,7 @@ def permits_index():
             if yr:
                 sqft_by_year[yr][cat] += s
                 cnt_by_year[yr][cat] += 1
+                val_by_year[yr][cat] += v
         if t:
             type_cnt[t] += 1
 
@@ -903,6 +905,7 @@ def permits_index():
     cats_ordered = sorted(all_cats, key=lambda x: -cat_tot[x]["count"])
     chart_sqft_by_year = {y: {c: sqft_by_year[y].get(c, 0) for c in cats_ordered} for y in years}
     chart_cnt_by_year = {y: {c: cnt_by_year[y].get(c, 0) for c in cats_ordered} for y in years}
+    chart_val_by_year = {y: {c: val_by_year[y].get(c, 0) for c in cats_ordered} for y in years}
     chart_cat_totals = [
         {"category": c, "sqft": cat_tot[c]["sqft"],
          "valuation": cat_tot[c]["val"], "count": cat_tot[c]["count"]}
@@ -935,15 +938,17 @@ def permits_index():
         key=lambda r: r["count"], reverse=True,
     )[:20]
 
-    # Available filter options (non-deduped — detection is fine with full set)
-    years = session.execute(
-        select(Permit.permit_issue_date)
-        .distinct()
-        .where(Permit.permit_issue_date.isnot(None), Permit.permit_issue_date != "")
-        .order_by(Permit.permit_issue_date.desc())
+    # Available filter options — respect jurisdiction for year list
+    yr_q = select(Permit.permit_issue_date).distinct().where(
+        Permit.permit_issue_date.isnot(None), Permit.permit_issue_date != ""
+    )
+    if jurisdiction_filter:
+        yr_q = yr_q.where(Permit.jurisdiction == jurisdiction_filter)
+    year_options = session.execute(
+        yr_q.order_by(Permit.permit_issue_date.desc())
     ).scalars().all()
     # Extract unique years from ISO dates
-    years = sorted(set(d[:4] for d in years if d and len(d) >= 4), reverse=True)
+    year_options = sorted(set(d[:4] for d in year_options if d and len(d) >= 4), reverse=True)
 
     # Compute zero-categories note: selected categories with zero matching records
     zero_categories = [c for c in selected_categories if cat_tot.get(c, {}).get("count", 0) == 0]
@@ -951,6 +956,16 @@ def permits_index():
     jurisdictions = session.execute(
         select(Permit.jurisdiction).distinct().where(Permit.jurisdiction.isnot(None)).order_by(Permit.jurisdiction)
     ).scalars().all()
+
+    # When year is selected, also filter jurisdictions to those active that year
+    if year_filter:
+        jur_q = select(Permit.jurisdiction).distinct().where(
+            Permit.jurisdiction.isnot(None),
+            Permit.permit_issue_date.startswith(year_filter),
+        )
+        filtered_jurs = [r[0] for r in session.execute(jur_q.order_by(Permit.jurisdiction)).all()]
+        if filtered_jurs:
+            jurisdictions = filtered_jurs
 
     categories = all_categories  # from backward-compat query above
 
@@ -985,7 +1000,7 @@ def permits_index():
         total_pages=total_pages,
         total=total,
         per_page=per_page,
-        years=years,
+        years=year_options,
         jurisdictions=jurisdictions,
         categories=categories,
         jurisdiction_filter=jurisdiction_filter,
@@ -1001,6 +1016,7 @@ def permits_index():
             "years": years,
             "sqft_by_year": chart_sqft_by_year,
             "permits_by_year": chart_cnt_by_year,
+            "valuation_by_year": chart_val_by_year,
             "category_totals": chart_cat_totals,
         },
     )
