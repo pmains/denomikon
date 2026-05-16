@@ -691,6 +691,23 @@ class Permit(Base):
     native_category = Column(Text, nullable=True, default=None, comment="Original jurisdiction-specific category label")
     normalized_category = Column(String(64), nullable=True, default=None, index=True, comment="Cross-jurisdiction category: Residential, Commercial, Industrial, Mixed-Use, Other")
 
+    # Tempe ArcGIS permit fields
+    applied_date = Column(String(32), nullable=True, default=None)
+    completed_date = Column(String(32), nullable=True, default=None)
+    certificate_of_occupancy_date = Column(String(32), nullable=True, default=None)
+    units = Column(String(16), nullable=True, default=None, comment="Total housing units from source")
+    project_name = Column(Text, nullable=True, default=None)
+    fee = Column(String(32), nullable=True, default=None)
+    latitude = Column(String(32), nullable=True, default=None)
+    longitude = Column(String(32), nullable=True, default=None)
+    raw_permit_type = Column(Text, nullable=True, default=None)
+    raw_permit_type_description = Column(Text, nullable=True, default=None)
+    raw_permit_class = Column(String(64), nullable=True, default=None)
+    zone = Column(String(64), nullable=True, default=None)
+    source_system = Column(String(64), nullable=True, default=None, index=True)
+    source_record_id = Column(String(64), nullable=True, default=None, index=True)
+    contractor_license = Column(String(64), nullable=True, default=None)
+
     row_hash = Column(String(64), nullable=False, index=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
@@ -707,6 +724,10 @@ class Permit(Base):
         # re-sync without collision on duplicate permit numbers (common in
         # pre-2024 reports where tracking numbers repeat for multi-line items).
         UniqueConstraint("report_adid", "row_hash", name="uq_permit_per_report"),
+
+        # Uniqueness by source system + source record ID prevents
+        # duplicates when syncing from external systems (e.g. Tempe ArcGIS).
+        UniqueConstraint("source_system", "source_record_id", name="uq_permit_source"),
 
         # Performance indexes for common query patterns.
         # The aggregate /permits endpoint filters by permit_issue_date (LIKE
@@ -3322,6 +3343,21 @@ def _migrate_existing_tables(engine=None):
         ("permits", "native_type", "TEXT DEFAULT NULL"),
         ("permits", "native_category", "TEXT DEFAULT NULL"),
         ("permits", "normalized_category", "VARCHAR(64) DEFAULT NULL"),
+        ("permits", "applied_date", "VARCHAR(32) DEFAULT NULL"),
+        ("permits", "completed_date", "VARCHAR(32) DEFAULT NULL"),
+        ("permits", "certificate_of_occupancy_date", "VARCHAR(32) DEFAULT NULL"),
+        ("permits", "units", "VARCHAR(16) DEFAULT NULL"),
+        ("permits", "project_name", "TEXT DEFAULT NULL"),
+        ("permits", "fee", "VARCHAR(32) DEFAULT NULL"),
+        ("permits", "latitude", "VARCHAR(32) DEFAULT NULL"),
+        ("permits", "longitude", "VARCHAR(32) DEFAULT NULL"),
+        ("permits", "raw_permit_type", "TEXT DEFAULT NULL"),
+        ("permits", "raw_permit_type_description", "TEXT DEFAULT NULL"),
+        ("permits", "raw_permit_class", "VARCHAR(64) DEFAULT NULL"),
+        ("permits", "zone", "VARCHAR(64) DEFAULT NULL"),
+        ("permits", "source_system", "VARCHAR(64) DEFAULT NULL"),
+        ("permits", "source_record_id", "VARCHAR(64) DEFAULT NULL"),
+        ("permits", "contractor_license", "VARCHAR(64) DEFAULT NULL"),
     ]
 
     with engine.connect() as conn:

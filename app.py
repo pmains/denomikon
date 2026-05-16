@@ -777,7 +777,7 @@ def permits_index():
           AND d.permit_issue_date IS NOT NULL
     """
 
-    jur_tot: dict = defaultdict(lambda: {"count": 0, "sqft": 0.0, "val": 0.0})
+    jur_tot: dict = defaultdict(lambda: {"count": 0, "sqft": 0.0, "val": 0.0, "units": 0.0, "completed": 0, "co_issued": 0})
     cat_tot: dict = defaultdict(lambda: {"count": 0, "sqft": 0.0, "val": 0.0})
     type_cnt: dict = defaultdict(int)
     sqft_by_year: dict = defaultdict(lambda: defaultdict(float))
@@ -806,6 +806,34 @@ def permits_index():
         if t:
             type_cnt[t] += 1
 
+    # ── Additional per-jurisdiction aggregates ─────────────────────────
+    # Housing units, completed count, CO-issued count
+    units_sql = text(f"""
+        WITH deduped AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY COALESCE(p.permit_number, p.row_hash),
+                                     COALESCE(p.permit_square_feet, '')
+                       ORDER BY p.permit_issue_date
+                   ) AS rn
+            FROM permits p
+            WHERE {where}
+        )
+        SELECT d.jurisdiction,
+               COALESCE(SUM(CAST(NULLIF(COALESCE(d.units, d.no_units, ''), '') AS REAL)), 0) AS tot_units,
+               SUM(CASE WHEN d.permit_status IS NOT NULL AND LOWER(d.permit_status) IN ('finaled', 'final', 'completed', 'closed') THEN 1 ELSE 0 END) AS completed_count,
+               SUM(CASE WHEN d.certificate_of_occupancy_date IS NOT NULL AND d.certificate_of_occupancy_date != '' THEN 1 ELSE 0 END) AS co_issued_count
+        FROM deduped d
+        WHERE d.rn = 1
+        GROUP BY d.jurisdiction
+    """)
+    for r in session.execute(units_sql, params).all():
+        j, tu, cc, co = r
+        if j and j in jur_tot:
+            jur_tot[j]["units"] = tu
+            jur_tot[j]["completed"] = cc
+            jur_tot[j]["co_issued"] = co
+
     years = sorted(sqft_by_year.keys())
 
     # Build chart-data structures inline (no extra API round-trip)
@@ -821,7 +849,10 @@ def permits_index():
     by_jurisdiction = sorted(
         [{"jurisdiction": k, "count": v["count"],
           "total_valuation": v["val"], "total_sqft": v["sqft"],
-          "avg_valuation": v["val"] / v["count"] if v["count"] else 0}
+          "avg_valuation": v["val"] / v["count"] if v["count"] else 0,
+          "total_units": v["units"],
+          "completed_count": v["completed"],
+          "co_issued_count": v["co_issued"]}
          for k, v in jur_tot.items()],
         key=lambda r: r["count"], reverse=True,
     )

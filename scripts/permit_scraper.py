@@ -1043,7 +1043,7 @@ def _print_summary(session, group_by: Optional[str] = None):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Maricopa County Weekly Permit Activity Report scraper",
+        description="Permit scraper — Maricopa County reports + City of Tempe ArcGIS",
     )
     parser.add_argument(
         "--discover", action="store_true",
@@ -1096,6 +1096,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--force", action="store_true",
         help="Re-download even if files already exist",
+    )
+
+    # ── Tempe permit subcommand ────────────────────────────────────────
+    parser.add_argument(
+        "--tempe", action="store_true",
+        help="City of Tempe permit operations (use with --sync, --inspect-source, or --dry-run)",
+    )
+    parser.add_argument(
+        "--inspect-source", action="store_true",
+        help="Print sample records from the Tempe ArcGIS endpoint for field inspection",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Preview Tempe sync without writing to the database",
     )
     return parser
 
@@ -1214,7 +1228,7 @@ def main():
         _save_index(updated, output_dir)
 
     # ── Sync / Reparse ─────────────────────────────────────────────────
-    if args.sync or args.reparse:
+    if not args.tempe and (args.sync or args.reparse):
         # Invalidate Flask cache so stale aggregate data isn't served.
         # Permits only change on explicit sync, so cache lives forever between syncs.
         _clear_flask_cache()
@@ -1282,6 +1296,55 @@ def main():
                     pass  # Flask not running — skip pre-warm
         except Exception:
             pass
+
+    # ── Tempe: Inspect Source ──────────────────────────────────────────
+    if args.tempe and args.inspect_source:
+        from scraper.tempe_permits import inspect_source
+        inspect_source(limit=args.limit or 5)
+        return
+
+    # ── Tempe: Sync ────────────────────────────────────────────────────
+    if args.tempe and (args.sync or args.dry_run):
+        from scraper.tempe_permits import sync_permits
+        _clear_flask_cache()
+
+        db_mod = _get_db()
+        db_mod.init_db()
+        session = db_mod.get_session()
+
+        print(f"Syncing Tempe permits...", file=sys.stderr)
+        summary = sync_permits(
+            session,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            limit=args.limit,
+            dry_run=args.dry_run or args.inspect_source,
+        )
+        session.close()
+
+        print(f"\nTempe sync complete:", file=sys.stderr)
+        print(f"  Fetched:  {summary['fetched']}", file=sys.stderr)
+        print(f"  Inserted: {summary['inserted']}", file=sys.stderr)
+        print(f"  Updated:  {summary['updated']}", file=sys.stderr)
+        print(f"  Errors:   {summary['errors']}", file=sys.stderr)
+
+        # Pre-warm Flask cache
+        try:
+            import urllib.request
+            urllib.request.urlopen("http://127.0.0.1:5000/permits", timeout=10)
+        except Exception:
+            pass
+        return
+
+    # ── Tempe help ─────────────────────────────────────────────────────
+    if args.tempe and not (args.sync or args.inspect_source or args.dry_run):
+        print("Tempe permit commands:", file=sys.stderr)
+        print("  --tempe --sync           Sync all permits into database", file=sys.stderr)
+        print("  --tempe --dry-run        Preview sync (no writes)", file=sys.stderr)
+        print("  --tempe --inspect-source   Print sample ArcGIS records", file=sys.stderr)
+        print("  --tempe --sync --limit N  Sync only N latest records", file=sys.stderr)
+        print("  --tempe --sync --start-date=... --end-date=...  Date range", file=sys.stderr)
+        return
 
     # ── Summary ───────────────────────────────────────────────────────────
     if args.summary:

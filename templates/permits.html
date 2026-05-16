@@ -47,9 +47,48 @@
   <p class="text-muted">No permits found matching the current filters.</p>
   {% else %}
 
-  <!-- By Jurisdiction -->
+  <!-- Jurisdiction Comparison Summary -->
+  <div class="row g-3 mb-4">
+    {% for row in by_jurisdiction %}
+    <div class="col-md-6 d-flex">
+      <div class="card shadow-sm flex-fill">
+        <div class="card-header"><h5 class="mb-0">{{ row.jurisdiction or 'Unknown' }}</h5></div>
+        <div class="card-body">
+          <div class="row text-center">
+            <div class="col-4 mb-2">
+              <div class="small text-muted">Permits</div>
+              <strong>{{ '{:,}'.format(row.count) }}</strong>
+            </div>
+            <div class="col-4 mb-2">
+              <div class="small text-muted">Total Sq Ft</div>
+              <strong>{{ '{:,.0f}'.format(row.total_sqft) if row.total_sqft else '0' }}</strong>
+            </div>
+            <div class="col-4 mb-2">
+              <div class="small text-muted">Valuation</div>
+              <strong>${{ '{:,.0f}'.format(row.total_valuation) if row.total_valuation else '0' }}</strong>
+            </div>
+            <div class="col-4">
+              <div class="small text-muted">Housing Units</div>
+              <strong>{{ '{:,.0f}'.format(row.total_units) if row.total_units else '0' }}</strong>
+            </div>
+            <div class="col-4">
+              <div class="small text-muted">Completed</div>
+              <strong>{{ '{:,}'.format(row.completed_count) if row.completed_count else '0' }}</strong>
+            </div>
+            <div class="col-4">
+              <div class="small text-muted">CO Issued</div>
+              <strong>{{ '{:,}'.format(row.co_issued_count) if row.co_issued_count else '0' }}</strong>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- By Jurisdiction (detail table) -->
   <div class="card shadow-sm mb-4">
-    <div class="card-header"><h5 class="mb-0">By Jurisdiction</h5></div>
+    <div class="card-header"><h5 class="mb-0">By Jurisdiction — Detail</h5></div>
     <div class="table-responsive">
       <table class="table table-hover align-middle small mb-0">
         <thead class="table-light">
@@ -59,16 +98,22 @@
             <th class="text-end">Total Valuation</th>
             <th class="text-end">Avg Valuation</th>
             <th class="text-end">Total Sq Ft</th>
+            <th class="text-end">Housing Units</th>
+            <th class="text-end">Completed</th>
+            <th class="text-end">CO Issued</th>
           </tr>
         </thead>
         <tbody>
           {% for row in by_jurisdiction %}
           <tr>
             <td><strong>{{ row.jurisdiction or 'Unknown' }}</strong></td>
-            <td class="text-end">{{ row.count }}</td>
+            <td class="text-end">{{ '{:,}'.format(row.count) }}</td>
             <td class="text-end">{{ '{:,.0f}'.format(row.total_valuation) if row.total_valuation else '-' }}</td>
             <td class="text-end">{{ '{:,.0f}'.format(row.avg_valuation) if row.avg_valuation else '-' }}</td>
             <td class="text-end">{{ '{:,.0f}'.format(row.total_sqft) if row.total_sqft else '-' }}</td>
+            <td class="text-end">{{ '{:,.0f}'.format(row.total_units) if row.total_units else '0' }}</td>
+            <td class="text-end">{{ '{:,}'.format(row.completed_count) if row.completed_count else '0' }}</td>
+            <td class="text-end">{{ '{:,}'.format(row.co_issued_count) if row.co_issued_count else '0' }}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -178,8 +223,8 @@
           <th class="text-end">Valuation</th>
           <th>Address</th>
           <th>Issue Date</th>
-          <th>Owner</th>
-          <th>Contractor</th>
+          <th>Status</th>
+          <th>Owner/Contractor</th>
         </tr>
       </thead>
       <tbody>
@@ -187,14 +232,14 @@
         <tr>
           <td><code>{{ p.permit_number or '-' }}</code></td>
           <td>{{ p.jurisdiction or '-' }}</td>
-          <td>{{ p.native_type or p.permit_type or '-' }}</td>
+          <td>{{ p.native_type or p.permit_type or p.raw_permit_type or '-' }}</td>
           <td>{{ p.normalized_category or '-' }}</td>
           <td class="text-end">{{ p.permit_square_feet or '-' }}</td>
           <td class="text-end">{{ p.permit_valuation or '-' }}</td>
           <td>{{ p.job_address or '-' }}</td>
-          <td>{{ p.permit_issue_date or '-' }}</td>
-          <td>{{ p.owner_name or '-' }}</td>
-          <td>{{ p.contractor_name or '-' }}</td>
+          <td>{{ p.permit_issue_date or p.applied_date or '-' }}</td>
+          <td>{{ p.permit_status or '-' }}</td>
+          <td>{{ p.contractor_name or p.owner_name or p.project_name or '-' }}</td>
         </tr>
         {% endfor %}
       </tbody>
