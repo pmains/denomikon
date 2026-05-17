@@ -3510,6 +3510,56 @@ def seed_default_jurisdictions():
             ).scalar_one_or_none()
             if existing is None:
                 session.add(pb)
+        session.flush()
+
+        # ── City of Chandler (jurisdiction_id=3) ──
+        chandler = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == "chandler")
+        ).scalar_one_or_none()
+        if chandler is None:
+            chandler = Jurisdiction(name="City of Chandler", slug="chandler", state="AZ")
+            session.add(chandler)
+            session.flush()
+
+        chandler_bodies = [
+            PublicBody(
+                jurisdiction_id=chandler.id,
+                name="Chandler City Council",
+                slug="chandler-city-council",
+                body_code="chandler-cc",
+                body_type="Council",
+            ),
+            PublicBody(
+                jurisdiction_id=chandler.id,
+                name="Chandler Planning & Zoning Commission",
+                slug="chandler-planning-zoning-commission",
+                body_code="chandler-pz",
+                body_type="Commission",
+            ),
+            PublicBody(
+                jurisdiction_id=chandler.id,
+                name="Chandler Board of Adjustment",
+                slug="chandler-board-of-adjustment",
+                body_code="chandler-boa",
+                body_type="Board",
+            ),
+            PublicBody(
+                jurisdiction_id=chandler.id,
+                name="Chandler Development Review Commission",
+                slug="chandler-development-review-commission",
+                body_code="chandler-drc",
+                body_type="Commission",
+            ),
+        ]
+        for pb in chandler_bodies:
+            existing = session.execute(
+                select(PublicBody).where(
+                    PublicBody.jurisdiction_id == chandler.id,
+                    PublicBody.slug == pb.slug,
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(pb)
 
         session.commit()
     finally:

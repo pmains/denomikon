@@ -801,17 +801,18 @@ def permits_index():
             q = q.where(Permit.permit_issue_date.startswith(year_filter))
         return q
 
-    # ── Single-pass deduped aggregate ────────────────────────────────────
+    # ── Single dedup CTE with SQL GROUP BY ────────────────────────────────
     # Weekly reports are cumulative snapshots — the same permit can appear
-    # in many reports.  We run the dedup CTE ONCE and compute all three
-    # aggregate tables in Python to avoid 3x table scans.
+    # in many reports.  A single dedup pass removes duplicates, then SQL
+    # GROUP BY collapses the result into ~hundreds of aggregate rows that
+    # Python reshapes for the template/chart structures.
     from sqlalchemy import text as _sa_text
     from collections import defaultdict
 
     parts, params = _build_parts()
     where = " AND ".join(parts) if parts else "1=1"
 
-    sql = f"""
+    sql = _sa_text(f"""
         WITH deduped AS (
             SELECT *,
                    ROW_NUMBER() OVER (
@@ -823,15 +824,20 @@ def permits_index():
             WHERE {where}
         )
         SELECT d.jurisdiction,
-               d.normalized_category,
+               COALESCE(d.normalized_category, 'Other') AS category,
                d.native_type,
-               CAST(NULLIF(d.permit_valuation, '') AS REAL) AS val,
-               CAST(NULLIF(d.permit_square_feet, '') AS REAL) AS sqft,
-               SUBSTR(d.permit_issue_date, 1, 4) AS yr
+               SUBSTR(d.permit_issue_date, 1, 4) AS yr,
+               COUNT(*) AS cnt,
+               SUM(CAST(NULLIF(d.permit_valuation, '') AS REAL)) AS tot_val,
+               SUM(CAST(NULLIF(d.permit_square_feet, '') AS REAL)) AS tot_sqft,
+               COALESCE(SUM(CAST(NULLIF(COALESCE(d.units, d.no_units, ''), '') AS REAL)), 0) AS tot_units,
+               SUM(CASE WHEN LOWER(d.permit_status) IN ('finaled','final','completed','closed') THEN 1 ELSE 0 END) AS completed_cnt,
+               SUM(CASE WHEN d.certificate_of_occupancy_date IS NOT NULL AND d.certificate_of_occupancy_date != '' THEN 1 ELSE 0 END) AS co_cnt
         FROM deduped d
         WHERE d.rn = 1
           AND d.permit_issue_date IS NOT NULL
-    """
+        GROUP BY d.jurisdiction, d.normalized_category, d.native_type, yr
+    """)
 
     jur_tot: dict = defaultdict(lambda: {"count": 0, "sqft": 0.0, "val": 0.0, "units": 0.0, "completed": 0, "co_issued": 0})
     cat_tot: dict = defaultdict(lambda: {"count": 0, "sqft": 0.0, "val": 0.0})
@@ -841,56 +847,38 @@ def permits_index():
     val_by_year: dict = defaultdict(lambda: defaultdict(float))
     all_cats: set = set()
 
-    for r in session.execute(_sa_text(sql), params).all():
-        j, c, t, v, s, yr = r
-        v = v or 0.0
-        s = s or 0.0
+    for r in session.execute(sql, params):
+        j = r.jurisdiction
+        cat = r.category
+        t = r.native_type
+        yr = r.yr
+        cnt = r.cnt or 0
+        v = r.tot_val or 0.0
+        s = r.tot_sqft or 0.0
+        u = r.tot_units or 0.0
+        comp = r.completed_cnt or 0
+        co = r.co_cnt or 0
+
         if j:
             jt = jur_tot[j]
-            jt["count"] += 1
+            jt["count"] += cnt
             jt["sqft"] += s
             jt["val"] += v
-        cat = c or "Other"
-        if cat:
-            all_cats.add(cat)
-            ct = cat_tot[cat]
-            ct["count"] += 1
-            ct["sqft"] += s
-            ct["val"] += v
-            if yr:
-                sqft_by_year[yr][cat] += s
-                cnt_by_year[yr][cat] += 1
-                val_by_year[yr][cat] += v
-        if t:
-            type_cnt[t] += 1
+            jt["units"] += u
+            jt["completed"] += comp
+            jt["co_issued"] += co
 
-    # ── Additional per-jurisdiction aggregates ─────────────────────────
-    # Housing units, completed count, CO-issued count
-    units_sql = _sa_text(f"""
-        WITH deduped AS (
-            SELECT *,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY COALESCE(p.permit_number, p.row_hash),
-                                     COALESCE(p.permit_square_feet, '')
-                       ORDER BY p.permit_issue_date
-                   ) AS rn
-            FROM permits p
-            WHERE {where}
-        )
-        SELECT d.jurisdiction,
-               COALESCE(SUM(CAST(NULLIF(COALESCE(d.units, d.no_units, ''), '') AS REAL)), 0) AS tot_units,
-               SUM(CASE WHEN d.permit_status IS NOT NULL AND LOWER(d.permit_status) IN ('finaled', 'final', 'completed', 'closed') THEN 1 ELSE 0 END) AS completed_count,
-               SUM(CASE WHEN d.certificate_of_occupancy_date IS NOT NULL AND d.certificate_of_occupancy_date != '' THEN 1 ELSE 0 END) AS co_issued_count
-        FROM deduped d
-        WHERE d.rn = 1
-        GROUP BY d.jurisdiction
-    """)
-    for r in session.execute(units_sql, params).all():
-        j, tu, cc, co = r
-        if j and j in jur_tot:
-            jur_tot[j]["units"] = tu
-            jur_tot[j]["completed"] = cc
-            jur_tot[j]["co_issued"] = co
+        all_cats.add(cat)
+        ct = cat_tot[cat]
+        ct["count"] += cnt
+        ct["sqft"] += s
+        ct["val"] += v
+        if yr:
+            sqft_by_year[yr][cat] += s
+            cnt_by_year[yr][cat] += cnt
+            val_by_year[yr][cat] += v
+        if t:
+            type_cnt[t] += cnt
 
     # Ensure explicitly selected categories appear in chart data even with zero records
     if selected_categories:
@@ -912,6 +900,7 @@ def permits_index():
         for c in cats_ordered
     ]
 
+    _EXCLUDED_JURISDICTIONS = {"City of Chandler"}
     by_jurisdiction = sorted(
         [{"jurisdiction": k, "count": v["count"],
           "total_valuation": v["val"], "total_sqft": v["sqft"],
@@ -919,7 +908,7 @@ def permits_index():
           "total_units": v["units"],
           "completed_count": v["completed"],
           "co_issued_count": v["co_issued"]}
-         for k, v in jur_tot.items()],
+         for k, v in jur_tot.items() if k not in _EXCLUDED_JURISDICTIONS],
         key=lambda r: r["count"], reverse=True,
     )
 
@@ -953,9 +942,12 @@ def permits_index():
     # Compute zero-categories note: selected categories with zero matching records
     zero_categories = [c for c in selected_categories if cat_tot.get(c, {}).get("count", 0) == 0]
 
-    jurisdictions = session.execute(
-        select(Permit.jurisdiction).distinct().where(Permit.jurisdiction.isnot(None)).order_by(Permit.jurisdiction)
-    ).scalars().all()
+    jurisdictions = [
+        j for j in session.execute(
+            select(Permit.jurisdiction).distinct().where(Permit.jurisdiction.isnot(None)).order_by(Permit.jurisdiction)
+        ).scalars().all()
+        if j not in _EXCLUDED_JURISDICTIONS
+    ]
 
     # When year is selected, also filter jurisdictions to those active that year
     if year_filter:
@@ -965,7 +957,7 @@ def permits_index():
         )
         filtered_jurs = [r[0] for r in session.execute(jur_q.order_by(Permit.jurisdiction)).all()]
         if filtered_jurs:
-            jurisdictions = filtered_jurs
+            jurisdictions = [j for j in filtered_jurs if j not in _EXCLUDED_JURISDICTIONS]
 
     categories = all_categories  # from backward-compat query above
 

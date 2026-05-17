@@ -1103,6 +1103,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--tempe", action="store_true",
         help="City of Tempe permit operations (use with --sync, --inspect-source, or --dry-run)",
     )
+    # ── Chandler permit subcommand ────────────────────────────────────
+    parser.add_argument(
+        "--chandler", action="store_true",
+        help="City of Chandler permit operations (use with --sync, --inspect-source, or --dry-run)",
+    )
     parser.add_argument(
         "--inspect-source", action="store_true",
         help="Print sample records from the Tempe ArcGIS endpoint for field inspection",
@@ -1228,7 +1233,7 @@ def main():
         _save_index(updated, output_dir)
 
     # ── Sync / Reparse ─────────────────────────────────────────────────
-    if not args.tempe and (args.sync or args.reparse):
+    if not args.tempe and not args.chandler and (args.sync or args.reparse):
         # Invalidate Flask cache so stale aggregate data isn't served.
         # Permits only change on explicit sync, so cache lives forever between syncs.
         _clear_flask_cache()
@@ -1334,6 +1339,52 @@ def main():
             urllib.request.urlopen("http://127.0.0.1:5000/permits", timeout=10)
         except Exception:
             pass
+        return
+
+    # ── Chandler: Inspect Source ──────────────────────────────────────
+    if args.chandler and args.inspect_source:
+        from scraper.chandler_permits import inspect_all
+        inspect_all(limit=args.limit or 3)
+        return
+
+    # ── Chandler: Sync ────────────────────────────────────────────────
+    if args.chandler and (args.sync or args.dry_run):
+        from scraper.chandler_permits import sync_permits
+        _clear_flask_cache()
+
+        db_mod = _get_db()
+        db_mod.init_db()
+        session = db_mod.get_session()
+
+        print(f"Syncing Chandler permits...", file=sys.stderr)
+        summary = sync_permits(
+            session,
+            limit=args.limit,
+            dry_run=args.dry_run or args.inspect_source,
+        )
+        session.close()
+
+        print(f"\nChandler sync complete:", file=sys.stderr)
+        print(f"  Fetched:  {summary['fetched']}", file=sys.stderr)
+        print(f"  Inserted: {summary['inserted']}", file=sys.stderr)
+        print(f"  Updated:  {summary['updated']}", file=sys.stderr)
+        print(f"  Errors:   {summary['errors']}", file=sys.stderr)
+
+        # Pre-warm Flask cache
+        try:
+            import urllib.request
+            urllib.request.urlopen("http://127.0.0.1:5000/permits", timeout=10)
+        except Exception:
+            pass
+        return
+
+    # ── Chandler help ─────────────────────────────────────────────────
+    if args.chandler and not (args.sync or args.inspect_source or args.dry_run):
+        print("Chandler permit commands:", file=sys.stderr)
+        print("  --chandler --sync           Sync all permits into database", file=sys.stderr)
+        print("  --chandler --dry-run        Preview sync (no writes)", file=sys.stderr)
+        print("  --chandler --inspect-source   Print sample ArcGIS records from all layers", file=sys.stderr)
+        print("  --chandler --sync --limit N  Sync only N latest records per layer", file=sys.stderr)
         return
 
     # ── Tempe help ─────────────────────────────────────────────────────
