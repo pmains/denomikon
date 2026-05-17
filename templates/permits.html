@@ -189,6 +189,64 @@
   </div>
   {% endif %}
 
+  <!-- Charts (before By Category) -->
+  <div class="row g-3 mb-4">
+    <div class="col-lg-4 d-flex">
+      <div class="card shadow-sm flex-fill">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="mb-0">Square Footage by Category</h5>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="openChartModal('sqftByCatChart', 'Sq Ft', 'sqft_by_year', v => Number(v).toLocaleString() + ' sqft')" title="View larger">
+            <i class="bi bi-arrows-angle-expand"></i>
+          </button>
+        </div>
+        <div class="card-body">
+          <canvas id="sqftByCatChart" height="200"></canvas>
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-4 d-flex">
+      <div class="card shadow-sm flex-fill">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="mb-0">Permit Count by Category</h5>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="openChartModal('countByCatChart', 'Permits', 'permits_by_year', v => Number(v).toLocaleString() + ' permits')" title="View larger">
+            <i class="bi bi-arrows-angle-expand"></i>
+          </button>
+        </div>
+        <div class="card-body">
+          <canvas id="countByCatChart" height="200"></canvas>
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-4 d-flex">
+      <div class="card shadow-sm flex-fill">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="mb-0">Total Valuation by Category</h5>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="openChartModal('valByCatChart', 'Valuation', 'valuation_by_year', v => '$' + Number(v).toLocaleString())" title="View larger">
+            <i class="bi bi-arrows-angle-expand"></i>
+          </button>
+        </div>
+        <div class="card-body">
+          <canvas id="valByCatChart" height="200"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chart enlarge modal -->
+  <div class="modal fade" id="chartModal" tabindex="-1" aria-labelledby="chartModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="chartModalLabel">Chart</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <canvas id="modalChartCanvas" height="400"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- By Category -->
   <div class="card shadow-sm mb-4">
     <div class="card-header"><h5 class="mb-0">By Category</h5></div>
@@ -245,34 +303,6 @@
   </div>
 
   {% endif %}
-
-  <!-- Charts -->
-  <div class="row g-3 mb-4">
-    <div class="col-lg-4 d-flex">
-      <div class="card shadow-sm flex-fill">
-        <div class="card-header"><h5 class="mb-0">Square Footage by Category</h5></div>
-        <div class="card-body">
-          <canvas id="sqftByCatChart" height="200"></canvas>
-        </div>
-      </div>
-    </div>
-    <div class="col-lg-4 d-flex">
-      <div class="card shadow-sm flex-fill">
-        <div class="card-header"><h5 class="mb-0">Permit Count by Category</h5></div>
-        <div class="card-body">
-          <canvas id="countByCatChart" height="200"></canvas>
-        </div>
-      </div>
-    </div>
-    <div class="col-lg-4 d-flex">
-      <div class="card shadow-sm flex-fill">
-        <div class="card-header"><h5 class="mb-0">Total Valuation by Category</h5></div>
-        <div class="card-body">
-          <canvas id="valByCatChart" height="200"></canvas>
-        </div>
-      </div>
-    </div>
-  </div>
 
 {% elif view == 'raw' %}
 
@@ -392,7 +422,7 @@ function makeCatChart(id, label, byYearAccessor, fmt) {
     // Collect categories sorted by total value descending
     const catOrder = [...totals].sort((a, b) => b.count - a.count).map(t => t.category);
 
-    new Chart(ctx, {
+    return new Chart(ctx, {
       type: 'line',
       data: {
         labels: years,
@@ -429,7 +459,7 @@ function makeCatChart(id, label, byYearAccessor, fmt) {
     });
   } else {
     // Bar chart: one bar per category (horizontal)
-    new Chart(ctx, {
+    return new Chart(ctx, {
       type: 'bar',
       data: {
         labels: totals.map(t => t.category),
@@ -455,9 +485,48 @@ function makeCatChart(id, label, byYearAccessor, fmt) {
   }
 }
 
-makeCatChart('sqftByCatChart', 'Sq Ft', 'sqft_by_year', v => Number(v).toLocaleString() + ' sqft');
-makeCatChart('countByCatChart', 'Permits', 'permits_by_year', v => Number(v).toLocaleString() + ' permits');
-makeCatChart('valByCatChart', 'Valuation', 'valuation_by_year', v => '$' + Number(v).toLocaleString());
+// Store chart instances for cleanup
+const chartInstances = {};
+
+chartInstances.sqft = makeCatChart('sqftByCatChart', 'Sq Ft', 'sqft_by_year', v => Number(v).toLocaleString() + ' sqft');
+chartInstances.count = makeCatChart('countByCatChart', 'Permits', 'permits_by_year', v => Number(v).toLocaleString() + ' permits');
+chartInstances.val = makeCatChart('valByCatChart', 'Valuation', 'valuation_by_year', v => '$' + Number(v).toLocaleString());
+
+// ── Chart modal ──────────────────────────────────────────────────────────
+
+let modalChartInstance = null;
+
+function openChartModal(sourceId, label, byYearAccessor, fmt) {
+  const modalEl = document.getElementById('chartModal');
+  const canvas = document.getElementById('modalChartCanvas');
+
+  // Set modal title
+  const sourceCard = document.getElementById(sourceId).closest('.card');
+  const titleEl = sourceCard ? sourceCard.querySelector('.card-header h5') : null;
+  document.getElementById('chartModalLabel').textContent = titleEl ? titleEl.textContent.trim() : 'Chart';
+
+  // Destroy previous modal chart if any
+  if (modalChartInstance) {
+    modalChartInstance.destroy();
+    modalChartInstance = null;
+  }
+
+  // Create chart on the modal canvas
+  modalChartInstance = makeCatChart('modalChartCanvas', label, byYearAccessor, fmt);
+
+  // Show modal via Bootstrap
+  const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+  modal.show();
+
+  // Destroy modal chart when modal hides
+  modalEl.addEventListener('hidden.bs.modal', function cleanup() {
+    modalEl.removeEventListener('hidden.bs.modal', cleanup);
+    if (modalChartInstance) {
+      modalChartInstance.destroy();
+      modalChartInstance = null;
+    }
+  }, { once: true });
+}
 
 // ── Filter panel helpers ──────────────────────────────────────────────────
 
