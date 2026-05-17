@@ -3560,6 +3560,56 @@ def seed_default_jurisdictions():
             ).scalar_one_or_none()
             if existing is None:
                 session.add(pb)
+        session.flush()
+
+        # ── City of Phoenix (jurisdiction_id=4) ──
+        phoenix = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == "phoenix")
+        ).scalar_one_or_none()
+        if phoenix is None:
+            phoenix = Jurisdiction(name="City of Phoenix", slug="phoenix", state="AZ")
+            session.add(phoenix)
+            session.flush()
+
+        phoenix_bodies = [
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix City Council",
+                slug="phoenix-city-council",
+                body_code="phoenix-cc",
+                body_type="Council",
+            ),
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix Planning Commission",
+                slug="phoenix-planning-commission",
+                body_code="phoenix-pc",
+                body_type="Commission",
+            ),
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix Board of Adjustment",
+                slug="phoenix-board-of-adjustment",
+                body_code="phoenix-boa",
+                body_type="Board",
+            ),
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix Village Planning Committees",
+                slug="phoenix-village-planning",
+                body_code="phoenix-vpc",
+                body_type="Committee",
+            ),
+        ]
+        for pb in phoenix_bodies:
+            existing = session.execute(
+                select(PublicBody).where(
+                    PublicBody.jurisdiction_id == phoenix.id,
+                    PublicBody.slug == pb.slug,
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(pb)
 
         session.commit()
     finally:

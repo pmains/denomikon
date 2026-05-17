@@ -1043,7 +1043,7 @@ def _print_summary(session, group_by: Optional[str] = None):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Permit scraper — Maricopa County reports + City of Tempe ArcGIS",
+        description="Permit scraper — Maricopa County XLSX, Tempe/Chandler/Phoenix ArcGIS, Phoenix PDD CSV export",
     )
     parser.add_argument(
         "--discover", action="store_true",
@@ -1108,13 +1108,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--chandler", action="store_true",
         help="City of Chandler permit operations (use with --sync, --inspect-source, or --dry-run)",
     )
+    # ── Phoenix permit subcommand ────────────────────────────────────
+    parser.add_argument(
+        "--phoenix", action="store_true",
+        help="City of Phoenix permit operations (use with --sync, --pdd-sync, --pdd-inspect, --inspect-source, or --dry-run)",
+    )
+    parser.add_argument(
+        "--pdd-sync", action="store_true",
+        help="Sync Phoenix PDD Issued Permits from CSV export (use with --phoenix)",
+    )
+    parser.add_argument(
+        "--pdd-inspect", action="store_true",
+        help="Inspect sample PDD CSV data (use with --phoenix)",
+    )
     parser.add_argument(
         "--inspect-source", action="store_true",
-        help="Print sample records from the Tempe ArcGIS endpoint for field inspection",
+        help="Print sample records from the ArcGIS endpoint for field inspection",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
-        help="Preview Tempe sync without writing to the database",
+        help="Preview sync without writing to the database",
     )
     return parser
 
@@ -1233,7 +1246,7 @@ def main():
         _save_index(updated, output_dir)
 
     # ── Sync / Reparse ─────────────────────────────────────────────────
-    if not args.tempe and not args.chandler and (args.sync or args.reparse):
+    if not args.tempe and not args.chandler and not args.phoenix and (args.sync or args.reparse):
         # Invalidate Flask cache so stale aggregate data isn't served.
         # Permits only change on explicit sync, so cache lives forever between syncs.
         _clear_flask_cache()
@@ -1378,6 +1391,103 @@ def main():
             pass
         return
 
+    # ── Phoenix: PDD Inspect ────────────────────────────────────────
+    if args.phoenix and args.pdd_inspect:
+        from scraper.phoenix_permits import inspect_pdd_source
+        inspect_pdd_source(limit=args.limit or 10)
+        return
+
+    # ── Phoenix: PDD Sync ────────────────────────────────────────────
+    if args.phoenix and args.pdd_sync:
+        from scraper.phoenix_permits import (
+            sync_pdd_permits,
+            sync_pdd_all,
+        )
+        _clear_flask_cache()
+
+        db_mod = _get_db()
+        db_mod.init_db()
+        session = db_mod.get_session()
+
+        if args.start_date and args.end_date:
+            # Custom date range sync
+            from datetime import date as _date
+            start = _date.fromisoformat(args.start_date)
+            end = _date.fromisoformat(args.end_date)
+            print(f"Syncing Phoenix PDD permits {start} to {end}...", file=sys.stderr)
+            summary = sync_pdd_permits(
+                session,
+                start,
+                end,
+                limit=args.limit,
+                dry_run=args.dry_run,
+            )
+        else:
+            # Full historical sync
+            pdd_start = None
+            if args.start_date:
+                from datetime import date as _date
+                pdd_start = _date.fromisoformat(args.start_date)
+            print(f"Running full historical PDD permit sync (from {pdd_start or '2004-01-01'})...", file=sys.stderr)
+            summary = sync_pdd_all(
+                session,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                start_date=pdd_start,
+            )
+        session.close()
+
+        print(f"\nPhoenix PDD sync complete:", file=sys.stderr)
+        print(f"  Fetched:  {summary['fetched']}", file=sys.stderr)
+        print(f"  Inserted: {summary['inserted']}", file=sys.stderr)
+        print(f"  Updated:  {summary['updated']}", file=sys.stderr)
+        print(f"  Errors:   {summary['errors']}", file=sys.stderr)
+
+        # Pre-warm Flask cache
+        try:
+            import urllib.request
+            urllib.request.urlopen("http://127.0.0.1:5000/permits", timeout=10)
+        except Exception:
+            pass
+        return
+
+    # ── Phoenix: Inspect Source ──────────────────────────────────────
+    if args.phoenix and args.inspect_source:
+        from scraper.phoenix_permits import inspect_source
+        inspect_source(limit=args.limit or 5)
+        return
+
+    # ── Phoenix: Sync (ArcGIS) ───────────────────────────────────────
+    if args.phoenix and (args.sync or args.dry_run):
+        from scraper.phoenix_permits import sync_permits
+        _clear_flask_cache()
+
+        db_mod = _get_db()
+        db_mod.init_db()
+        session = db_mod.get_session()
+
+        print(f"Syncing Phoenix permits (ArcGIS)...", file=sys.stderr)
+        summary = sync_permits(
+            session,
+            limit=args.limit,
+            dry_run=args.dry_run or args.inspect_source,
+        )
+        session.close()
+
+        print(f"\nPhoenix sync complete:", file=sys.stderr)
+        print(f"  Fetched:  {summary['fetched']}", file=sys.stderr)
+        print(f"  Inserted: {summary['inserted']}", file=sys.stderr)
+        print(f"  Updated:  {summary['updated']}", file=sys.stderr)
+        print(f"  Errors:   {summary['errors']}", file=sys.stderr)
+
+        # Pre-warm Flask cache
+        try:
+            import urllib.request
+            urllib.request.urlopen("http://127.0.0.1:5000/permits", timeout=10)
+        except Exception:
+            pass
+        return
+
     # ── Chandler help ─────────────────────────────────────────────────
     if args.chandler and not (args.sync or args.inspect_source or args.dry_run):
         print("Chandler permit commands:", file=sys.stderr)
@@ -1385,6 +1495,19 @@ def main():
         print("  --chandler --dry-run        Preview sync (no writes)", file=sys.stderr)
         print("  --chandler --inspect-source   Print sample ArcGIS records from all layers", file=sys.stderr)
         print("  --chandler --sync --limit N  Sync only N latest records per layer", file=sys.stderr)
+        return
+
+    # ── Phoenix help ──────────────────────────────────────────────────
+    if args.phoenix and not (args.sync or args.pdd_sync or args.pdd_inspect or args.inspect_source or args.dry_run):
+        print("Phoenix permit commands:", file=sys.stderr)
+        print("  --phoenix --sync               Sync ArcGIS Layer 1 permits", file=sys.stderr)
+        print("  --phoenix --pdd-sync           Sync PDD CSV export (full historical 2004-today)", file=sys.stderr)
+        print("  --phoenix --pdd-sync --start-date=... --end-date=...  Custom date range", file=sys.stderr)
+        print("  --phoenix --pdd-sync --limit=N Capped test", file=sys.stderr)
+        print("  --phoenix --pdd-inspect        Print sample PDD CSV rows", file=sys.stderr)
+        print("  --phoenix --dry-run            Preview sync (no writes)", file=sys.stderr)
+        print("  --phoenix --inspect-source     Print sample ArcGIS records", file=sys.stderr)
+        print("  --phoenix --sync --limit N     Sync only N latest ArcGIS records", file=sys.stderr)
         return
 
     # ── Tempe help ─────────────────────────────────────────────────────

@@ -1,27 +1,46 @@
-# Maricopa County Board of Supervisors & Planning & Zoning Agenda Tracker
+# Poliscopic — Arizona Public Governance & Development Intelligence
 
-Extract, organize, and persist Maricopa County public governance materials
-from the Agenda Online and AgendaCenter platforms.
+Extract, organize, and persist public governance materials and development
+permit data from Arizona jurisdictions.
 
-## Features
+## What it does
 
-- **Meeting discovery** — search for BOS and P&Z meetings by date range
-- **Agenda item extraction** — parse structured agenda items (items, C-numbers,
-  titles, descriptions, case numbers)
-- **Supporting document extraction** — discover and link attachment PDFs to
-  agenda items
-- **P&Z Agenda PDF parsing** — for Planning & Zoning meetings, downloads the
-  actual agenda PDF and extracts real agenda items (case numbers, project
-  names, applicants, recommendations, etc.)
-- **Body-scoped identity** — BOS and P&Z use separate `body` namespaces
-  (`bos`/`pz`) so meeting IDs never collide
-- **Resumable sync** — tracks sync status per meeting (`complete`, `partial`,
-  `failed`, `manual_review`, `pending`). Retry only meetings that need it.
-- **Vote tracking** — extract roll-call votes from meeting summaries and track
-  individual supervisor votes
-- **Case tracking** — track case numbers across meetings (BOS → P&Z cross-references)
-- **Web app** — Flask web UI with filtering, pagination, and meeting detail pages
-- **Inspect & query** — CLI tools to explore the database
+Poliscopic ingests and displays two categories of public data:
+
+### Meeting & Agenda Tracking
+
+- BOS, P&Z, Board of Adjustment, Board of Health, Drainage Review Board,
+  Transportation Advisory Board, Industrial Development Authority, Tempe City
+  Council, and other Tempe boards
+- Agenda item and supporting document extraction
+- Vote tracking and case-number cross-referencing
+
+### Development Permit Analysis
+
+Structured permit data from **four jurisdictions** with cross-jurisdiction
+category and work-type normalization:
+
+| Jurisdiction | Records | Source | Coverage |
+|---|---|---|---|
+| **City of Phoenix** | ~728,000 | PDD CSV Export | 2004–present |
+| **Maricopa County** | ~150,000 | Weekly XLSX reports | 2012–present |
+| **City of Tempe** | ~19,000 | ArcGIS FeatureServer | 2019–present |
+| **City of Chandler** | ~1,700 | DSActiveProjects | 2017–2025 |
+
+Phoenix provides the richest dataset with valuation, zoning, parcel numbers,
+contractor, owner, and completion dates. Data is normalized into a shared
+category model (Residential, Commercial, Industrial, Mixed-Use, Other) and
+work type model (New Construction, Addition, Alteration, Trade, Demolition,
+Infrastructure, Unknown).
+
+### Web App
+
+Bootstrap 5 Flask UI with:
+- Permit overview with summary charts and category breakdowns
+- Year, jurisdiction, category, and work-type filter panel
+- Summary and raw-permit views with pagination
+- Meeting browser with sync status badges and detail pages
+- Jurisdiction-aware member rosters and voting records
 
 ## Requirements
 
@@ -58,6 +77,33 @@ Optional (for PDF parsing only):
 
 ## Usage
 
+### Permits — CLI
+
+```bash
+# City of Phoenix — PDD CSV export (rich fields: valuation, zoning, parcel)
+python scripts/permit_scraper.py --phoenix --pdd-sync                        # Full sync (2004-today)
+python scripts/permit_scraper.py --phoenix --pdd-sync --dry-run              # Preview
+python scripts/permit_scraper.py --phoenix --pdd-sync --start-date=2026-01-01 --end-date=2026-02-01
+python scripts/permit_scraper.py --phoenix --pdd-inspect                     # Sample a week of data
+
+# City of Phoenix — ArcGIS Planning/Permit Layer (2-year window, coordinates)
+python scripts/permit_scraper.py --phoenix --sync                            # Full sync
+python scripts/permit_scraper.py --phoenix --inspect-source                  # Sample records
+
+# City of Tempe — ArcGIS Accela Building Permits
+python scripts/permit_scraper.py --tempe --sync                              # Full sync
+python scripts/permit_scraper.py --tempe --inspect-source                    # Sample records
+python scripts/permit_scraper.py --tempe --dry-run                           # Preview
+
+# City of Chandler — DSActiveProjects (high-profile development only)
+python scripts/permit_scraper.py --chandler --sync                           # Full sync
+python scripts/permit_scraper.py --chandler --inspect-source                 # Sample records
+
+# Maricopa County — Weekly XLSX activity reports
+python scripts/permit_scraper.py --discover --download --sync                # Full pipeline
+python scripts/permit_scraper.py --summary --by month                        # Aggregate summary
+```
+
 ### Web App
 
 ```bash
@@ -65,8 +111,8 @@ python app.py
 # Opens at http://127.0.0.1:5000/meetings
 ```
 
-Browse meetings in a Bootstrap 5 table with sync status badges, filters by
-body/type/date, and pagination.
+Browse meetings and permits in a Bootstrap 5 table with sync status badges,
+filters by body/type/date/jurisdiction, and pagination.
 
 ### Database
 
@@ -164,17 +210,14 @@ meetings (Zoning Infrastructure Policy Procedure Ordinance Review) are
 supported but use a different PDF format with slightly different item
 structure.
 
-## Legacy --sync-pz (deprecated)
+## Body-Scoped Identity
 
-The old `--sync-pz` flag still works but prints a deprecation warning:
+All bodies (BOS, PZ, ADJ, DRAIN, Health, TAB, IDA, Tempe bodies) use separate
+`body` namespaces so meeting IDs never collide. This allows one-click
+cross-referencing: when a PZ case number appears on a BOS agenda item (or vice
+versa), both meetings can be found without ID prefix hacks.
 
-```bash
-# Old style (deprecated, prints warning):
-python scripts/agenda_scraper.py --sync-pz --pz-start-date=01/01/2026
-
-# New style (preferred):
-python scripts/agenda_scraper.py pz --sync --start-date=2026-01-01
-```
+The `--body` filter is available on inspect commands and in the web UI.
 
 ## Inspect the database
 
@@ -233,19 +276,6 @@ python scripts/inspect_db.py case CPA250011
 python scripts/inspect_db.py case-history CPA250011      # alias
 ```
 
-## Body-Scoped Identity
-
-BOS and P&Z meetings share the same meeting_id namespace when stored in the
-database, differentiated by the `body` column:
-
-- `body="bos"` — Board of Supervisors
-- `body="pz"` — Planning & Zoning
-
-This allows one-click cross-referencing: when a PZ case number appears on a BOS
-agenda item (or vice versa), both meetings can be found without ID prefix hacks.
-
-The `--body` filter is available on inspect commands and in the web UI.
-
 ## Routes
 
 | Path | Description |
@@ -258,7 +288,8 @@ The `--body` filter is available on inspect commands and in the web UI.
 | `/members` | Unified member index (redirects to /bodies) |
 | `/members/<id>` | Individual member profile and voting record |
 | `/members/<slug>/analytics` | Voting analytics for a member |
-| `/permits` | Permit list with jurisdiction and category filters |
+| `/permits` | Permit overview with summary, charts, detail table, and raw list |
+| `/permits/category/<name>` | Year-over-year breakdown for a single permit category |
 | `/c-number/<c_number_base>` | Case number revision history |
 
 ## Data Model
@@ -266,16 +297,26 @@ The `--body` filter is available on inspect commands and in the web UI.
 See `scripts/db.py` for the full SQLAlchemy model definitions.
 
 Key entities:
-- **Jurisdiction** — A county, city, or town (e.g., Maricopa County)
+- **Jurisdiction** — A county, city, or town (e.g., Maricopa County, City of Phoenix)
 - **PublicBody** — A board, commission, or committee within a jurisdiction
 - **PublicBodyMember** — A person who serves or served on a public body (title, district/seat, date range)
 - **Meeting** — A meeting of a public body with agendas, documents, and voting records
-- **Permit** — A permit extracted from weekly activity reports (jurisdiction-aware)
+- **Permit** — A permit extracted from jurisdiction-specific sources (source_system-tagged, jurisdiction-aware)
 
-## Architecture Notes
+### Permit data sources
 
-- Permit schemas differ by jurisdiction. The `native_type` and `native_category` fields preserve the original label, while `normalized_category` provides cross-jurisdiction filtering (Residential, Commercial, Industrial, Mixed-Use, Other).
-- Member status (active/inactive) is derived from `active_to` dates, not from meeting attendance. A member absent from a meeting is still a current member.
+| `source_system` | Jurisdiction | Integration method |
+|---|---|---|
+| `tempe_arcgis_accela_building_permits` | City of Tempe | ArcGIS FeatureServer REST |
+| `phoenix_pdd` | City of Phoenix | PDD Excel-to-CSV export endpoint |
+| `phoenix_arcgis_planning_permit` | City of Phoenix | ArcGIS MapServer (2-year window) |
+| `chandler_arcgis_dsactiveprojects` | City of Chandler | ArcGIS MapServer (high-profile only) |
+| `unknown` (default) | Maricopa County | XLSX report extraction |
+
+Permit schemas differ by source. The `native_type` and `native_category` fields
+preserve the original label, while `normalized_category` provides
+cross-jurisdiction filtering (Residential, Commercial, Industrial, Mixed-Use,
+Other).
 
 ## Database Schema (Legacy)
 
@@ -291,7 +332,7 @@ Key entities:
 - **case_events** — event history per case (agenda appearance, hearings, votes)
 - **jurisdictions** — Government jurisdictions (counties, cities, towns)
 - **public_bodies** — Boards, commissions, committees within a jurisdiction
-- **permits** — Permit records extracted from weekly activity reports
+- **permits** — Permit records extracted from jurisdiction-specific pipelines
 - **permit_reports** — Weekly permit activity report (XLSX) metadata
 - **public_body_members** — Membership roster for public bodies
 - **meeting_attendance** — Per-meeting attendance records
@@ -309,33 +350,26 @@ The `sync_status` field tracks:
 
 ```
 scripts/
-  agenda_scraper.py   Main scraper tool
-  db.py                        Persistence layer (SQLAlchemy models)
-  inspect_db.py                Database inspection CLI
-app.py                         Flask web application
+  scraper/
+    tempe_permits.py       City of Tempe ArcGIS permit scraper
+    chandler_permits.py    City of Chandler DSActiveProjects scraper
+    phoenix_permits.py     City of Phoenix ArcGIS + PDD CSV scraper
+    agenda_scraper.py      Main agenda/meeting scraper CLI
+    ...
+  permit_scraper.py        Unified permit scraping CLI (--tempe, --chandler, --phoenix)
+  db.py                    Persistence layer (SQLAlchemy models)
+  inspect_db.py            Database inspection CLI
+app.py                     Flask web application
 templates/
-  base.html                    Base template
-  meetings.html                Meeting list with pagination
-  meeting_detail.html          Meeting detail with items/docs/votes
-  c_number.html                C-number revision history
+  base.html                Base template
+  permits.html             Permit overview with charts, filters, tables
+  permit_category.html     Year-over-year category breakdown
+  meetings.html            Meeting list with pagination
+  meeting_detail.html      Meeting detail with items/docs/votes
+  ...
 data/
-  maricopa.sqlite              SQLite database
-  agendas/                     Downloaded agenda PDFs
-  agenda-items/                Extracted CSV exports
-  supporting-materials/        Downloaded supporting documents
-tests/
-  test_agenda_scraper.py
-  test_persistence.py
-  test_cli.py
-  test_inspect_db.py
-  test_meeting_normalization.py
-  test_metadata_parsing.py
-  test_supporting_docs.py
-  test_capture_fixtures.py
-  test_tiers.py
-  test_agenda_item_extraction.py
-README.md
-requirements.txt
+  maricopa.sqlite          SQLite database
+  phoenix/                 Phoenix discovery artifacts (ArcGIS metadata, samples)
 ```
 
 ## Tests
@@ -345,6 +379,9 @@ requirements.txt
 python -m unittest discover -s tests
 # or
 python -m pytest tests/
+
+# Run permit-specific tests
+python -m pytest tests/test_tempe_permits.py -v
 ```
 
 ## Performance Optimizations
@@ -361,23 +398,19 @@ The following PRAGMAs are applied automatically on every connection:
 | `cache_size` | -20000 | 20 MB page cache |
 | `foreign_keys` | ON | Enforce referential integrity |
 
-### Database Indexes
+### Cold-Render Optimization
 
-Additional indexes are created by `--init-db` for common access patterns:
-
-- `meetings(meeting_date DESC)` — the meetings list page
-- `meetings(meeting_type)` — filter-by-type queries
-- `agenda_items(meeting_id)` — meeting detail items
-- `agenda_items(c_number)`, `agenda_items(c_number_base)` — case-number lookups
-- `agenda_items(agenda_item_number)` — item ordering
+The permits aggregate query uses a single dedup CTE with SQL GROUP BY instead
+of loading all matching rows into Python memory (reduced from ~170k rows to
+~500 aggregate rows). The result is cached with Flask-Caching (7-day TTL).
 
 ### Server-Side Caching
 
-Flask-Caching is configured with a **FileSystemCache** backend (60-second default
-TTL) and caches the following routes:
+Flask-Caching caches the following routes:
 
 | Route | Cache TTL | Notes |
 |---|---|---|
+| `/permits` | 7 days | Varies by query string |
 | `/meetings` | 60s | Varies by query string (body, type, date, page) |
 | `/meetings/<id>` | 120s | Per-meeting detail |
 | `/members` | 120s | Member directory |
@@ -388,34 +421,31 @@ The cache directory is `.cache/flask-cache/` and is auto-created.
 
 Every request over 1 second is logged as a warning with the elapsed time:
 ```
-WARNING:/meetings 1.4s
+WARNING:/permits 1.4s
 ```
 
 ### Benchmarking
 
 ```bash
 # Requires the Flask app to be running on :5000
-
-# Default: 10 warm-up, 20 measured requests
 python scripts/benchmark.py
-
-# Uncached benchmark (adds _=timestamp to bypass cache key)
-python scripts/benchmark.py --no-cache
-
-# Test a different endpoint
-python scripts/benchmark.py --endpoint=/members --requests=5 --warmup=2
 ```
 
-### Recommended sync workflow
+## Recommended sync workflow (weekly)
 
 ```bash
-# First sync (slow — downloads 750+ permit reports)
+# Maricopa County permit reports
 python scripts/permit_scraper.py --discover --download --sync
 
-# Weekly incremental
-python scripts/permit_scraper.py --discover --download --sync --limit 1
+# City of Tempe — incremental (syncs only new records)
+python scripts/permit_scraper.py --tempe --sync
 
-# Explore permits
-python scripts/permit_scraper.py --summary --by month
-python scripts/permit_scraper.py --summary --by city
+# City of Chandler — re-sync (DSActiveProjects is curated, not incremental)
+python scripts/permit_scraper.py --chandler --sync
+
+# City of Phoenix — incremental PDD (date-range loop handles dedup)
+python scripts/permit_scraper.py --phoenix --pdd-sync
+
+# Pre-warm Flask cache
+python scripts/permit_scraper.py --phoenix --pdd-sync --start-date=2026-05-01 --end-date=2026-05-16
 ```
