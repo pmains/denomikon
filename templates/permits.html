@@ -125,16 +125,16 @@
                 <strong>${{ '{:,.0f}'.format(row.total_valuation) if row.total_valuation else '0' }}</strong>
               </div>
               <div class="col-4">
-                <div class="small text-muted">Units</div>
+                <div class="small text-muted">New Housing Units</div>
                 <strong>{{ '{:,.0f}'.format(row.total_units) if row.total_units else '0' }}</strong>
               </div>
               <div class="col-4">
                 <div class="small text-muted">Completed</div>
-                <strong>{{ '{:,}'.format(row.completed_count) if row.completed_count else '0' }}</strong>
+                <strong>{{ '{:,}'.format(row.completed_count) if row.completed_count else '-' }}</strong>
               </div>
               <div class="col-4">
-                <div class="small text-muted">CO Issued</div>
-                <strong>{{ '{:,}'.format(row.co_issued_count) if row.co_issued_count else '0' }}</strong>
+                <div class="small text-muted">Occupancy Issued</div>
+                <strong>{{ '{:,}'.format(row.co_issued_count) if row.co_issued_count else '-' }}</strong>
               </div>
             </div>
           </div>
@@ -165,9 +165,9 @@
             <th class="text-end">Total Valuation</th>
             <th class="text-end">Avg Valuation</th>
             <th class="text-end">Total Sq Ft</th>
-            <th class="text-end">Housing Units</th>
+            <th class="text-end">New Housing Units</th>
             <th class="text-end">Completed</th>
-            <th class="text-end">CO Issued</th>
+            <th class="text-end">Occupancy Issued</th>
           </tr>
         </thead>
         <tbody>
@@ -179,8 +179,8 @@
             <td class="text-end">{{ '{:,.0f}'.format(row.avg_valuation) if row.avg_valuation else '-' }}</td>
             <td class="text-end">{{ '{:,.0f}'.format(row.total_sqft) if row.total_sqft else '-' }}</td>
             <td class="text-end">{{ '{:,.0f}'.format(row.total_units) if row.total_units else '0' }}</td>
-            <td class="text-end">{{ '{:,}'.format(row.completed_count) if row.completed_count else '0' }}</td>
-            <td class="text-end">{{ '{:,}'.format(row.co_issued_count) if row.co_issued_count else '0' }}</td>
+            <td class="text-end">{{ '{:,}'.format(row.completed_count) if row.completed_count else '-' }}</td>
+            <td class="text-end">{{ '{:,}'.format(row.co_issued_count) if row.co_issued_count else '-' }}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -220,13 +220,13 @@
     <div class="col-lg-4 d-flex">
       <div class="card shadow-sm flex-fill">
         <div class="card-header d-flex justify-content-between align-items-center">
-          <h5 class="mb-0">Total Valuation by Category</h5>
-          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="openChartModal('valByCatChart', 'Valuation', 'valuation_by_year', v => '$' + Number(v).toLocaleString())" title="View larger">
+          <h5 class="mb-0">New Residential Units by Year</h5>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="openUnitChartModal()" title="View larger">
             <i class="bi bi-arrows-angle-expand"></i>
           </button>
         </div>
         <div class="card-body">
-          <canvas id="valByCatChart" height="200"></canvas>
+          <canvas id="unitByJurChart" height="200"></canvas>
         </div>
       </div>
     </div>
@@ -416,6 +416,12 @@ const years = chartData.years;
 function makeCatChart(id, label, byYearAccessor, fmt) {
   const ctx = document.getElementById(id);
   const multiYear = years.length > 1;
+  // Map by-year accessor to category_totals key for single-year bar charts
+  const totalsKey = {
+    'sqft_by_year': 'sqft',
+    'permits_by_year': 'count',
+    'valuation_by_year': 'valuation',
+  }[byYearAccessor] || byYearAccessor;
 
   if (multiYear) {
     // Line chart: one dataset per category, years as x-axis
@@ -464,7 +470,7 @@ function makeCatChart(id, label, byYearAccessor, fmt) {
       data: {
         labels: totals.map(t => t.category),
         datasets: [{
-          data: totals.map(t => t[byYearAccessor]),
+          data: totals.map(t => t[totalsKey]),
           backgroundColor: totals.map(t => COLORS[t.category] || '#adb5bd'),
           borderRadius: 4,
         }],
@@ -490,7 +496,125 @@ const chartInstances = {};
 
 chartInstances.sqft = makeCatChart('sqftByCatChart', 'Sq Ft', 'sqft_by_year', v => Number(v).toLocaleString() + ' sqft');
 chartInstances.count = makeCatChart('countByCatChart', 'Permits', 'permits_by_year', v => Number(v).toLocaleString() + ' permits');
-chartInstances.val = makeCatChart('valByCatChart', 'Valuation', 'valuation_by_year', v => '$' + Number(v).toLocaleString());
+// ── Residential units chart ─────────────────────────────────────────────
+
+const unitData = chartData.residential_units;
+const unitJurisdictions = unitData ? Object.keys(unitData.by_jurisdiction).sort() : [];
+const unitColors = {
+  'City of Phoenix': '#0d6efd',
+  'City of Tempe': '#198754',
+  'Maricopa County': '#fd7e14',
+  'City of Chandler': '#dc3545',
+};
+
+function makeUnitChart(canvasId) {
+  const ctx = document.getElementById(canvasId);
+  if (!ctx || !unitData || unitJurisdictions.length === 0) return null;
+
+  const years = unitData.years;
+  const multiYear = years.length > 1;
+
+  if (multiYear) {
+    // Line chart: one line per jurisdiction
+    return new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: years,
+        datasets: unitJurisdictions.map(jur => ({
+          label: jur,
+          data: years.map(y => {
+            const entries = unitData.by_jurisdiction[jur] || [];
+            const found = entries.find(e => e.year === y);
+            return found ? found.units : 0;
+          }),
+          borderColor: unitColors[jur] || '#6c757d',
+          backgroundColor: (unitColors[jur] || '#6c757d') + '20',
+          pointRadius: 3,
+          pointHoverRadius: 5,
+          tension: 0.3,
+          fill: true,
+        })),
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'bottom', labels: { boxWidth: 12, padding: 12 } },
+        },
+        scales: {
+          x: { title: { display: true, text: 'Year' } },
+          y: {
+            beginAtZero: true,
+            title: { display: true, text: 'Units' },
+            ticks: { callback: v => Number(v).toLocaleString() },
+          },
+        },
+      },
+    });
+  } else {
+    // Bar chart: one bar per jurisdiction for a single year
+    return new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: unitJurisdictions,
+        datasets: [{
+          data: unitJurisdictions.map(jur => {
+            const entries = unitData.by_jurisdiction[jur] || [];
+            const found = entries.find(e => e.year === years[0]);
+            return found ? found.units : 0;
+          }),
+          backgroundColor: unitJurisdictions.map(jur => unitColors[jur] || '#6c757d'),
+          borderRadius: 4,
+        }],
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: ctx => ctx.raw.toLocaleString() + ' units',
+            },
+          },
+        },
+        scales: {
+          x: {
+            beginAtZero: true,
+            title: { display: true, text: 'Units' },
+            ticks: { callback: v => Number(v).toLocaleString() },
+          },
+        },
+      },
+    });
+  }
+}
+
+chartInstances.units = makeUnitChart('unitByJurChart');
+
+function openUnitChartModal() {
+  const modalEl = document.getElementById('chartModal');
+  const canvas = document.getElementById('modalChartCanvas');
+  document.getElementById('chartModalLabel').textContent = 'New Residential Units by Year';
+
+  if (chartInstances._modalUnits) {
+    chartInstances._modalUnits.destroy();
+    chartInstances._modalUnits = null;
+  }
+
+  chartInstances._modalUnits = makeUnitChart('modalChartCanvas');
+  const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+  modal.show();
+
+  modalEl.addEventListener('hidden.bs.modal', function cleanup() {
+    modalEl.removeEventListener('hidden.bs.modal', cleanup);
+    if (chartInstances._modalUnits) {
+      chartInstances._modalUnits.destroy();
+      chartInstances._modalUnits = null;
+    }
+  }, { once: true });
+}
 
 // ── Chart modal ──────────────────────────────────────────────────────────
 

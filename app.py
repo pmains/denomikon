@@ -980,6 +980,51 @@ def permits_index():
         offset = (page - 1) * per_page
         permits_raw = session.execute(base_q.offset(offset).limit(per_page)).scalars().all()
 
+    # ── Residential units by jurisdiction and year ────────────────────────
+    # New residential construction units, filtered to Residential category
+    # with New Construction work type, grouped by jurisdiction and year.
+    units_sql = _sa_text(f"""
+        WITH deduped AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY COALESCE(p.permit_number, p.row_hash),
+                                     COALESCE(p.permit_square_feet, '')
+                       ORDER BY p.permit_issue_date
+                   ) AS rn
+            FROM permits p
+            WHERE {where}
+              AND p.normalized_category = 'Residential'
+              AND p.work_type = 'New Construction'
+        )
+        SELECT d.jurisdiction,
+               SUBSTR(d.permit_issue_date, 1, 4) AS yr,
+               COALESCE(SUM(CAST(NULLIF(COALESCE(d.units, d.no_units, ''), '') AS INTEGER)), 0) AS units
+        FROM deduped d
+        WHERE d.rn = 1
+          AND d.permit_issue_date IS NOT NULL
+          AND d.units IS NOT NULL AND d.units != ''
+        GROUP BY d.jurisdiction, yr
+        ORDER BY yr, d.jurisdiction
+    """)
+
+    units_by_jur_year: dict = defaultdict(list)
+    all_unit_years: set = set()
+    new_housing_by_jur: dict = defaultdict(int)
+    for r in session.execute(units_sql, params).all():
+        jur = r.jurisdiction or "Unknown"
+        yr = r.yr
+        u = r.units or 0
+        if jur not in _EXCLUDED_JURISDICTIONS:
+            units_by_jur_year[jur].append({"year": yr, "units": u})
+            all_unit_years.add(yr)
+            new_housing_by_jur[jur] += u
+
+    # Override total_units in by_jurisdiction with new housing units
+    for entry in by_jurisdiction:
+        jur = entry["jurisdiction"]
+        nh = new_housing_by_jur.get(jur, 0)
+        entry["total_units"] = nh
+
     session.close()
     return render_template(
         "permits.html",
@@ -1010,6 +1055,10 @@ def permits_index():
             "permits_by_year": chart_cnt_by_year,
             "valuation_by_year": chart_val_by_year,
             "category_totals": chart_cat_totals,
+            "residential_units": {
+                "by_jurisdiction": dict(units_by_jur_year),
+                "years": sorted(all_unit_years),
+            },
         },
     )
 
