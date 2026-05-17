@@ -826,6 +826,7 @@ def permits_index():
         SELECT d.jurisdiction,
                COALESCE(d.normalized_category, 'Other') AS category,
                d.native_type,
+               d.work_type AS wt,
                SUBSTR(d.permit_issue_date, 1, 4) AS yr,
                COUNT(*) AS cnt,
                SUM(CAST(NULLIF(d.permit_valuation, '') AS REAL)) AS tot_val,
@@ -836,7 +837,7 @@ def permits_index():
         FROM deduped d
         WHERE d.rn = 1
           AND d.permit_issue_date IS NOT NULL
-        GROUP BY d.jurisdiction, d.normalized_category, d.native_type, yr
+        GROUP BY d.jurisdiction, d.normalized_category, d.native_type, d.work_type, yr
     """)
 
     jur_tot: dict = defaultdict(lambda: {"count": 0, "sqft": 0.0, "val": 0.0, "units": 0.0, "completed": 0, "co_issued": 0})
@@ -846,6 +847,8 @@ def permits_index():
     cnt_by_year: dict = defaultdict(lambda: defaultdict(int))
     val_by_year: dict = defaultdict(lambda: defaultdict(float))
     all_cats: set = set()
+    # Track new housing units (Residential + New Construction) per jurisdiction per year
+    residential_units_cache: dict = defaultdict(lambda: defaultdict(int))
 
     for r in session.execute(sql, params):
         j = r.jurisdiction
@@ -859,6 +862,12 @@ def permits_index():
         comp = r.completed_cnt or 0
         co = r.co_cnt or 0
 
+        wt = r.wt
+        # Track residential new-construction units in the same pass
+        is_new_housing = (
+            cat == "Residential" and wt == "New Construction" and u > 0
+        )
+
         if j:
             jt = jur_tot[j]
             jt["count"] += cnt
@@ -867,6 +876,8 @@ def permits_index():
             jt["units"] += u
             jt["completed"] += comp
             jt["co_issued"] += co
+            if is_new_housing:
+                residential_units_cache[j][yr] += u
 
         all_cats.add(cat)
         ct = cat_tot[cat]
@@ -981,43 +992,17 @@ def permits_index():
         permits_raw = session.execute(base_q.offset(offset).limit(per_page)).scalars().all()
 
     # ── Residential units by jurisdiction and year ────────────────────────
-    # New residential construction units, filtered to Residential category
-    # with New Construction work type, grouped by jurisdiction and year.
-    units_sql = _sa_text(f"""
-        WITH deduped AS (
-            SELECT *,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY COALESCE(p.permit_number, p.row_hash),
-                                     COALESCE(p.permit_square_feet, '')
-                       ORDER BY p.permit_issue_date
-                   ) AS rn
-            FROM permits p
-            WHERE {where}
-              AND p.normalized_category = 'Residential'
-              AND p.work_type = 'New Construction'
-        )
-        SELECT d.jurisdiction,
-               SUBSTR(d.permit_issue_date, 1, 4) AS yr,
-               COALESCE(SUM(CAST(NULLIF(COALESCE(d.units, d.no_units, ''), '') AS INTEGER)), 0) AS units
-        FROM deduped d
-        WHERE d.rn = 1
-          AND d.permit_issue_date IS NOT NULL
-          AND d.units IS NOT NULL AND d.units != ''
-        GROUP BY d.jurisdiction, yr
-        ORDER BY yr, d.jurisdiction
-    """)
-
+    # Data was accumulated from the same dedup pass above (no second CTE scan).
+    # residential_units_cache[jur][year] = units
     units_by_jur_year: dict = defaultdict(list)
     all_unit_years: set = set()
     new_housing_by_jur: dict = defaultdict(int)
-    for r in session.execute(units_sql, params).all():
-        jur = r.jurisdiction or "Unknown"
-        yr = r.yr
-        u = r.units or 0
-        if jur not in _EXCLUDED_JURISDICTIONS:
-            units_by_jur_year[jur].append({"year": yr, "units": u})
-            all_unit_years.add(yr)
-            new_housing_by_jur[jur] += u
+    for jur, yr_data in residential_units_cache.items():
+        for yr, u in yr_data.items():
+            if jur not in _EXCLUDED_JURISDICTIONS:
+                units_by_jur_year[jur].append({"year": yr, "units": u})
+                all_unit_years.add(yr)
+                new_housing_by_jur[jur] += u
 
     # Override total_units in by_jurisdiction with new housing units
     for entry in by_jurisdiction:
