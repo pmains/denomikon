@@ -744,6 +744,7 @@ class Permit(Base):
         Index("ix_permits_native_type", "native_type"),
         Index("ix_permits_valuation", "permit_valuation"),
         Index("ix_permits_square_feet", "permit_square_feet"),
+        Index("ix_permits_jur_cat_wt_issuedate", "jurisdiction", "normalized_category", "work_type", "permit_issue_date"),
     )
 
 
@@ -1002,6 +1003,10 @@ def init_db():
 
     # Create poliscopic tables
     init_poliscopic_models(engine)
+
+    # Composite index for /permits aggregate queries (jurisdiction + category + work_type + date)
+    _ensure_index(engine, "permits", "ix_permits_jur_cat_wt_issuedate",
+                  "jurisdiction, normalized_category, work_type, permit_issue_date")
 
     # Seed default jurisdiction and bodies
     seed_default_jurisdictions()
