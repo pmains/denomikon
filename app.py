@@ -932,117 +932,166 @@ def permits_index():
         if t:
             type_cnt[t] += cnt
 
-    # ── Efficient housing unit query (separate per-jurisdiction) ─────────
-    # The main CTE over all jurisdictions is too slow for unit tracking.
-    # Use two focused sub-queries per jurisdiction:
-    #   (A) Standard: normalized_category='Residential' + work_type='New Construction'
-    #   (B) Phoenix PDD: housing-capable types (BLD, TCO, COND, LPRN, etc.)
-    #       that carry residential units under Commercial/Plan Review codes.
-    #       In the PDD system, a 250-unit apartment building gets permit type
-    #       BLD (commercial building), not RSF.
+    # ── Batched housing-unit queries (3 total, not per-jurisdiction) ────
+    # Each dedup strategy fires one query across all relevant jurisdictions
+    # and returns (jurisdiction, year, units).  O(1) queries regardless of
+    # how many jurisdictions exist — scales to 50+ without slowing down.
+    #
+    #   (A) Standard:     dedup by (permit_number, square_feet)
+    #       → Phoenix RSF codes, Chandler, and future jurisdictions.
+    #   (B) Phoenix PDD:   address-level dedup with stage-overcount correction
+    #       → Multi-family under BLD/TCO codes not classified as Residential.
+    #   (C) Tempe/Maricopa: same address dedup as B, different filter criteria.
+    #
+    # Rather than using NOT LIKE to exclude jurisdictions (which defeats
+    # the B-tree index prefix), we query all distinct jurisdiction names
+    # once, partition them by strategy in Python, and use an IN (...) clause
+    # with exact names for index-efficient equality lookups.
     _HOUSING_CAPABLE_PDD = ['BLD','TCO','COND','LPRN','LPRR','LPRM','LPRT','LPRX','CSIT','PRLM','PAPP','PHAS','SCMJ','SCSU']
-
-    _jur_list = session.execute(
+    _jur_names = [r[0] for r in session.execute(
         _sa_text("SELECT DISTINCT jurisdiction FROM permits")
-    ).scalars().all()
+    ).all()]
+    _all_jur_lower = {j: j.lower() for j in _jur_names}
 
-    for _jur in _jur_list:
-        if jurisdiction_filter and _jur != jurisdiction_filter:
-            continue
+    # ── Strategy A: Standard dedup by (permit_number, square_feet) ──────
+    # Tempe/Maricopa excluded — they use C with address-level dedup.
+    _skip_a = selected_categories and "Residential" not in selected_categories
+    if not _skip_a:
+        # Identify non-Tempe, non-Maricopa jurisdictions
+        _a_candidates = [j for j, lc in _all_jur_lower.items()
+                         if "tempe" not in lc and "maricopa" not in lc]
+        if jurisdiction_filter:
+            _a_candidates = [j for j in _a_candidates if j == jurisdiction_filter]
+        if _a_candidates:
+            a_params = {}
+            a_phs = ",".join(f":a{i}" for i in range(len(_a_candidates)))
+            for i, j in enumerate(_a_candidates):
+                a_params[f"a{i}"] = j
+            if year_filter:
+                yr_where = "AND p.permit_issue_date LIKE :yr"
+                a_params["yr"] = f"{year_filter}%"
+            else:
+                yr_where = ""
 
-        jur_cache = residential_units_cache[_jur]
-        is_phoenix = "phoenix" in _jur.lower()
-        is_tempe = "tempe" in _jur.lower()
-        params = {"j": _jur}
-        yr_clause = f"AND p.permit_issue_date LIKE '{year_filter}%'" if year_filter else ""
-
-        # Sub-query A: Standard residential + new construction (legacy ArcGIS codes, RSF, etc.)
-        # Skipped for Tempe and Maricopa — handled by sub-query C with smart address dedup
-        if not (is_tempe or "maricopa" in _jur.lower()) and not (selected_categories and "Residential" not in selected_categories):
-            a_where = f"""p.jurisdiction = :j AND p.normalized_category = 'Residential'
-                       AND p.work_type = 'New Construction' {yr_clause}"""
             a_sql = _sa_text(f"""
                 WITH deduped AS (
-                    SELECT *,
+                    SELECT p.*,
                            ROW_NUMBER() OVER (
-                               PARTITION BY COALESCE(p.permit_number, p.row_hash), COALESCE(p.permit_square_feet, '')
+                               PARTITION BY COALESCE(p.permit_number, p.row_hash),
+                                             COALESCE(p.permit_square_feet, '')
                                ORDER BY p.permit_issue_date
                            ) AS rn
-                    FROM permits p WHERE {a_where}
+                    FROM permits p
+                    WHERE p.normalized_category = 'Residential'
+                      AND p.work_type = 'New Construction'
+                      AND p.jurisdiction IN ({a_phs})
+                      {yr_where}
                 )
-                SELECT SUBSTR(d.permit_issue_date, 1, 4) AS yr,
-                       SUM(CAST(NULLIF(COALESCE(d.units, d.no_units, ''), '') AS REAL))
+                SELECT d.jurisdiction AS jur,
+                       SUBSTR(d.permit_issue_date, 1, 4) AS yr,
+                       SUM(CAST(NULLIF(COALESCE(d.units, d.no_units, ''), '') AS REAL)) AS units
                 FROM deduped d
                 WHERE d.rn = 1 AND d.permit_issue_date IS NOT NULL
                   AND CAST(NULLIF(COALESCE(d.units, d.no_units, ''), '') AS REAL) > 0
-                GROUP BY yr ORDER BY yr
+                GROUP BY d.jurisdiction, yr ORDER BY d.jurisdiction, yr
             """)
-            for row in session.execute(a_sql, params):
-                if row[1]: jur_cache[row[0]] += row[1]
+            for row in session.execute(a_sql, a_params):
+                if row.units:
+                    residential_units_cache[row.jur][row.yr] += int(row.units)
 
-        # Sub-query B: Phoenix PDD housing-capable types — smart address dedup
-        # Uses same logic as sub-query C: identical unit counts > 1 = stage
-        # overcount (plan review → building permit → CO), take MAX.
-        # Different counts or identical counts of 1 = separate units, use SUM.
-        if is_phoenix and not (selected_work_types and "New Construction" not in selected_work_types):
+    # ── Strategy B: Phoenix PDD address dedup ──────────────────────────
+    # Multi-family housing appearing under commercial PDD codes (BLD, TCO,
+    # etc.) rather than Residential.  Only relevant to Phoenix.
+    _skip_b = (selected_work_types and "New Construction" not in selected_work_types)
+    if not _skip_b:
+        _b_candidates = [j for j, lc in _all_jur_lower.items() if "phoenix" in lc]
+        if jurisdiction_filter:
+            _b_candidates = [j for j in _b_candidates if j == jurisdiction_filter]
+        if _b_candidates:
             ht_list = ",".join(f"'{t}'" for t in _HOUSING_CAPABLE_PDD)
-            yr_where = f"AND p.permit_issue_date LIKE '{year_filter}%'" if year_filter else ""
+            b_params = {}
+            b_phs = ",".join(f":b{i}" for i in range(len(_b_candidates)))
+            for i, j in enumerate(_b_candidates):
+                b_params[f"b{i}"] = j
+            if year_filter:
+                yr_where = "AND permit_issue_date LIKE :yr"
+                b_params["yr"] = f"{year_filter}%"
+            else:
+                yr_where = ""
+
             b_sql = _sa_text(f"""
-                SELECT yr, SUM(corrected_units) FROM (
-                    SELECT SUBSTR(MIN(permit_issue_date), 1, 4) AS yr,
+                SELECT jurisdiction AS jur, yr, SUM(corrected_units) AS units FROM (
+                    SELECT jurisdiction, SUBSTR(MIN(permit_issue_date), 1, 4) AS yr,
                            job_address,
                            CASE
                                WHEN MIN(u) = MAX(u) AND MIN(u) > 1 AND COUNT(*) > 1 THEN MAX(u)
                                ELSE SUM(u)
                            END AS corrected_units
                     FROM (
-                        SELECT job_address, permit_issue_date,
+                        SELECT jurisdiction, job_address, permit_issue_date,
                                CAST(NULLIF(COALESCE(units, no_units, ''), '') AS REAL) AS u
                         FROM permits
-                        WHERE jurisdiction = :j
+                        WHERE jurisdiction IN ({b_phs})
                           AND normalized_category NOT IN ('Residential','Demolition')
                           AND source_system = 'phoenix_pdd'
                           AND native_type IN ({ht_list})
                           AND job_address IS NOT NULL
                           AND CAST(NULLIF(COALESCE(units, no_units, ''), '') AS REAL) > 0
-                          {yr_where.replace('p.','')}
+                          {yr_where}
                     )
-                    GROUP BY job_address
+                    GROUP BY jurisdiction, job_address
                     HAVING SUM(u) > 0
-                ) GROUP BY yr ORDER BY yr
+                ) GROUP BY jurisdiction, yr ORDER BY jurisdiction, yr
             """)
-            for row in session.execute(b_sql, params):
-                if row[1]: jur_cache[row[0]] += int(row[1])
+            for row in session.execute(b_sql, b_params):
+                if row.units:
+                    residential_units_cache[row.jur][row.yr] += int(row.units)
 
-        # Sub-query C: Tempe & Maricopa — smart address dedup
-        # Preserves separate 1-unit permits (townhouses, manufactured homes)
-        # while collapsing stage overcount (same building, multiple permits).
-        if (is_tempe or "maricopa" in _jur.lower()) and not (selected_work_types and "New Construction" not in selected_work_types):
+    # ── Strategy C: Tempe / Maricopa address dedup ─────────────────────
+    # Same smart-address logic as B but for Residential + New Construction.
+    _skip_c = (selected_work_types and "New Construction" not in selected_work_types)
+    if not _skip_c:
+        _c_candidates = [j for j, lc in _all_jur_lower.items()
+                         if "tempe" in lc or "maricopa" in lc]
+        if jurisdiction_filter:
+            _c_candidates = [j for j in _c_candidates if j == jurisdiction_filter]
+        if _c_candidates:
+            c_params = {}
+            c_phs = ",".join(f":c{i}" for i in range(len(_c_candidates)))
+            for i, j in enumerate(_c_candidates):
+                c_params[f"c{i}"] = j
+            if year_filter:
+                yr_where = "AND permit_issue_date LIKE :yr"
+                c_params["yr"] = f"{year_filter}%"
+            else:
+                yr_where = ""
+
             c_sql = _sa_text(f"""
-                SELECT yr, SUM(corrected_units) FROM (
-                    SELECT SUBSTR(MIN(permit_issue_date), 1, 4) AS yr,
+                SELECT jurisdiction AS jur, yr, SUM(corrected_units) AS units FROM (
+                    SELECT jurisdiction, SUBSTR(MIN(permit_issue_date), 1, 4) AS yr,
                            job_address,
                            CASE
                                WHEN MIN(u) = MAX(u) AND MIN(u) > 1 AND COUNT(*) > 1 THEN MAX(u)
                                ELSE SUM(u)
                            END AS corrected_units
                     FROM (
-                        SELECT job_address, permit_issue_date,
+                        SELECT jurisdiction, job_address, permit_issue_date,
                                CAST(NULLIF(COALESCE(units, no_units, ''), '') AS REAL) AS u
                         FROM permits
-                        WHERE jurisdiction = :j
+                        WHERE jurisdiction IN ({c_phs})
                           AND normalized_category = 'Residential'
                           AND work_type = 'New Construction'
                           AND job_address IS NOT NULL
                           AND CAST(NULLIF(COALESCE(units, no_units, ''), '') AS REAL) > 0
-                          {yr_clause.replace('p.','')}
+                          {yr_where}
                     )
-                    GROUP BY job_address
+                    GROUP BY jurisdiction, job_address
                     HAVING SUM(u) > 0
-                ) GROUP BY yr ORDER BY yr
+                ) GROUP BY jurisdiction, yr ORDER BY jurisdiction, yr
             """)
-            for row in session.execute(c_sql, params):
-                if row[1]: jur_cache[row[0]] += int(row[1])
+            for row in session.execute(c_sql, c_params):
+                if row.units:
+                    residential_units_cache[row.jur][row.yr] += int(row.units)
 
     # Ensure explicitly selected categories appear in chart data even with zero records
     if selected_categories:
