@@ -714,6 +714,60 @@ def _normalize_permit_category(permit_type: Optional[str],
     return "Other"
 
 
+def _classify_work_type_from_work_class(work_class: Optional[str]) -> str:
+    """Map Maricopa County work_class values to standardized work_type.
+
+    The XLSX reports include a work_class column with values like:
+      "New Construction", "Alteration, Remodel, Repair", "Addition(s)",
+      "Demolition", "Signs", "Infrastructure / Public Works", etc.
+    """
+    if not work_class:
+        return "Unknown"
+    wc = work_class.strip().lower()
+
+    if wc == "new" or wc.startswith("new "):
+        return "New Construction"
+    if "production" in wc and "sub" not in wc:
+        return "New Construction"
+    if "new construction" in wc or "new with basement" in wc or "foundation" in wc:
+        return "New Construction"
+    if "demolition" in wc or "move out" in wc or "move on" in wc:
+        return "Demolition"
+    if "addition" in wc:
+        return "Addition"
+    if "alteration" in wc or "remodel" in wc or "repair" in wc or "renovation" in wc:
+        return "Alteration"
+    if "accessory" in wc:
+        return "Addition"
+    if "fence" in wc or "wall" in wc or "pool" in wc or "spa" in wc:
+        return "Addition"
+    if "sign" in wc:
+        return "Trade"
+    if "infrastructure" in wc or "public works" in wc or "subdivision infrastructure" in wc:
+        return "Infrastructure"
+    if "electrical" in wc or "plumbing" in wc or "mechanical" in wc or "hvac" in wc:
+        return "Trade"
+    if "solar" in wc or "photovoltaic" in wc:
+        return "Trade"
+    if "roof" in wc or "re-roof" in wc:
+        return "Alteration"
+    if "grading" in wc or "drainage" in wc:
+        return "Infrastructure"
+    if "manufactured home" in wc or "multi-section" in wc:
+        return "New Construction"
+    if "inspections" in wc and ("code" in wc or "damage" in wc or "fire" in wc or "final" in wc or "group home" in wc or "community" in wc):
+        return "Other"
+    if "afp" == wc or "annual facilities" in wc:
+        return "Alteration"
+    if "wireless" in wc or "tower" in wc:
+        return "Trade"
+    if "web issued" in wc or "non-technical" in wc:
+        return "Unknown"
+    if "stormwater" in wc:
+        return "Infrastructure"
+    return "Unknown"
+
+
 def _sync_single_report(session, record: dict, output_dir: str) -> int:
     """Parse one downloaded XLSX, store rows in DB.
 
@@ -843,6 +897,7 @@ def _sync_single_report(session, record: dict, output_dir: str) -> int:
             owner_name=row.get("owner_name"),
             contractor_name=row.get("contractor_name"),
             contractor_phone=row.get("contractor_phone"),
+            work_type=_classify_work_type_from_work_class(row.get("work_class")),
             contractor_email=row.get("contractor_email"),
             row_hash=row_hash,
             jurisdiction="Maricopa County",

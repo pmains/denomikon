@@ -15,6 +15,7 @@ import sys
 import time
 from functools import wraps
 from pathlib import Path
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -114,11 +115,35 @@ except ImportError:
     cache = None
     log.warning("Flask-Caching not installed — install with: pip install Flask-Caching")
 
+# ── Cache version — bump to invalidate all cached pages ──────────────────
+# Increment whenever data is reclassified or permit type mappings change.
+# Included in the cache key so old cached pages are naturally stale.
+_CACHE_VERSION = "v8"  # v3 = 2026-05-17 cache versioning + Maricopa units fix
+
 # ── Conditional caching decorator ───────────────────────────────────────────
 def _cache(timeout=60, query_string=False):
-    """Apply Flask-Caching if available, otherwise no-op."""
+    """Apply Flask-Caching if available, otherwise no-op.
+
+    Versions the cache key via _CACHE_VERSION so reclassification or
+    data migrations naturally invalidate stale cached pages.
+    """
     if cache:
-        return cache.cached(timeout=timeout, query_string=query_string)
+        original_cached = cache.cached(timeout=timeout, query_string=query_string)
+        def _wrapper(fn):
+            @wraps(fn)
+            def _versioned(*args, **kwargs):
+                from flask import request
+                if hasattr(request, 'args'):
+                    old = dict(request.args)
+                    request.args = request.args.copy()
+                    request.args['_cv'] = _CACHE_VERSION
+                try:
+                    return original_cached(fn)(*args, **kwargs)
+                finally:
+                    if old:
+                        request.args = type(request.args)(old)
+            return _versioned
+        return _wrapper
     return lambda f: f
 
 
@@ -724,10 +749,14 @@ def permits_index():
     jurisdiction_filter = request.args.get("jurisdiction", "")
     category_filter = request.args.get("category", "")  # legacy single-category filter
     year_filter = request.args.get("year", "")
+    native_type_filter = request.args.get("native_type", "").strip()
+    units_filter = request.args.get("_units", "").strip().lower() == "true"
 
     # ── New positive inclusion filters ──
     categories_filter = request.args.get("categories", "").strip()
     work_types_filter = request.args.get("work_types", "").strip()
+
+    from sqlalchemy import cast, Float, func
 
     # ── Legacy exclusion filters (backward compat) ──
     exclude_filter = request.args.get("exclude", "").strip()
@@ -787,6 +816,9 @@ def permits_index():
         if year_filter:
             parts.append("p.permit_issue_date LIKE :yr")
             params["yr"] = f"{year_filter}%"
+        if native_type_filter:
+            parts.append("p.native_type = :nt")
+            params["nt"] = native_type_filter
         return parts, params
 
     # ── Filter builder for raw-list mode (non-deduped) ──────────────────
@@ -799,6 +831,17 @@ def permits_index():
             q = q.where(Permit.work_type.in_(selected_work_types))
         if year_filter:
             q = q.where(Permit.permit_issue_date.startswith(year_filter))
+        if native_type_filter:
+            q = q.where(Permit.native_type == native_type_filter)
+        if units_filter:
+            # Show only permits that carry housing units
+            q = q.filter(
+                func.coalesce(
+                    func.cast(Permit.units, Float),
+                    func.cast(Permit.no_units, Float),
+                    0.0
+                ) > 0
+            )
         return q
 
     # ── Single dedup CTE with SQL GROUP BY ────────────────────────────────
@@ -876,8 +919,6 @@ def permits_index():
             jt["units"] += u
             jt["completed"] += comp
             jt["co_issued"] += co
-            if is_new_housing:
-                residential_units_cache[j][yr] += u
 
         all_cats.add(cat)
         ct = cat_tot[cat]
@@ -890,6 +931,118 @@ def permits_index():
             val_by_year[yr][cat] += v
         if t:
             type_cnt[t] += cnt
+
+    # ── Efficient housing unit query (separate per-jurisdiction) ─────────
+    # The main CTE over all jurisdictions is too slow for unit tracking.
+    # Use two focused sub-queries per jurisdiction:
+    #   (A) Standard: normalized_category='Residential' + work_type='New Construction'
+    #   (B) Phoenix PDD: housing-capable types (BLD, TCO, COND, LPRN, etc.)
+    #       that carry residential units under Commercial/Plan Review codes.
+    #       In the PDD system, a 250-unit apartment building gets permit type
+    #       BLD (commercial building), not RSF.
+    _HOUSING_CAPABLE_PDD = ['BLD','TCO','COND','LPRN','LPRR','LPRM','LPRT','LPRX','CSIT','PRLM','PAPP','PHAS','SCMJ','SCSU']
+
+    _jur_list = session.execute(
+        _sa_text("SELECT DISTINCT jurisdiction FROM permits")
+    ).scalars().all()
+
+    for _jur in _jur_list:
+        if jurisdiction_filter and _jur != jurisdiction_filter:
+            continue
+
+        jur_cache = residential_units_cache[_jur]
+        is_phoenix = "phoenix" in _jur.lower()
+        is_tempe = "tempe" in _jur.lower()
+        params = {"j": _jur}
+        yr_clause = f"AND p.permit_issue_date LIKE '{year_filter}%'" if year_filter else ""
+
+        # Sub-query A: Standard residential + new construction (legacy ArcGIS codes, RSF, etc.)
+        # Skipped for Tempe and Maricopa — handled by sub-query C with smart address dedup
+        if not (is_tempe or "maricopa" in _jur.lower()) and not (selected_categories and "Residential" not in selected_categories):
+            a_where = f"""p.jurisdiction = :j AND p.normalized_category = 'Residential'
+                       AND p.work_type = 'New Construction' {yr_clause}"""
+            a_sql = _sa_text(f"""
+                WITH deduped AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY COALESCE(p.permit_number, p.row_hash), COALESCE(p.permit_square_feet, '')
+                               ORDER BY p.permit_issue_date
+                           ) AS rn
+                    FROM permits p WHERE {a_where}
+                )
+                SELECT SUBSTR(d.permit_issue_date, 1, 4) AS yr,
+                       SUM(CAST(NULLIF(COALESCE(d.units, d.no_units, ''), '') AS REAL))
+                FROM deduped d
+                WHERE d.rn = 1 AND d.permit_issue_date IS NOT NULL
+                  AND CAST(NULLIF(COALESCE(d.units, d.no_units, ''), '') AS REAL) > 0
+                GROUP BY yr ORDER BY yr
+            """)
+            for row in session.execute(a_sql, params):
+                if row[1]: jur_cache[row[0]] += row[1]
+
+        # Sub-query B: Phoenix PDD housing-capable types — smart address dedup
+        # Uses same logic as sub-query C: identical unit counts > 1 = stage
+        # overcount (plan review → building permit → CO), take MAX.
+        # Different counts or identical counts of 1 = separate units, use SUM.
+        if is_phoenix and not (selected_work_types and "New Construction" not in selected_work_types):
+            ht_list = ",".join(f"'{t}'" for t in _HOUSING_CAPABLE_PDD)
+            yr_where = f"AND p.permit_issue_date LIKE '{year_filter}%'" if year_filter else ""
+            b_sql = _sa_text(f"""
+                SELECT yr, SUM(corrected_units) FROM (
+                    SELECT SUBSTR(MIN(permit_issue_date), 1, 4) AS yr,
+                           job_address,
+                           CASE
+                               WHEN MIN(u) = MAX(u) AND MIN(u) > 1 AND COUNT(*) > 1 THEN MAX(u)
+                               ELSE SUM(u)
+                           END AS corrected_units
+                    FROM (
+                        SELECT job_address, permit_issue_date,
+                               CAST(NULLIF(COALESCE(units, no_units, ''), '') AS REAL) AS u
+                        FROM permits
+                        WHERE jurisdiction = :j
+                          AND normalized_category NOT IN ('Residential','Demolition')
+                          AND source_system = 'phoenix_pdd'
+                          AND native_type IN ({ht_list})
+                          AND job_address IS NOT NULL
+                          AND CAST(NULLIF(COALESCE(units, no_units, ''), '') AS REAL) > 0
+                          {yr_where.replace('p.','')}
+                    )
+                    GROUP BY job_address
+                    HAVING SUM(u) > 0
+                ) GROUP BY yr ORDER BY yr
+            """)
+            for row in session.execute(b_sql, params):
+                if row[1]: jur_cache[row[0]] += int(row[1])
+
+        # Sub-query C: Tempe & Maricopa — smart address dedup
+        # Preserves separate 1-unit permits (townhouses, manufactured homes)
+        # while collapsing stage overcount (same building, multiple permits).
+        if (is_tempe or "maricopa" in _jur.lower()) and not (selected_work_types and "New Construction" not in selected_work_types):
+            c_sql = _sa_text(f"""
+                SELECT yr, SUM(corrected_units) FROM (
+                    SELECT SUBSTR(MIN(permit_issue_date), 1, 4) AS yr,
+                           job_address,
+                           CASE
+                               WHEN MIN(u) = MAX(u) AND MIN(u) > 1 AND COUNT(*) > 1 THEN MAX(u)
+                               ELSE SUM(u)
+                           END AS corrected_units
+                    FROM (
+                        SELECT job_address, permit_issue_date,
+                               CAST(NULLIF(COALESCE(units, no_units, ''), '') AS REAL) AS u
+                        FROM permits
+                        WHERE jurisdiction = :j
+                          AND normalized_category = 'Residential'
+                          AND work_type = 'New Construction'
+                          AND job_address IS NOT NULL
+                          AND CAST(NULLIF(COALESCE(units, no_units, ''), '') AS REAL) > 0
+                          {yr_clause.replace('p.','')}
+                    )
+                    GROUP BY job_address
+                    HAVING SUM(u) > 0
+                ) GROUP BY yr ORDER BY yr
+            """)
+            for row in session.execute(c_sql, params):
+                if row[1]: jur_cache[row[0]] += int(row[1])
 
     # Ensure explicitly selected categories appear in chart data even with zero records
     if selected_categories:
@@ -933,8 +1086,200 @@ def permits_index():
         key=lambda r: r["count"], reverse=True,
     )
 
+    # ── Cross-jurisdiction type label normalization ─────────────────────
+    # Phoenix uses short codes (RSF, BLD, SGNP). Tempe and Maricopa use
+    # descriptive labels (Building (Residential), New Commercial).
+    # Consolidate them into meaningful labels for the Top Types table.
+    def _type_label(nt: str) -> str:
+        """Map raw native_type to a consolidated, human-readable label."""
+        if not nt:
+            return "Other"
+        code = nt.upper().strip()
+        # Phoenix R-prefix codes → Residential
+        if code.startswith("RSF") or code.startswith("RSME") or code == "RSP":
+            return "Single-Family Home"
+        if code.startswith("RS"):
+            return "Single-Family Home"
+        if code.startswith("RV"):
+            return "Residential (Multi-Unit)"
+        if code.startswith("RM") and not code.startswith("RMC"):
+            return "Multi-Family"
+        if code.startswith("RMC") or code.startswith("REC"):
+            return "Residential (Commercial)"
+        if code == "RPV" or code == "RPBI":
+            return "Residential Patio Villa"
+        if code == "RE" or code == "REM":
+            return "Residential Alteration"
+        if code == "RSE":
+            return "Residential Alteration"
+        if code.startswith("RPSC") or code.startswith("RPR"):
+            return "Residential Alteration"
+        if code.startswith("RWH") or code.startswith("RFEN"):
+            return "Residential Alteration"
+        if code.startswith("RNSP") or code == "RDEM":
+            return "Residential Demolition"
+        if code.startswith("RCIT") or code.startswith("RSTD"):
+            return "Residential Addition"
+        if code.startswith("R"):
+            return "Residential (Other)"
+        # Phoenix C-prefix and BLD → Commercial
+        if code == "BLD" or code.startswith("BLDS") or code.startswith("BLDA") or code.startswith("BLSC"):
+            return "Commercial Building"
+        if code.startswith("CSW") or code.startswith("CSL"):
+            return "Commercial Shell"
+        if code.startswith("CSIT") or code.startswith("CSE") or code.startswith("CSLC"):
+            return "Commercial Interior"
+        if code.startswith("CCO") or code.startswith("CPR") or code.startswith("CES"):
+            return "Commercial Alteration"
+        if code.startswith("CGD") or code.startswith("CDW"):
+            return "Commercial Grading"
+        if code.startswith("CLS") or code.startswith("CLT") or code.startswith("CMC"):
+            return "Commercial Construction"
+        if code.startswith("CDF") or code.startswith("CPA"):
+            return "Commercial Plan/Design"
+        if code.startswith("CP") and code != "CPGD":
+            return "Commercial Plan/Design"
+        if code == "CPGD":
+            return "Commercial Grading"
+        if code.startswith("C"):
+            return "Commercial (Other)"
+        # Phoenix trade codes
+        if code == "ELEC" or code.startswith("EL") or code == "PLMB" or code == "MECH":
+            return "Trade (Elec/Plumb/Mech)"
+        if code.startswith("ELEV") or code.startswith("ELFT"):
+            return "Trade (Elevator)"
+        if code.startswith("EHYD"):
+            return "Trade (Hydronic)"
+        if code.startswith("ENVR"):
+            return "Trade (Environmental)"
+        if code.startswith("ETRC"):
+            return "Trade (Electrical Tr.)"
+        # Phoenix FENCE permits
+        if code == "FEN":
+            return "Fence/Wall"
+        # Phoenix fire codes → Trade
+        if code.startswith("F") and len(code) >= 2 and code[1:].isdigit():
+            return "Fire System"
+        if code.startswith("FPP") or code.startswith("FPS") or code.startswith("FP"):
+            return "Fire Protection"
+        if code.startswith("FBB") or code.startswith("FITM"):
+            return "Fire Protection"
+        if code.startswith("FLRV"):
+            return "Fire Protection"
+        if code.startswith("FLSR") or code.startswith("FOCS") or code.startswith("FPAP"):
+            return "Fire Protection"
+        # Phoenix sign codes
+        if code.startswith("SGN") or code == "S":
+            return "Sign"
+        # Phoenix SE, SME, SCSR, SP, etc.
+        if code.startswith("SE") or code.startswith("SME") or code == "SM":
+            return "Service Existing"
+        if code.startswith("SP") or code.startswith("SPE") or code.startswith("SPM"):
+            return "Trade (Other)"
+        if code.startswith("SC"):
+            return "Trade (Other)"
+        # Phoenix LP/LS codes → Land Use / Plan Review
+        if code.startswith("LPRM") or code.startswith("LPRR") or code.startswith("LPRS"):
+            return "Plan Review"
+        if code.startswith("LP"):
+            return "Plan Review"
+        if code.startswith("LS"):
+            return "Plan Review"
+        # Phoenix infrastructure
+        if code.startswith("WS"):
+            return "Infrastructure (Water/Sewer)"
+        if code.startswith("TRFN"):
+            return "Infrastructure (Traffic)"
+        # Phoenix demolition
+        if code.startswith("DEM") or code.startswith("ABND"):
+            return "Demolition"
+        # Phoenix pool
+        if code.startswith("POOL"):
+            return "Pool"
+        # Phoenix other/existing
+        if code.startswith("OE") or code.startswith("OP") or code.startswith("OS"):
+            return "Other Existing"
+        if code.startswith("OBLD"):
+            return "Other Existing"
+        if code.startswith("OM"):
+            return "Other Existing"
+        if code.startswith("PHAS") or code.startswith("PLAT") or code.startswith("PLZA"):
+            return "Plans/Zoning"
+        if code.startswith("PAPP") or code.startswith("PR"):
+            return "Plans/Zoning"
+        if code.startswith("COFO") or code.startswith("COFC"):
+            return "Certificate of Occupancy"
+        if code.startswith("TCO"):
+            return "Temp Certificate of Occupancy"
+        if code.startswith("MHZ") or code.startswith("MDHM"):
+            return "Manufactured/Mobile Home"
+        if code.startswith("INSP"):
+            return "Inspection"
+        if code.startswith("AMND"):
+            return "Amendment"
+        if code.startswith("EXTR"):
+            return "Excavation/Trench"
+        if code.startswith("CAT"):
+            return "Catenary/Telecom"
+        if code.startswith("CHA"):
+            return "Change of Use"
+        if code.startswith("CHG"):
+            return "Change"
+        if code.startswith("DAPP") or code.startswith("DEDI"):
+            return "Design/Development"
+        if code.startswith("SC") or code == "SM" or code == "SP" or code.startswith("SPE"):
+            return "Trade (Other)"
+        if code.startswith("BLD-") and "RESIDENTIAL" in nt.upper():
+            return "Single-Family Home"
+        if code.startswith("BLD-") and "COMMERCIAL" in nt.upper():
+            return "Commercial Building"
+        # Tempe/Maricopa descriptive labels — normalize these too
+        low = nt.lower()
+        if "residential" in low and ("new" in low or "build" in low):
+            return "Single-Family Home"
+        if "residential" in low and ("alter" in low or "addition" in low):
+            return "Residential Alteration"
+        if "commercial" in low and ("new" in low or "build" in low):
+            return "Commercial Building"
+        if "commercial" in low and "alter" in low:
+            return "Commercial Alteration"
+        if "trade" in low or "electrical" in low or "plumbing" in low or "mechanical" in low:
+            return "Trade (General)"
+        if "demolition" in low:
+            return "Demolition"
+        if "infrastructure" in low or "grading" in low:
+            return "Infrastructure"
+        if "standard" in low or "plan" in low:
+            return "Standard Plan"
+        if "sign" in low or "awning" in low:
+            return "Sign"
+        if "pool" in low or "spa" in low:
+            return "Pool/Spa"
+        if "fire" in low or "sprinkler" in low or "alarm" in low:
+            return "Fire System"
+        if "fence" in low or "wall" in low:
+            return "Fence/Wall"
+        if "roof" in low:
+            return "Roof"
+        if "solar" in low or "photovoltaic" in low:
+            return "Solar/PV"
+        if "foundation" in low:
+            return "Foundation"
+        if "occupancy" in low:
+            return "Certificate of Occupancy"
+        if "addition" in low:
+            return "Addition"
+        # Fallback: use the raw type but clean it up a bit
+        return nt.strip()
+
+    # Build type counts by consolidated label
+    type_label_cnt: dict = defaultdict(int)
+    for k, v in type_cnt.items():
+        label = _type_label(k)
+        type_label_cnt[label] += v
+
     by_type_top = sorted(
-        [{"native_type": k, "count": v} for k, v in type_cnt.items()],
+        [{"type": k, "count": v} for k, v in type_label_cnt.items()],
         key=lambda r: r["count"], reverse=True,
     )[:20]
 
@@ -981,7 +1326,12 @@ def permits_index():
 
     if view == "raw":
         page = request.args.get("page", 1, type=int)
-        base_q = select(Permit).order_by(Permit.permit_issue_date.desc().nullslast(), Permit.id.desc())
+        if units_filter:
+            # Group related permits by address so multiple stages of the same
+            # project appear together
+            base_q = select(Permit).order_by(Permit.job_address.asc().nullslast(), Permit.permit_issue_date.desc().nullslast(), Permit.id.desc())
+        else:
+            base_q = select(Permit).order_by(Permit.permit_issue_date.desc().nullslast(), Permit.id.desc())
         count_q = select(func.count(Permit.id))
         base_q = _base_filter(base_q)
         count_q = _base_filter(count_q)
@@ -1034,6 +1384,8 @@ def permits_index():
         selected_work_types=selected_work_types,
         zero_categories=zero_categories,
         work_types_all=work_types_all,
+        units_filter=units_filter,
+        native_type_filter=native_type_filter,
         chart_data={
             "years": years,
             "sqft_by_year": chart_sqft_by_year,
@@ -1509,6 +1861,568 @@ def member_analytics(slug):
         vote_badges=VOTE_BADGE_CLASSES,
         majority_badges=MAJORITY_BADGE_CLASSES,
     )
+
+
+# ── Permit Type Code Reference ────────────────────────────────────────────────
+# The primary source for Phoenix is the PDD Online search page dropdown at:
+#   https://apps-secure.phoenix.gov/PDD/Search/IssuedPermit
+# This is the canonical list of 483 codes with official descriptions.
+# Secondary source: ArcGIS Planning_Permit MapServer (PER_TYPE_DESC) for older
+# codes (RSF, RSME, etc.) not in the current PDD Online system.
+# Last updated: 2026-05-17
+
+_OFFICIAL_PHOENIX_CACHE: Optional[dict] = None  # {"permit_types": {...}, "structure_classes": {...}}
+_OFFICIAL_FETCH_TIME: float = 0
+_OFFICIAL_CACHE_TTL: int = 86400  # re-fetch every 24 hours
+
+
+# Codes that belong to the structure-class dropdown (ddlStructureClass) on the
+# PDD search page. These are numeric 001-997 series and a few alpha codes.
+# Any code from this set is treated as a structure class, not a permit type.
+_PHX_STRUCTURE_CLASS_CODES: set = set()
+
+
+def _fetch_phoenix_official_codes() -> Optional[dict]:
+    """Fetch the official Phoenix PDD codes from the PDD Online search page.
+
+    The page at https://apps-secure.phoenix.gov/PDD/Search/IssuedPermit has two
+    dropdowns:
+      - ddlPermitType (413 options): permit type codes (RVSN, LPRM, BLD, etc.)
+      - ddlStructureClass (70 options): structure class codes (001-997 series)
+
+    Returns a dict of {code: full_description} merging both lists.
+    Codes from ddlStructureClass are noted in their description.
+    """
+    global _OFFICIAL_PHOENIX_CACHE, _OFFICIAL_FETCH_TIME, _PHX_STRUCTURE_CLASS_CODES
+    now = time.time()
+    if _OFFICIAL_PHOENIX_CACHE is not None and (now - _OFFICIAL_FETCH_TIME) < _OFFICIAL_CACHE_TTL:
+        return _OFFICIAL_PHOENIX_CACHE
+
+    try:
+        import urllib.request, re
+        req = urllib.request.Request(
+            "https://apps-secure.phoenix.gov/PDD/Search/IssuedPermit",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        resp = urllib.request.urlopen(req, timeout=15)
+        html = resp.read().decode("utf-8")
+
+        # Parse structure class dropdown (ddlStructureClass)
+        structure_classes = {}
+        sc_match = re.search(
+            r'<select[^>]*id="ddlStructureClass"[^>]*>(.*?)</select>',
+            html, re.DOTALL
+        )
+        if sc_match:
+            for m in re.finditer(r'<option[^>]*value="([^"]+)"[^>]*>([^<]+)</option>', sc_match.group(1)):
+                code = m.group(1).strip()
+                if not code or code.startswith("-ALL-"):
+                    continue
+                label = m.group(2).strip()
+                if " - " in label:
+                    desc = label.split(" - ", 1)[1].strip()
+                else:
+                    desc = label
+                structure_classes[code] = desc
+
+        # Parse permit type dropdown (ddlPermitType)
+        permit_types = {}
+        pt_match = re.search(
+            r'<select[^>]*id="ddlPermitType"[^>]*>(.*?)</select>',
+            html, re.DOTALL
+        )
+        if pt_match:
+            for m in re.finditer(r'<option[^>]*value="([^"]+)"[^>]*>([^<]+)</option>', pt_match.group(1)):
+                code = m.group(1).strip()
+                if not code or code.startswith("-ALL-"):
+                    continue
+                label = m.group(2).strip()
+                if " - " in label:
+                    desc = label.split(" - ", 1)[1].strip()
+                else:
+                    desc = label
+                permit_types[code] = desc
+
+        # Merge: permit types first, then structure classes as a separate set
+        all_codes = dict(permit_types)
+        all_codes.update(structure_classes)
+
+        # Store the structure class set for downstream use
+        _PHX_STRUCTURE_CLASS_CODES = set(structure_classes.keys())
+
+        _OFFICIAL_PHOENIX_CACHE = all_codes
+        _OFFICIAL_FETCH_TIME = now
+        log.info(
+            f"Fetched Phoenix codes: {len(permit_types)} permit types, "
+            f"{len(structure_classes)} structure classes"
+        )
+        return all_codes
+    except Exception as e:
+        log.warning(f"Failed to fetch official Phoenix codes: {e}")
+        return _OFFICIAL_PHOENIX_CACHE or {}
+
+
+# This old hard-coded reference is now replaced by the live fetch above.
+# It is kept only for offline/fallback scenarios.
+_PHOENIX_FALLBACK_TYPE_CODES = {
+    "RSF": {
+        "full_name": "RES STRUC",
+        "category": "Residential",
+        "work_type": "New Construction",
+        "scope": "RETAINING WALL",
+        "description": "Residential structural permit (e.g. retaining wall)",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    "RSFC": {
+        "full_name": "RESIDENTIAL SINGLE FAMILY - SELF CERT",
+        "category": "Residential",
+        "work_type": "New Construction",
+        "scope": "CUSTOM RESIDENCE",
+        "description": "Single-family home via self-certification path",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    "RSC": {
+        "full_name": "RESIDENTIAL PERMIT - SELF CERT",
+        "category": "Residential",
+        "work_type": "New Construction",
+        "scope": "ADDITION TO EXISTING RESIDENCE",
+        "description": "Residential self-certification permit",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    "RSME": {
+        "full_name": "RES STRUC/MECH OR PLMB/ELEC",
+        "category": "Residential",
+        "work_type": "Alteration",
+        "scope": "ADDITION TO EXISTING RESIDENCE",
+        "description": "Residential structural/mechanical/plumbing/electrical alteration on an existing home. Also used for fire rehabilitation remodels.",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC; Phoenix.gov inspections page",
+        "verified": True,
+    },
+    "RSP": {
+        "full_name": None,
+        "category": "Residential",
+        "work_type": "New Construction",
+        "scope": None,
+        "description": "Likely single-family patio home (zero-lot-line product)",
+        "source": "Convention — no ArcGIS description available",
+        "verified": False,
+    },
+    "RM": {
+        "full_name": None,
+        "category": "Residential",
+        "work_type": "New Construction",
+        "scope": None,
+        "description": "Residential multifamily — apartments, condos, townhomes",
+        "source": "Convention — no ArcGIS description available",
+        "verified": False,
+    },
+    "RPV": {
+        "full_name": "RES PHOTOVOLTAIC SYSTEM",
+        "category": "Residential",
+        "work_type": "Alteration",
+        "scope": "PHOTOVOLTAIC SYSTEM",
+        "description": "Residential solar panel installation",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    "RE": {
+        "full_name": "RES ELEC",
+        "category": "Residential",
+        "work_type": "Alteration",
+        "scope": "PHOTOVOLTAIC SYSTEM",
+        "description": "Residential electrical permit (often PV solar)",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    "REM": {
+        "full_name": "RES ELEC/MECH OR PLMB",
+        "category": "Residential",
+        "work_type": "Alteration",
+        "scope": "RESIDENTIAL MISCELLANEOUS",
+        "description": "Residential electrical/mechanical/plumbing miscellaneous work",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    "RDEM": {
+        "full_name": "RES DEMOLITION",
+        "category": "Residential",
+        "work_type": "Demolition",
+        "scope": "RES AS-BUILT NON-PERMITTED CONSTRUCTION",
+        "description": "Residential demolition",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    # ── RV* prefix — STATUS: LIKELY MISCLASSIFIED ──
+    "RVSN": {
+        "full_name": None,
+        "category": "Commercial (inferred)",
+        "work_type": "Trade (inferred)",
+        "scope": None,
+        "description": "⚠️ Likely NOT residential. All known instances are fire-sprinkler permits at TSMC semiconductor fab (32200 N 43RD AVE). Needs official definition.",
+        "source": "PDD CSV sample data — not present in ArcGIS",
+        "verified": False,
+    },
+    "RVSX": {
+        "full_name": None,
+        "category": None,
+        "work_type": None,
+        "scope": None,
+        "description": "⚠️ Unknown code — same RV prefix as RVSN; may not be residential",
+        "source": "PDD CSV export only",
+        "verified": False,
+    },
+    "RVSC": {
+        "full_name": None,
+        "category": None,
+        "work_type": None,
+        "scope": None,
+        "description": "⚠️ Unknown code — same RV prefix as RVSN; may not be residential",
+        "source": "PDD CSV export only",
+        "verified": False,
+    },
+    "RVCA": {
+        "full_name": None,
+        "category": None,
+        "work_type": None,
+        "scope": None,
+        "description": "⚠️ Unknown code — same RV prefix as RVSN; may not be residential",
+        "source": "PDD CSV export only",
+        "verified": False,
+    },
+    # ── Commercial / Building codes ──
+    "BLD": {
+        "full_name": "STRUC/ELEC/PLMB/MECH",
+        "category": "Commercial",
+        "work_type": "New Construction",
+        "scope": "COMMERCIAL REMODEL",
+        "description": "General commercial building permit (structural/electrical/plumbing/mechanical)",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    "BLDS": {
+        "full_name": "SHELL - STRUC/ELEC/PLMB/MECH",
+        "category": "Commercial",
+        "work_type": "New Construction",
+        "scope": "COMMERCIAL NEW",
+        "description": "Commercial shell building (new construction)",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    "OBLD": {
+        "full_name": "OTC STRUC/ELEC/PLMB/MECH",
+        "category": "Other",
+        "work_type": "Alteration",
+        "scope": "COMMERCIAL REMODEL",
+        "description": "Over-the-counter commercial building permit (small remodel)",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    # ── Sign permits ──
+    "SGNP": {
+        "full_name": "SIGN PERMIT",
+        "category": "Commercial",
+        "work_type": "Trade",
+        "scope": "COMMERCIAL SIGN APPLICATON REVIEW",
+        "description": "Permanent sign permit (SGN = Sign, P = Permanent)",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    "SGNT": {
+        "full_name": "SIGN TEMPORARY PERMIT",
+        "category": "Commercial",
+        "work_type": "Trade",
+        "scope": "TEMPORARY SIGN",
+        "description": "Temporary sign permit",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    "SGNV": {
+        "full_name": "SIGN VIOLATION",
+        "category": "Commercial",
+        "work_type": "Trade",
+        "scope": "SIGN INSPECTION",
+        "description": "Sign violation inspection",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    # ── Land-use permits ──
+    "LPRM": {
+        "full_name": None,
+        "category": "Commercial",
+        "work_type": "New Construction",
+        "scope": None,
+        "description": "Land-Use Permit, Plan Review (LP=Land-Use, RM=Review Major, hypothesized)",
+        "source": "Convention — no ArcGIS description available",
+        "verified": False,
+    },
+    "LPRN": {
+        "full_name": None,
+        "category": "Commercial",
+        "work_type": "New Construction",
+        "scope": None,
+        "description": "Land-Use Permit, New (LP=Land-Use, RN=New, hypothesized)",
+        "source": "Convention — no ArcGIS description available",
+        "verified": False,
+    },
+    "LPRS": {
+        "full_name": None,
+        "category": "Commercial",
+        "work_type": "New Construction",
+        "scope": None,
+        "description": "Land-Use Permit, Site Plan (LP=Land-Use, RS=Site, hypothesized)",
+        "source": "Convention — no ArcGIS description available",
+        "verified": False,
+    },
+    # ── Fire / Safety ──
+    "FPSR": {
+        "full_name": "FIRE PREVENTION SERVICE REQUEST",
+        "category": "Commercial",
+        "work_type": "Trade",
+        "scope": None,
+        "description": "Fire prevention service request / inspection",
+        "source": "ArcGIS PER_TYPE_DESC",
+        "verified": True,
+    },
+    # ── Demolition ──
+    "DEM": {
+        "full_name": "DEMOLITION",
+        "category": "Demolition",
+        "work_type": "Demolition",
+        "scope": "DEMO PERMIT ONLY",
+        "description": "Standard demolition permit",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    # ── Other ──
+    "EXTR": {
+        "full_name": "EXTENDED CONSTRUCTION WORK HOURS RENEWAL",
+        "category": "Other",
+        "work_type": "Alteration",
+        "scope": "EXTENDED CONSTRUCTION WORK HOURS",
+        "description": "Extended work hours permit (construction noise variance)",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    "ERES": {
+        "full_name": "RESIDENTIAL ELEVATOR",
+        "category": "Residential",
+        "work_type": "Alteration",
+        "scope": "PRIVATE RESIDENTIAL ELEVATOR--ELEVINSP",
+        "description": "Private residential elevator installation",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    "SHOR": {
+        "full_name": "SHORING PERMIT",
+        "category": "Commercial",
+        "work_type": "New Construction",
+        "scope": "SHORING",
+        "description": "Excavation shoring permit",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+    "BMR": {
+        "full_name": "BUILDING MAINTENANCE REGISTRATION",
+        "category": "Commercial",
+        "work_type": "Alteration",
+        "scope": "BUILDING MAINTENANCE REGISTRATION",
+        "description": "Building maintenance registration (annual program)",
+        "source": "ArcGIS PER_TYPE_DESC + SCOPE_DESC",
+        "verified": True,
+    },
+}
+
+
+def _get_type_codes_for_jurisdiction(jurisdiction: str) -> dict:
+    """Return type code reference for a given jurisdiction.
+
+    For Phoenix, the primary source is the official PDD Online search page
+    dropdown (483 codes). Falls back to permit data for codes not in that list.
+    Returns a dict of {code: info} suitable for JSON serialization.
+    """
+    from scripts.scraper.phoenix_permits import (
+        PHX_CATEGORY_MAP, PHX_WORK_TYPE_MAP, categorize_phoenix_type,
+    )
+    jur_lower = jurisdiction.lower().strip() if jurisdiction else ""
+
+    if "phoenix" in jur_lower:
+        official = _fetch_phoenix_official_codes()
+        result = {}
+
+        # Classify: figure out which codes are structure classes vs permit types
+        is_structure_class = _PHX_STRUCTURE_CLASS_CODES
+
+        # First pass: all codes from the official PDD Online dropdown
+        for code, desc in official.items():
+            cat, wt = categorize_phoenix_type(code)
+            if code in is_structure_class:
+                # Structure class codes (001-997) describe the building type,
+                # not the permit type. They're used alongside permit types.
+                result[code] = {
+                    "full_name": desc,
+                    "category": cat,
+                    "work_type": wt,
+                    "scope": None,
+                    "description": f"Structure class: {desc}. Used alongside a permit type code (e.g. BLD + structure class 330) to describe what kind of building the work is on.",
+                    "source": "Phoenix PDD Online (official) — ddlStructureClass dropdown",
+                    "verified": True,
+                    "is_structure_class": True,
+                }
+            else:
+                result[code] = {
+                    "full_name": desc,
+                    "category": cat,
+                    "work_type": wt,
+                    "scope": None,
+                    "description": desc,
+                    "source": "Phoenix PDD Online (official)",
+                    "verified": True,
+                    "is_structure_class": False,
+                }
+
+        # Second pass: codes in permit data not in the official list
+        # (older ArcGIS codes like RSF, RSME, etc.)
+        session = get_session()
+        from sqlalchemy import text
+        known_types = session.execute(
+            text("SELECT DISTINCT native_type FROM permits WHERE jurisdiction = :j AND native_type IS NOT NULL"),
+            {"j": jurisdiction},
+        ).scalars().all()
+        session.close()
+
+        for t in known_types:
+            if t and t not in result:
+                cat, wt = categorize_phoenix_type(t)
+                result[t] = {
+                    "full_name": None,
+                    "category": cat,
+                    "work_type": wt,
+                    "scope": None,
+                    "description": f"Code from ArcGIS permit data — not in current PDD Online system",
+                    "source": "ArcGIS permit data",
+                    "verified": False,
+                }
+
+        return result
+
+    if "tempe" in jur_lower:
+        # Tempe uses Accela-based classification codes in raw_permit_class.
+        # These are already descriptive labels like "330 - Commercial Buildings".
+        from scripts.scraper.tempe_permits import categorize_permit, classify_work_type
+        session = get_session()
+        from sqlalchemy import text
+        known_classes = session.execute(
+            text("SELECT DISTINCT raw_permit_class FROM permits WHERE jurisdiction = :j AND raw_permit_class IS NOT NULL AND raw_permit_class != '' ORDER BY raw_permit_class"),
+            {"j": jurisdiction},
+        ).scalars().all()
+        session.close()
+
+        result = {}
+        for pc in known_classes:
+            if pc:
+                cat = categorize_permit(raw_permit_class=pc)
+                wt = classify_work_type(raw_permit_class=pc)
+                result[pc] = {
+                    "full_name": pc,
+                    "category": cat,
+                    "work_type": wt,
+                    "scope": None,
+                    "description": pc,
+                    "source": "Tempe Accela Civic Platform (raw_permit_class)",
+                    "verified": True,
+                }
+        return result
+
+    # Generic fallback for other jurisdictions
+    import re
+    session = get_session()
+    from sqlalchemy import text
+    known_types = session.execute(
+        text("SELECT DISTINCT native_type FROM permits WHERE jurisdiction = :j AND native_type IS NOT NULL"),
+        {"j": jurisdiction},
+    ).scalars().all()
+    session.close()
+
+    result = {}
+    for t in known_types:
+        if t:
+            # Check if the type is a descriptive label (contains spaces, parentheses,
+            # mixed case) vs. a short code (all-caps, 2-8 chars, no spaces).
+            # Descriptive labels ARE the full name already.
+            is_short_code = bool(
+                t.isupper() and len(t) <= 10 and " " not in t and "(" not in t
+            )
+            if is_short_code:
+                result[t] = {
+                    "full_name": None,
+                    "category": None,
+                    "work_type": None,
+                    "scope": None,
+                    "description": "Type code in use — no verified definition available",
+                    "source": "From data",
+                    "verified": False,
+                }
+            else:
+                result[t] = {
+                    "full_name": t,
+                    "category": None,
+                    "work_type": None,
+                    "scope": None,
+                    "description": t,
+                    "source": "Self-describing label — this IS the full name",
+                    "verified": True,
+                }
+    return result
+
+
+@app.route("/permits/type-codes")
+def permit_type_codes():
+    """Reference page showing all permit type codes for a jurisdiction."""
+    jurisdiction = request.args.get("jurisdiction", "").strip()
+    code_filter = request.args.get("code", "").strip().upper()
+
+    codes = _get_type_codes_for_jurisdiction(jurisdiction) if jurisdiction else {}
+
+    # Always pass the full list — code_filter just sets an anchor target
+    # for scrolling to that specific row
+    anchor_code = code_filter if code_filter in codes else None
+
+    # Sort: verified first, then alphabetical
+    sorted_codes = sorted(codes.items(), key=lambda kv: (not kv[1]["verified"], kv[0]))
+
+    # Get all jurisdictions for the dropdown (always, even when filtered)
+    session = get_session()
+    known_jurisdictions = [
+        j for j in session.execute(
+            select(Permit.jurisdiction).distinct().where(Permit.jurisdiction.isnot(None)).order_by(Permit.jurisdiction)
+        ).scalars().all()
+    ]
+    session.close()
+
+    return render_template(
+        "permit_type_codes.html",
+        codes=sorted_codes,
+        jurisdiction=jurisdiction,
+        anchor_code=anchor_code,
+        jurisdictions=known_jurisdictions,
+    )
+
+
+@app.route("/permits/api/type-codes")
+def permit_type_codes_api():
+    """JSON endpoint returning type code reference for a jurisdiction."""
+    jurisdiction = request.args.get("jurisdiction", "").strip()
+    code_filter = request.args.get("code", "").strip().upper()
+
+    codes = _get_type_codes_for_jurisdiction(jurisdiction) if jurisdiction else {}
+
+    if code_filter and code_filter in codes:
+        codes = {code_filter: codes[code_filter]}
+
+    return jsonify(codes)
 
 
 if __name__ == "__main__":

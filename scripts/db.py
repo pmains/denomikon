@@ -704,6 +704,11 @@ class Permit(Base):
     raw_permit_type = Column(Text, nullable=True, default=None)
     raw_permit_type_description = Column(Text, nullable=True, default=None)
     raw_permit_class = Column(String(64), nullable=True, default=None)
+    # Phoenix PDD structure class code (001-997 series): classifies what kind
+    # of building the work is on, e.g. 001=Single Family, 007=10+ Family Units.
+    # Used alongside permit_type to identify residential construction in the
+    # PDD system where housing units appear under BLD, LPRN, TCO, etc.
+    struct_class = Column(String(8), nullable=True, default=None)
     zone = Column(String(64), nullable=True, default=None)
     source_system = Column(String(64), nullable=True, default=None, index=True)
     source_record_id = Column(String(64), nullable=True, default=None, index=True)
@@ -3360,6 +3365,7 @@ def _migrate_existing_tables(engine=None):
         ("permits", "source_system", "VARCHAR(64) DEFAULT NULL"),
         ("permits", "source_record_id", "VARCHAR(64) DEFAULT NULL"),
         ("permits", "contractor_license", "VARCHAR(64) DEFAULT NULL"),
+        ("permits", "struct_class", "VARCHAR(8) DEFAULT NULL"),
     ]
 
     with engine.connect() as conn:

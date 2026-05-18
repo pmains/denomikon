@@ -48,7 +48,7 @@ COFO_BASE_URL = "https://apps-secure.phoenix.gov/PDD/Search/CertOfOccupancyDataD
 # city's PDD unit/valuation/sqft CSVs and ArcGIS Planning_Permit layer.
 #
 # Code prefix patterns:
-#   R*   — Residential (RSF=Single Family, RM=Multi-family, RE=Existing, etc.)
+#   R*   — Residential (RSF=Single Family, RM=Multi-family, RSME=Alteration, RE=Existing, etc.)
 #   C*   — Commercial (CSW=Shell Work, CCO=Commercial CO, CPA=Plan Amend, etc.)
 #   BLD  — Building (commercial or mixed-use construction)
 #   LP*  — Land-use permits (LPRM=Plan Review, LPRN=New, etc.)
@@ -75,8 +75,13 @@ PHX_CATEGORY_MAP: dict[str, str] = {
     "RPRL": "Residential", "RPRS": "Residential", "RPRC": "Residential",
     "RPRM": "Residential", "RPRU": "Residential", "RDEM": "Residential",
     "RMC": "Residential", "RNSP": "Residential", "RPDR": "Residential",
-    "RCIT": "Residential", "RVSX": "Residential", "RVSN": "Residential",
-    "RVSC": "Residential", "RVCA": "Residential", "RSM": "Residential",
+    "RCIT": "Residential",
+    # RV* prefix = REVISION TO PLAN in the current PDD Online system
+    "RVSX": "Plan Review", "RVSN": "Plan Review",
+    "RVSC": "Plan Review", "RVCA": "Plan Review",
+    # RPDR = RESIDENTIAL PLAN REVIEW - DESIGN REVIEW
+    "RPDR": "Plan Review",
+    "RSM": "Residential",
     "RSC": "Residential",
     # Commercial type codes
     "BLD": "Commercial", "BLDS": "Commercial", "BLDA": "Commercial",
@@ -109,13 +114,18 @@ PHX_CATEGORY_MAP: dict[str, str] = {
 PHX_WORK_TYPE_MAP: dict[str, str] = {
     # Residential new construction
     "RSF": "New Construction", "RS": "New Construction",
-    "RSME": "New Construction", "RSP": "New Construction",
+    "RSME": "Alteration", "RSP": "New Construction",
     "RM": "New Construction", "RSTD": "New Construction",
     "RSFA": "New Construction", "RSFC": "New Construction",
     "RSFI": "New Construction", "RSC": "New Construction",
-    "RSM": "New Construction", "RVSN": "New Construction",
-    "RVSX": "New Construction", "RVSC": "New Construction",
-    "RVCA": "New Construction", "COND": "New Construction",
+    "RSM": "New Construction",
+    # RV* prefix = REVISION TO PLAN in the current PDD Online system
+    "RVSN": "Plan Review",
+    "RVSX": "Plan Review", "RVSC": "Plan Review",
+    "RVCA": "Plan Review",
+    # RPDR = RESIDENTIAL PLAN REVIEW - DESIGN REVIEW
+    "RPDR": "Plan Review",
+    "COND": "New Construction",
     # Residential alterations
     "RE": "Alteration", "REM": "Alteration", "REC": "Alteration",
     "RPV": "Alteration", "RSE": "Alteration", "RWH": "Alteration",
@@ -201,8 +211,10 @@ def categorize_phoenix_type(native_type: Optional[str]) -> tuple:
 
     if category is None:
         # Prefix-based fallback for category
-        if code.startswith("R"):
+        if code.startswith("R") and not code.startswith("RV"):
             category = "Residential"
+        elif code.startswith("RV"):
+            category = "Plan Review"
         elif code.startswith("C"):
             category = "Commercial"
         elif code.startswith("LP") or code.startswith("LS"):
@@ -222,10 +234,12 @@ def categorize_phoenix_type(native_type: Optional[str]) -> tuple:
             work_type = "Trade"
         elif code.startswith("RE") or code.startswith("RSE") or code.startswith("REM"):
             work_type = "Alteration"
-        elif code.startswith("RS") or code.startswith("RM") or code.startswith("RV"):
+        elif code.startswith("RS") or code.startswith("RM"):
             work_type = "New Construction"
-        elif code.startswith("R"):
+        elif code.startswith("R") and not code.startswith("RV"):
             work_type = "Alteration"
+        elif code.startswith("RV"):
+            work_type = "Plan Review"
         elif code.startswith("SGN"):
             work_type = "Trade"
         elif code.startswith("EL") or code.startswith("PL") or code == "MECH":
@@ -428,6 +442,7 @@ def _normalize_pdd_row(csv_row: list[str], report_id: str = "") -> dict:
     raw_type = _val(0) or None
     permit_number = _val(1) or None
     issue_date_raw = _val(2) or None
+    struct_class = _val(5) or None  # PDD Struct Class (001-997 series)
     permit_status = _val(3) or None
     completed_date_raw = _val(4) or None
     address = _val(10) or None
@@ -489,6 +504,7 @@ def _normalize_pdd_row(csv_row: list[str], report_id: str = "") -> dict:
         "source_record_id": source_record_id,
         "native_type": raw_type,
         "raw_permit_class": use_code,
+        "struct_class": struct_class,
         "subdivision": subdivision,
         "lot": lot,
         # Phoenix PDD type code classification
