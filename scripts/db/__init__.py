@@ -45,7 +45,7 @@ from db.migrations import (
 from db.persist import (
     create_or_get_meeting, update_sync_status, upsert_meeting,
     persist_meeting, _upsert_case_and_event, replace_meeting_data_safe,
-    persist_votes, _detect_vote_attributes, _ensure_membership,
+    persist_votes, persist_pz_votes, _detect_vote_attributes, _ensure_membership,
     infer_absence_for_meeting,
 )
 from db.queries import (

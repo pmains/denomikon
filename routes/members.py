@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 
 from flask import Blueprint, render_template, request, jsonify, redirect
-from sqlalchemy import select, func, text as sa_text, or_
+from sqlalchemy import select, func, case, text as sa_text, or_
 
 from db import (
     get_session, Supervisor, MeetingSupervisor, Person,
@@ -48,6 +48,37 @@ def _date_query_string(start_date, end_date, start_year, end_year) -> str:
     if parts:
         return "?" + "&".join(parts)
     return ""
+
+
+def _get_pz_member_stats(session, person_id, start_date=None, end_date=None):
+    """Get basic voting stats for a PZ commissioner."""
+    from db.models import MemberVote, Meeting as MeetingModel
+    q = select(
+        func.count(MemberVote.id).label("total"),
+        func.sum(case((MemberVote.vote == "yes", 1), else_=0)).label("yes"),
+        func.sum(case((MemberVote.vote == "no", 1), else_=0)).label("no"),
+    ).join(
+        AgendaItemVote, AgendaItemVote.id == MemberVote.agenda_item_vote_id,
+    ).join(
+        MeetingModel, MeetingModel.meeting_id == AgendaItemVote.meeting_id,
+    ).where(
+        MemberVote.member_id == person_id,
+        MemberVote.body == "pz",
+    )
+    if start_date:
+        q = q.where(MeetingModel.meeting_date >= start_date)
+    if end_date:
+        q = q.where(MeetingModel.meeting_date <= end_date)
+    row = session.execute(q).one()
+    total = row.total or 0
+    yes = row.yes or 0
+    no = row.no or 0
+    abstain = max(total - yes - no, 0)
+    return {
+        "total_votes": total, "yes": yes, "no": no, "abstain": abstain,
+        "absences": 0, "attendance_rate": None, "split_votes_attended": 0,
+        "with_majority": 0, "against_majority": 0, "dissent_rate": None,
+    }
 
 
 VOTE_BADGE_CLASSES = {
@@ -430,43 +461,59 @@ def member_detail(jurisdiction_slug, body_code, slug):
         end_date = f"{end_year}-12-31"
 
     slug_out = get_supervisor_slug(sup)
-    stats = get_supervisor_vote_stats(
-        session, sup.id, body="bos",
-        start_date=start_date, end_date=end_date,
-    )
-    split_votes = get_supervisor_split_votes(
-        session, sup.id, body="bos",
-        start_date=start_date, end_date=end_date,
-    )
-    dissents = [s for s in split_votes if s.get("with_or_against_majority") == "against_majority"]
-    abstentions = get_supervisor_abstentions(
-        session, sup.id, body="bos",
-        start_date=start_date, end_date=end_date,
-    )
-    absences = get_supervisor_absences(
-        session, sup.id, body="bos",
-        start_date=start_date, end_date=end_date,
-    )
-    full_record = get_supervisor_full_voting_record(
-        session, sup.id, body="bos", limit=25,
-        start_date=start_date, end_date=end_date,
-    )
-    swing_votes = get_supervisor_swing_votes(
-        session, sup.id, body="bos",
-        start_date=start_date, end_date=end_date,
-    )
-    count_q = (
-        select(func.count())
-        .select_from(SupervisorVote)
-        .join(AgendaItemVote, AgendaItemVote.id == SupervisorVote.agenda_item_vote_id)
-        .join(Meeting, Meeting.meeting_id == AgendaItemVote.meeting_id)
-        .where(SupervisorVote.supervisor_id == sup.id, AgendaItemVote.body == "bos")
-    )
-    if start_date:
-        count_q = count_q.where(Meeting.meeting_date >= start_date)
-    if end_date:
-        count_q = count_q.where(Meeting.meeting_date <= end_date)
-    full_record_count = session.execute(count_q).scalar() or 0
+    is_pz = body_code == "pz"
+
+    if is_pz:
+        stats = _get_pz_member_stats(
+            session, sup.id,
+            start_date=start_date, end_date=end_date,
+        )
+        split_votes = []
+        dissents = []
+        abstentions = []
+        absences = []
+        full_record = []
+        full_record_count = 0
+        swing_votes = []
+    else:
+        stats = get_supervisor_vote_stats(
+            session, sup.id, body="bos",
+            start_date=start_date, end_date=end_date,
+        )
+        split_votes = get_supervisor_split_votes(
+            session, sup.id, body="bos",
+            start_date=start_date, end_date=end_date,
+        )
+        dissents = [s for s in split_votes if s.get("with_or_against_majority") == "against_majority"]
+        abstentions = get_supervisor_abstentions(
+            session, sup.id, body="bos",
+            start_date=start_date, end_date=end_date,
+        )
+        absences = get_supervisor_absences(
+            session, sup.id, body="bos",
+            start_date=start_date, end_date=end_date,
+        )
+        full_record = get_supervisor_full_voting_record(
+            session, sup.id, body="bos", limit=25,
+            start_date=start_date, end_date=end_date,
+        )
+        swing_votes = get_supervisor_swing_votes(
+            session, sup.id, body="bos",
+            start_date=start_date, end_date=end_date,
+        )
+        count_q = (
+            select(func.count())
+            .select_from(SupervisorVote)
+            .join(AgendaItemVote, AgendaItemVote.id == SupervisorVote.agenda_item_vote_id)
+            .join(Meeting, Meeting.meeting_id == AgendaItemVote.meeting_id)
+            .where(SupervisorVote.supervisor_id == sup.id, AgendaItemVote.body == "bos")
+        )
+        if start_date:
+            count_q = count_q.where(Meeting.meeting_date >= start_date)
+        if end_date:
+            count_q = count_q.where(Meeting.meeting_date <= end_date)
+        full_record_count = session.execute(count_q).scalar() or 0
+
     session.close()
 
     filtered_analytics_url = (
@@ -478,6 +525,7 @@ def member_detail(jurisdiction_slug, body_code, slug):
         member=sup,
         slug=slug_out,
         filtered_analytics_url=filtered_analytics_url,
+        is_pz=is_pz,
         stats=stats,
         split_votes=split_votes,
         dissents=dissents,

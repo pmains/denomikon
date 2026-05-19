@@ -861,6 +861,43 @@ def cmd_executive_participants(args):
         print(f"  {p.person_name} ({p.role_or_title}) — {p.participation_type}")
 
 
+def cmd_pz_votes(args):
+    """Extract votes from PZ meeting minutes and persist to DB."""
+    from scraper.pz_minutes import extract_votes_from_minutes
+    from db import persist_pz_votes, get_session
+
+    raw_meeting_id = args.meeting_id
+    # Strip date prefix from AgendaCenter meeting IDs
+    # e.g. "_12042025-3533" → "3533", or pass through if already clean
+    if "_" in raw_meeting_id:
+        meeting_id = raw_meeting_id.split("-")[-1] if "-" in raw_meeting_id else raw_meeting_id.split("_")[-1]
+    else:
+        meeting_id = raw_meeting_id
+
+    minutes_url = args.minutes_url
+    if not minutes_url:
+        minutes_url = f"https://www.maricopa.gov/AgendaCenter/ViewFile/Minutes/{raw_meeting_id}"
+
+    print(f"Fetching minutes: {minutes_url}")
+    result = extract_votes_from_minutes(minutes_url)
+    if not result or not result.get("votes"):
+        print("No votes found in minutes.")
+        return
+
+    votes = result["votes"]
+    print(f"Found {len(votes)} vote(s) in minutes.")
+    for v in votes:
+        cn = v.get("case_number") or "(unknown)"
+        print(f"  {v.get('motion_result','').capitalize()} {v.get('tally_yes',0)}-{v.get('tally_no',0)}  Case: {cn}")
+
+    session = get_session()
+    try:
+        count = persist_pz_votes(session, meeting_id, votes)
+        print(f"Persisted {count} member-vote record(s).")
+    finally:
+        session.close()
+
+
 def cmd_advisor(args):
     """Search for an executive session advisor."""
     from db import get_executive_session_participants, get_session
@@ -1084,6 +1121,11 @@ def parse_args(argv=None):
     sp_adv = sub.add_parser("advisor", help="Search for an executive session advisor")
     sp_adv.add_argument("name", help="Advisor name")
 
+    # pz-votes — extract votes from PZ meeting minutes
+    sp_pzv = sub.add_parser("pz-votes", help="Extract votes from PZ meeting minutes")
+    sp_pzv.add_argument("meeting_id", help="PZ meeting ID (e.g. _04092026-3711)")
+    sp_pzv.add_argument("--minutes-url", default=None, help="Override minutes PDF URL")
+
     return p.parse_args(argv)
 
 
@@ -1121,6 +1163,7 @@ def main(argv=None):
         "meeting-attendance": cmd_meeting_attendance,
         "executive-participants": cmd_executive_participants,
         "advisor": cmd_advisor,
+        "pz-votes": cmd_pz_votes,
     }
 
     handler = dispatch.get(args.command)

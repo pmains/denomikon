@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from db.models import (Base, Meeting, AgendaItem, SupportingDocument,
     AgendaItemVote, SupervisorVote, Supervisor, Case, CaseEvent,
     PZItemDetail, MeetingSupervisor, PublicBodyMember, Person,
-    BodyMembership, PublicBody, MeetingAttendance)
+    BodyMembership, PublicBody, MeetingAttendance, MemberVote)
 from db.core import get_engine, get_session
 from db.queries import _resolve_jurisdiction_id
 from db.meeting_utils import (
@@ -786,4 +786,155 @@ def infer_absence_for_meeting(
             session.add(att)
             inferred.append(att)
     return inferred
+
+
+def persist_pz_votes(
+    session: Session,
+    meeting_id: str,
+    votes: list[dict],
+) -> int:
+    """Persist PZ commission votes extracted from meeting minutes.
+
+    1. Match each vote to the corresponding agenda_item_vote by case number.
+    2. Create/update AgendaItemVote records with motion results.
+    3. Upsert Person records for commissioners.
+    4. Create MemberVote records for each commissioner's vote.
+
+    Args:
+        session: DB session
+        meeting_id: The PZ meeting identifier
+        votes: List of vote dicts from pz_minutes.parse_minutes_votes()
+
+    Returns:
+        Number of vote records persisted.
+    """
+    count = 0
+    body = "pz"
+
+    # Get existing agenda items for this meeting, keyed by case_number
+    items = session.execute(
+        select(AgendaItem).where(
+            AgendaItem.body == body,
+            AgendaItem.meeting_id == meeting_id,
+        )
+    ).scalars().all()
+
+    # Build case_number -> AgendaItem lookup
+    case_item_map: dict[str, AgendaItem] = {}
+    for item in items:
+        cn = (item.case_number or "").strip().upper()
+        if cn:
+            case_item_map[cn] = item
+
+    for vote in votes:
+        case_number = (vote.get("case_number") or "").upper().strip()
+        if not case_number:
+            log.warning("PZ vote missing case number, skipping")
+            continue
+
+        item = case_item_map.get(case_number)
+        if not item:
+            log.warning("No agenda item found for case %s in meeting %s", case_number, meeting_id)
+            continue
+
+        # Create or find AgendaItemVote
+        aiv = session.execute(
+            select(AgendaItemVote).where(
+                AgendaItemVote.body == body,
+                AgendaItemVote.meeting_id == meeting_id,
+                AgendaItemVote.agenda_item_number == item.agenda_item_number,
+            )
+        ).scalar_one_or_none()
+
+        motion_result = vote.get("motion_result", "").capitalize()
+        tally_yes = vote.get("tally_yes", 0)
+        tally_no = vote.get("tally_no", 0)
+        is_split = tally_no > 0
+
+        if aiv:
+            aiv.motion_result = motion_result
+            aiv.is_split_vote = is_split
+            aiv.unanimous = not is_split
+        else:
+            # Create new agenda item vote
+            aiv = AgendaItemVote(
+                body=body,
+                agenda_item_id=item.id,
+                meeting_id=meeting_id,
+                agenda_item_number=item.agenda_item_number,
+                c_number=case_number,
+                c_number_base=case_number,
+                motion_result=motion_result,
+                vote_text=f"{tally_yes}-{tally_no}",
+                is_split_vote=is_split,
+                unanimous=not is_split,
+                majority_position="yes" if tally_yes > tally_no else "no",
+            )
+            session.add(aiv)
+            session.flush()
+
+        # Upsert commissioners as Person records
+        # Build name -> person_id map from both ayes and nays lists
+        commissioner_names: set[str] = set()
+        for name in vote.get("ayes", []):
+            commissioner_names.add(name.strip())
+        for name in vote.get("nays", []):
+            commissioner_names.add(name.strip())
+
+        name_to_id: dict[str, int] = {}
+        for name in commissioner_names:
+            norm = name.lower().strip()
+            existing = session.execute(
+                select(Person).where(Person.normalized_name == norm)
+            ).scalar_one_or_none()
+            if existing:
+                name_to_id[name] = existing.id
+            else:
+                new_person = Person(
+                    name=name.strip(),
+                    normalized_name=norm,
+                )
+                session.add(new_person)
+                session.flush()
+                name_to_id[name] = new_person.id
+
+        # Delete existing member votes for this AIV
+        session.execute(
+            MemberVote.__table__.delete().where(
+                MemberVote.agenda_item_vote_id == aiv.id,
+            )
+        )
+
+        # Insert Ayes
+        for name in vote.get("ayes", []):
+            name = name.strip()
+            pid = name_to_id.get(name)
+            if not pid:
+                continue
+            session.add(MemberVote(
+                body=body,
+                agenda_item_vote_id=aiv.id,
+                member_id=pid,
+                vote="yes",
+                is_dissent=False,
+            ))
+            count += 1
+
+        # Insert Nays
+        for name in vote.get("nays", []):
+            name = name.strip()
+            pid = name_to_id.get(name)
+            if not pid:
+                continue
+            session.add(MemberVote(
+                body=body,
+                agenda_item_vote_id=aiv.id,
+                member_id=pid,
+                vote="no",
+                is_dissent=True,
+            ))
+            count += 1
+
+    session.commit()
+    return count
 

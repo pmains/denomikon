@@ -13,8 +13,12 @@
             <div>
                 <h3 class="card-title mb-1">{{ member.name }}</h3>
                 <p class="text-muted mb-0">
-                    {% if member.district %}District {{ member.district }} &middot; {% endif %}
-                    Board of Supervisors
+                    {% if is_pz %}
+                        Planning &amp; Zoning Commission
+                    {% else %}
+                        {% if member.district %}District {{ member.district }} &middot; {% endif %}
+                        Board of Supervisors
+                    {% endif %}
                 </p>
             </div>
             <div>

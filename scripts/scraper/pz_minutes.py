@@ -1,509 +1,399 @@
-"""Extract votes, conditions, and member rosters from P&Z minutes PDFs."""
+"""PZ Minutes parser — extracts commissioner votes from minutes PDFs.
+
+Minutes URLs follow the pattern:
+    /AgendaCenter/ViewFile/Minutes/_MMDDYYYY-XXXX
+
+The PDF text contains commissioner attendance, agenda items by case number,
+and per-item vote records in a standardised format:
+
+    COMMISSION ACTION: Commissioner [name] adopted a motion recommending the
+    Board of Supervisors [approve|deny] [case(s)] with conditions [...].
+    Commissioner [name] second. Approved X-Y. Ayes: list. Nays: list.
+"""
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 import tempfile
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from scraper.utils import CASE_PATTERN
+log = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
 
-def parse_pz_minutes_pdf(filepath: str) -> dict:
-    """Parse a P&Z Minutes PDF and extract structured vote/condition data.
+USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
 
-    Returns:
-      {
-        "members_present": ["Linda Milhaven", "Jan Leighton", ...],
-        "members_absent": ["Kevin Danzeisen"],
-        "votes": [
-          {
-            "c_numbers": ["MCP250001", "Z250044"],  # consent: multiple cases
-            "mover": "Commissioner Toma",
-            "seconder": "Commissioner Leighton",
-            "motion_result": "approved",
-            "ayes": ["Finter", "Hernandez", ...],
-            "nays": ["Rochwalik"],
-            "vote_text": "Commissioner Toma adopted a motion...",
-            "conditions": "a. Development...\nb. ...",
-          },
-          ...
-        ],
-        "member_vote_records": [
-          {"name": "Linda Milhaven", "vote": "aye", "meeting_id": ""},
-          ...
-        ],
-      }
+# Regex to extract case numbers like SU250007, Z250044, MCP250001, CPAZ250011
+CASE_RE = re.compile(r"[A-Z]+-?\d{3,}")
+
+# ---------------------------------------------------------------------------
+# Download
+# ---------------------------------------------------------------------------
+
+def download_minutes_pdf(minutes_url: str) -> Optional[str]:
+    """Download a minutes PDF to a temporary file.
+
+    Returns path to the temp file, or None on failure.
     """
-    if not filepath or not Path(filepath).exists():
-        return {"members_present": [], "members_absent": [], "votes": []}
-
-    text = _pdf_to_text(filepath)
-    if not text:
-        return {"members_present": [], "members_absent": [], "votes": []}
-
-    lines = text.split("\n")
-
-    members_present = _extract_members(lines, "MEMBERS PRESENT")
-    members_absent = _extract_members(lines, "MEMBERS ABSENT")
-
-    # Build a combined list of all unique commissioner last names for vote matching
-    commissioner_last_names = _extract_last_names(members_present + members_absent)
-
-    # Parse the document into sections with their C-numbers and vote blocks
-    sections = _parse_sections(lines)
-
-    votes = []
-    section_cnumbers: list[str] = []
-    current_section_type = ""
-
-    for entry in sections:
-        if entry["type"] == "section_header":
-            current_section_type = entry.get("section_type", "")
-            # Reset accumulated C-numbers for this section
-            section_cnumbers = []
-        elif entry["type"] == "c_number":
-            cn = entry["c_number"]
-            if cn and cn not in section_cnumbers:
-                section_cnumbers.append(cn)
-        elif entry["type"] == "vote":
-            vote_data = _parse_commission_action(
-                entry["text"],
-                section_cnumbers,
-                commissioner_last_names,
-            )
-            # Skip votes that have no C-numbers (e.g., minutes approval)
-            if vote_data and vote_data.get("c_numbers"):
-                votes.append(vote_data)
-            # Reset so C-numbers before the NEXT vote block are fresh
-            section_cnumbers = []
-
-    return {
-        "members_present": members_present,
-        "members_absent": members_absent,
-        "votes": votes,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _pdf_to_text(filepath: str) -> str:
-    """Run pdftotext -layout and return the full text."""
     try:
-        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w") as f:
-            txt_path = f.name
-        subprocess.run(
-            ["pdftotext", "-layout", filepath, txt_path],
-            capture_output=True, timeout=30,
+        req = urllib.request.Request(
+            minutes_url, headers={"User-Agent": USER_AGENT},
         )
-        text = Path(txt_path).read_text(encoding="utf-8", errors="replace")
-        Path(txt_path).unlink(missing_ok=True)
-        return text
-    except Exception:
-        return ""
-
-
-def _extract_members(lines: list[str], heading: str) -> list[str]:
-    """Extract commissioner names from MEMBERS PRESENT / MEMBERS ABSENT sections.
-
-    Format:
-        MEMBERS PRESENT:     In-person
-                             Ms. Linda Milhaven, Chair
-                             Mr. Derrik Rochwalik
-                             ...
-    """
-    members: list[str] = []
-    in_section = False
-
-    for line in lines:
-        stripped = line.strip()
-
-        if stripped.startswith(heading):
-            in_section = True
-            # The heading line itself may contain names:
-            # "MEMBERS ABSENT:             Mr. Kevin Danzeisen"
-            after_heading = stripped[len(heading):].strip().lstrip(":;,").strip()
-            if after_heading:
-                h_match = re.match(
-                    r"^(Mr|Ms|Mrs)\.\s+([A-Za-z]+(?:\s+[A-Za-z]+)+)",
-                    after_heading
-                )
-                if h_match:
-                    full_name = h_match.group(2).strip()
-                    if full_name not in members:
-                        members.append(full_name)
-            continue
-
-        if in_section:
-            # Stop at blank line or next section heading
-            if not stripped:
-                break
-            if stripped.startswith("MEMBERS") and ":" in stripped:
-                break
-            if stripped.startswith("STAFF"):
-                break
-
-            # Skip "In-person", "GoToWebinar" labels
-            if stripped.lower() in ("in-person", "gotowebinar"):
-                continue
-
-            # Extract name: "Ms. Linda Milhaven, Chair" or "Mr. Erik Hernandez, Vice Chair (left...)"
-            # Match patterns like "Ms. First Last" or "Mr. First Last"
-            name_match = re.match(
-                r"^(Mr|Ms|Mrs)\.\s+([A-Za-z]+(?:\s+[A-Za-z]+)+)", stripped
-            )
-            if name_match:
-                full_name = name_match.group(2).strip()
-                if full_name not in members:
-                    members.append(full_name)
-
-    return members
-
-
-def _extract_last_names(members: list[str]) -> list[str]:
-    """Extract last names from full names for vote matching.
-
-    "Linda Milhaven" -> "Milhaven"
-    "Erik Hernandez" -> "Hernandez"
-    """
-    last_names = []
-    for full_name in members:
-        parts = full_name.split()
-        if parts:
-            last_names.append(parts[-1])
-    return last_names
-
-
-def _parse_sections(lines: list[str]) -> list[dict]:
-    """Parse the document into an ordered list of entries.
-
-    Each entry is one of:
-        {"type": "section_header", "section_type": "consent", "line": N}
-        {"type": "c_number", "c_number": "Z250032", "line": N}
-        {"type": "vote", "text": "...", "line": N, "end_line": N}
-    """
-    entries: list[dict] = []
-
-    SECTION_PATTERN = re.compile(
-        r"^\s*(CONTINUANCE|WITHDRAWN|CONSENT|REGULAR)\s+AGENDA\s*$", re.I
-    )
-
-    SECTION_TYPE_MAP = {
-        "continuance": "continuance",
-        "withdrawn": "withdrawn",
-        "consent": "consent",
-        "regular": "regular",
-    }
-
-    in_vote = False
-    vote_lines: list[str] = []
-
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped:
-            if in_vote:
-                vote_lines.append(stripped)
-            continue
-
-        # Detect COMMISSION ACTION marker — this starts a vote block
-        if "COMMISSION ACTION" in stripped:
-            if vote_lines:
-                entries.append({
-                    "type": "vote",
-                    "text": "\n".join(vote_lines),
-                })
-                vote_lines = []
-            in_vote = True
-            vote_lines.append(stripped)
-            continue
-
-        # Inside a vote block, accumulate everything until next section break
-        if in_vote:
-            # Check for section header (next section = vote block ends)
-            sm = SECTION_PATTERN.match(stripped)
-            if sm:
-                entries.append({
-                    "type": "vote",
-                    "text": "\n".join(vote_lines),
-                })
-                vote_lines = []
-                in_vote = False
-
-                section_type = SECTION_TYPE_MAP.get(sm.group(1).lower(), sm.group(1).lower())
-                entries.append({
-                    "type": "section_header",
-                    "section_type": section_type,
-                    "line": i,
-                })
-                continue
-
-            # Check for Other Matters / Adjournment (vote block ends)
-            if re.match(r"^Other\s+Matters$|^Adjournment$", stripped, re.I):
-                entries.append({
-                    "type": "vote",
-                    "text": "\n".join(vote_lines),
-                })
-                vote_lines = []
-                in_vote = False
-                continue
-
-            vote_lines.append(stripped)
-            continue
-
-        # Outside vote — check for section header
-        sm = SECTION_PATTERN.match(stripped)
-        if sm:
-            section_type = SECTION_TYPE_MAP.get(sm.group(1).lower(), sm.group(1).lower())
-            entries.append({
-                "type": "section_header",
-                "section_type": section_type,
-                "line": i,
-            })
-            continue
-
-        # Outside vote — check for C-number
-        cn = _extract_single_c_number(stripped)
-        if cn:
-            entries.append({"type": "c_number", "c_number": cn, "line": i})
-            continue
-
-    # Flush final vote
-    if vote_lines:
-        entries.append({
-            "type": "vote",
-            "text": "\n".join(vote_lines),
-        })
-
-    return entries
-
-
-def _extract_single_c_number(text: str) -> Optional[str]:
-    """Extract a C-number from a line that represents a case item.
-
-    Matches:
-      "Z250032"
-      "Zoning - Z250032"
-      "Military Compatibility Permit - MCP250001"
-      "Z250045"
-      "CPA2023007"
-
-    Does NOT match conditions headers like "MCP250001 conditions;"
-    """
-    # Exclude conditions headers: "CASE conditions;" or "CASE conditions:"
-    if re.search(r"[A-Z]+-?\d{3,}\s+conditions\s*[;:]", text, re.I):
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = resp.read()
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        tmp.write(data)
+        tmp.close()
+        return tmp.name
+    except Exception as e:
+        log.warning("Failed to download minutes PDF %s: %s", minutes_url, e)
         return None
 
-    # Primary: match at start or after " - " separator
-    m = re.search(r"(?:^|\s*[-–—]\s*)(" + CASE_PATTERN.pattern + r")", text)
-    if m:
-        return m.group(1).strip()
 
-    # Fallback: any C-number in the text
-    m2 = CASE_PATTERN.search(text)
-    if m2:
-        return m2.group(1).strip()
+def extract_minutes_text(pdf_path: str) -> Optional[str]:
+    """Extract text from a minutes PDF.
+
+    Uses pdftotext if available; falls back to pypdf.
+
+    Returns the raw text, or None on failure.
+    """
+    # Try pdftotext first
+    try:
+        result = subprocess.run(
+            ["pdftotext", "-layout", pdf_path, "-"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout
+    except (FileNotFoundError, subprocess.SubprocessError):
+        pass
+
+    # Fallback: use pypdf
+    try:
+        # Add local pylib to path if pypdf is not yet importable
+        import sys as _sys
+        try:
+            import pypdf
+        except ImportError:
+            _sys.path.insert(0, "/opt/poliscopic/pylib")
+            import pypdf
+        reader = pypdf.PdfReader(pdf_path)
+        pages = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                pages.append(text)
+        return "\n".join(pages) if pages else None
+    except Exception as e:
+        log.warning("pypdf extraction failed: %s", e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Commissioner attendance parsing
+# ---------------------------------------------------------------------------
+
+_COMMISSIONER_TITLE_RE = re.compile(
+    r"(Mr|Ms|Mrs|Dr)\.?\s+([A-Z][a-zA-Z]+\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)"
+)
+
+def parse_commissioners(text: str) -> dict:
+    """Extract commissioner names from the MEMBERS PRESENT / ABSENT sections.
+
+    Returns a dict with:
+      present: list of {'name': str, 'title': str}
+      absent: list of names
+    """
+    present: list[dict] = []
+    absent: list[str] = []
+    current_section = None
+
+    # Strip page headers/footers that may interfere
+    text = re.sub(r"(?m)^.*Page\s+\d+\s+of\s+\d+\s*$", "", text)
+    text = re.sub(
+        r"(?m)^Maricopa County Planning and Zoning Commission.*$", "", text,
+    )
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        upper = stripped.upper()
+
+        if "MEMBERS PRESENT" in upper:
+            current_section = "present"
+            continue
+        if "MEMBERS ABSENT" in upper:
+            current_section = "absent"
+            continue
+        if "STAFF PRESENT" in upper or "COUNTY AGENCIES" in upper:
+            current_section = None
+            continue
+
+        if current_section == "present":
+            # Skip "In-person" / "GoToWebinar" labels
+            if stripped in ("In-person", "GoToWebinar"):
+                continue
+            m = _COMMISSIONER_TITLE_RE.match(stripped)
+            if m:
+                name = m.group(2).strip()
+                present.append({"name": name, "title": m.group(0)})
+        elif current_section == "absent":
+            m = _COMMISSIONER_TITLE_RE.match(stripped)
+            if m:
+                absent.append(m.group(2).strip())
+
+    return {"present": present, "absent": absent}
+
+
+# ---------------------------------------------------------------------------
+# Vote action parsing
+# ---------------------------------------------------------------------------
+
+def _normalize_vote_name(name: str) -> str:
+    """Normalize a commissioner name for matching."""
+    return name.strip().lower()
+
+
+def _find_case_number_in_context(
+    action_text: str,
+    minutes_lines: list[str],
+    action_line_start: int,
+) -> Optional[str]:
+    """Try to find the case number referenced in a COMMISSION ACTION.
+
+    Checks:
+    1. Direct mention in the action text itself
+    2. The closest case number mentioned in lines *before* the action
+       (looking backward through section headers and item titles)
+    """
+    # 1. Check the action text directly
+    cases = CASE_RE.findall(action_text)
+    if cases:
+        return cases[0]
+
+    # 2. Look backward through preceding lines for a case number
+    for i in range(action_line_start - 1, max(0, action_line_start - 50), -1):
+        line = minutes_lines[i]
+        cases = CASE_RE.findall(line)
+        if cases:
+            # Only take case numbers that are standalone (not part of other text)
+            return cases[0]
 
     return None
 
 
-def _parse_commission_action(
-    text: str,
-    section_cnumbers: list[str],
-    commissioner_last_names: list[str],
-) -> Optional[dict]:
-    """Parse a COMMISSION ACTION: block.
+def _parse_action_text(action_text: str) -> dict:
+    """Parse a single COMMISSION ACTION text block.
 
-    Example text:
-      "COMMISSION ACTION: Commissioner Toma adopted a motion recommending the Board of
-       Supervisors approve the consent agenda. MCP250001 with conditions 'a'-'g' and
-       Z250044 with conditions 'a'-'i'. Commissioner Rochwalik second. Approved 8-0.
-       Ayes: Finter, Hernandez, Leighton, Lindblom, Milhaven, Rochwalik, Toma, Whitney."
-
-    Returns dict or None on failure.
+    Returns dict with keys:
+      commissioner_motion (motion maker)
+      commissioner_second (seconder)
+      action (approve/deny/continue/withdraw)
+      case_number
+      motion_result (approved/denied)
+      tally_yes, tally_no
+      ayes (list of names)
+      nays (list of names)
     """
-    # Remove the COMMISSION ACTION: prefix
-    text = re.sub(r"^COMMISSION ACTION:\s*", "", text).strip()
-    if not text:
-        return None
-
-    # Determine motion_result
-    motion_result = "unknown"
-    if re.search(r"\bapproved\b", text, re.I):
-        motion_result = "approved"
-    elif re.search(r"\bdenied\b", text, re.I):
-        motion_result = "denied"
-    elif re.search(r"\bcontinued?\b", text, re.I):
-        motion_result = "continued"
-    elif re.search(r"\bwithdrawn\b|was withdrawn", text, re.I):
-        motion_result = "withdrawn"
-
-    # Skip "No action required" actions
-    if "no action required" in text.lower():
-        return None
-
-    # Skip minutes-approval actions (no meaningful motion)
-    if re.search(r"approved the .* minutes as written", text, re.I):
-        return None
-
-    # Extract mover: "Commissioner Toma adopted a motion" or "Chair Milhaven approved"
-    mover = ""
-    m_match = re.search(r"(?:Commissioner|Chair)\s+([A-Za-z]+)\s+(?:adopted\s+a\s+motion|approved)", text, re.I)
-    if m_match:
-        mover = f"Commissioner {m_match.group(1).strip()}"
-
-    # Extract seconder: "Commissioner Rochwalik second"
-    seconder = ""
-    s_match = re.search(r"(?:Commissioner|Chair)\s+([A-Za-z]+)\s+second", text, re.I)
-    if s_match:
-        seconder = f"Commissioner {s_match.group(1).strip()}"
-
-    # Extract result: "Approved 8-0" or "Approved 7-1"
-    result_match = re.search(r"Approved\s+(\d+)[–—-](\d+)", text, re.I)
-    result_text = result_match.group(0) if result_match else ""
-
-    # Only look at first ~1500 chars for Ayes/Nays — the actual
-    # motion text and vote results appear before conditions begin
-    vote_head = text[:1500]
-    # Grab the first ~500 chars (where Ayes/Nays typically appear)
-    vote_tail = vote_head[:500]
-
-    # Extract Ayes: find "Ayes:" in vote_tail, collect names until
-    # we hit "Nays:" or conditions text (lowercase-starting lines)
-    ayes: list[str] = []
-    nays: list[str] = []
-
-    # Flatten first 800 chars — Ayes/Nays appear in the first few lines
-    flat_head = vote_head[:800].replace("\n", " ")
-
-    # Ayes: extract comma-separated names until "Nays:" or conditions text
-    ayes_raw = ""
-    a_m = re.search(r"Ayes?:\s*([A-Z][a-z]+(?:,\s*[A-Z][a-z]+)*)", flat_head)
-    if a_m:
-        ayes_raw = a_m.group(1)
-    ayes = [n.strip() for n in ayes_raw.split(",") if n.strip()]
-
-    # Nays: extract comma-separated names similarly
-    nays_raw = ""
-    n_m = re.search(r"Nays?:\s*([A-Z][a-z]+(?:,\s*[A-Z][a-z]+)*)", flat_head)
-    if n_m:
-        nays_raw = n_m.group(1)
-    nays = [n.strip() for n in nays_raw.split(",") if n.strip()]
-
-    # Determine which C-numbers this vote applies to
-    # Use C-numbers found in the vote text, plus any from the section
-    vote_cnumbers = list(section_cnumbers)
-    for cn_match in CASE_PATTERN.finditer(text):
-        cn = cn_match.group(1).strip()
-        if cn and cn not in vote_cnumbers:
-            vote_cnumbers.append(cn)
-
-    # Extract conditions from the vote text
-    conditions = _extract_conditions_from_text(text)
-
-    return {
-        "c_numbers": vote_cnumbers,
-        "mover": mover,
-        "seconder": seconder,
-        "motion_result": motion_result,
-        "result_text": result_text,
-        "ayes": ayes,
-        "nays": nays,
-        "vote_text": text[:10000],
-        "conditions": conditions,
+    result: dict = {
+        "commissioner_motion": None,
+        "commissioner_second": None,
+        "action": None,
+        "case_number": None,
+        "motion_result": None,
+        "tally_yes": 0,
+        "tally_no": 0,
+        "ayes": [],
+        "nays": [],
     }
 
-
-def _clean_commissioner_name(name: str) -> str:
-    """Clean a commissioner name extracted from vote text.
-
-    Strips trailing periods, leading/trailing whitespace, and filters
-    out single-letter entries (from conditions lists like 'a'-'p').
-    """
-    name = name.strip().rstrip(".")
-    # Skip single letters (from conditions lists like "a.", "b." etc.)
-    if len(name) <= 1:
-        return ""
-    return name
-
-
-def _extract_conditions_from_text(vote_text: str) -> Optional[str]:
-    """Extract conditions text from a full COMMISSION ACTION block.
-
-    Conditions start with a header like "Z250044 conditions;" and continue
-    until the end of the vote block.  The header itself is excluded from
-    the returned conditions text.
-    """
-    # Find the conditions header pattern
-    cond_match = re.search(
-        r"[A-Z]+-?\d{3,}\s+conditions\s*[;:]\s*", vote_text, re.I
+    # Motion maker: "Commissioner [name] adopted a motion"
+    m = re.search(
+        r"Commissioner\s+(.+?)\s+adopted\s+a\s+motion", action_text, re.I,
     )
-    if not cond_match:
-        return None
+    if m:
+        result["commissioner_motion"] = m.group(1).strip().rstrip(",")
 
-    # Return everything after the conditions header
-    cond_start = cond_match.end()
-    conds = vote_text[cond_start:].strip()
-    if not conds:
-        return None
+    # Seconder: "Commissioner [name] second"
+    m = re.search(r"Commissioner\s+(.+?)\s+second(?:ed)?", action_text, re.I)
+    if m:
+        result["commissioner_second"] = m.group(1).strip()
 
-    return conds
+    # Action type and case number
+    # "recommending the Board of Supervisors approve SU250007"
+    # "recommending the Board of Supervisors deny SU240001"
+    m = re.search(
+        r"recommending\s+the\s+Board\s+of\s+Supervisors\s+(approve|deny|continue|withdraw)\b",
+        action_text, re.I,
+    )
+    if m:
+        result["action"] = m.group(1).lower()
+
+    # Case number — may appear inline with the action or separately
+    cases = CASE_RE.findall(action_text)
+    if cases:
+        result["case_number"] = cases[0]
+
+    # Motion result: "Approved X-Y" or "Denied X-Y" or "Continued"
+    m = re.search(r"\b(Approved|Denied|Continued|Withdrawn)\b", action_text, re.I)
+    if m:
+        result["motion_result"] = m.group(1).lower()
+
+    # Tally: "X-Y" — handle hyphenated-across-lines "70" = "7-0"
+    m = re.search(r"(Approved|Denied)\s+(\d+)\s*[-–]\s*(\d+)", action_text, re.I)
+    if m:
+        result["tally_yes"] = int(m.group(2))
+        result["tally_no"] = int(m.group(3))
+    else:
+        # Handle concatenated tally "70" = "7-0" (hyphen lost across line break)
+        m = re.search(r"(Approved|Denied)\s+(\d{2})\b", action_text, re.I)
+        if m:
+            tally_str = m.group(2)
+            # Try splitting a 2-digit string into yes-no
+            # Common tallies: 70, 80, 71, 81, 60, 50
+            for split_at in range(1, len(tally_str)):
+                yes_part = tally_str[:split_at]
+                no_part = tally_str[split_at:]
+                result["tally_yes"] = int(yes_part)
+                result["tally_no"] = int(no_part)
+                break  # Just use first split (most common: 70, 80)
+
+        # Fallback: try to find any digit
+        if result["tally_yes"] == 0 and result["tally_no"] == 0:
+            m = re.search(r"(Approved|Denied)\s+(\d+)", action_text, re.I)
+            if m:
+                tally_str = m.group(2)
+                if len(tally_str) == 2:
+                    result["tally_yes"] = int(tally_str[0])
+                    result["tally_no"] = int(tally_str[1])
+
+    # Ayes list
+    # Ayes list — ends at period followed by space, or at Nays, or at end of string
+    m = re.search(
+        r"Ayes\s*:\s*([A-Z][a-zA-Z]+(?:,\s*[A-Z][a-zA-Z]+(?:\.\s*)?)*)",
+        action_text, re.I,
+    )
+    if m:
+        names = [n.strip() for n in m.group(1).split(",")]
+        result["ayes"] = [n for n in names if n]
+
+    # Nays list (may be on its own)
+    # Nays list
+    m = re.search(r"Nays\s*:\s*([A-Z][a-zA-Z]+(?:,\s*[A-Z][a-zA-Z]+)*)", action_text, re.I)
+    if m:
+        names = [n.strip() for n in m.group(1).split(",")]
+        result["nays"] = [n for n in names if n]
+
+    return result
 
 
-def _extract_conditions(lines: list[str], vote_start_line: int) -> Optional[str]:
-    """Extract conditions text following a vote block.
+def aggregate_vote_text(action_text: str) -> str:
+    """Collapse multi-line COMMISSION ACTION text into a single line."""
+    return " ".join(
+        line.strip() for line in action_text.splitlines()
+    ).strip()
 
-    Conditions begin with a line like "MCP250001 conditions;" or "Z250044 conditions;"
-    and continue until the next section break, COMMISSION ACTION, or page footer.
 
-    Returns the full conditions text, or None if no conditions found.
+# ---------------------------------------------------------------------------
+# Main minutes parser
+# ---------------------------------------------------------------------------
+
+def parse_minutes_votes(text: str) -> list[dict]:
+    """Parse all COMMISSION ACTION vote records from minutes text.
+
+    Returns a list of vote dicts, each with:
+      commissioner_motion, commissioner_second, action, case_number,
+      motion_result, tally_yes, tally_no, ayes (names), nays (names)
     """
-    cond_start = -1
-    cond_end = -1
-    in_conditions = False
-    conditions_lines: list[str] = []
+    lines = text.splitlines()
+    votes: list[dict] = []
 
-    for i in range(vote_start_line, len(lines)):
-        stripped = lines[i].strip()
+    # Find COMMISSION ACTION start lines
+    action_starts: list[int] = []
+    for i, line in enumerate(lines):
+        if line.strip().startswith("COMMISSION ACTION:"):
+            action_starts.append(i)
 
-        if not stripped:
-            if in_conditions:
-                conditions_lines.append(stripped)
-            continue
-
-        # Check for conditions header: "CASE conditions;"
-        if re.search(r"[A-Z]+-?\d{3,}\s+conditions[;:]", stripped, re.I):
-            in_conditions = True
-            if cond_start < 0:
-                cond_start = i
-            conditions_lines.append(stripped)
-            continue
-
-        # Stop at next section, vote, or page footer
-        if in_conditions:
-            if re.search(r"COMMISSION ACTION", stripped, re.I):
-                cond_end = i
-                break
-            if re.search(
-                r"^(CONTINUANCE|WITHDRAWN|CONSENT|REGULAR)\s+AGENDA\s*$",
-                stripped, re.I,
-            ):
-                cond_end = i
-                break
-            if re.search(r"^Page\s+\d+\s+of\s+\d+$|^\w+\s+\d+,?\s+\d{4}\s+(?:Planning|ZIPPOR)", stripped, re.I):
-                # Page footer — skip it
+    for start_idx in action_starts:
+        # Collect the action text (spans multiple lines until next section)
+        action_lines: list[str] = []
+        j = start_idx
+        while j < len(lines):
+            stripped = lines[j].strip()
+            if not stripped:
+                j += 1
                 continue
-            if re.search(r"^Other\s+Matters$|^Adjournment$", stripped, re.I):
-                cond_end = i
+            # Stop at next COMMISSION ACTION or major section header
+            if (
+                j > start_idx
+                and (
+                    stripped.startswith("COMMISSION ACTION:")
+                    or stripped.startswith("CONTINUANCE AGENDA")
+                    or stripped.startswith("WITHDRAWN AGENDA")
+                    or stripped.startswith("CONSENT AGENDA")
+                    or stripped.startswith("REGULAR AGENDA")
+                    or stripped.startswith("ADJOURNMENT")
+                )
+            ):
                 break
+            action_lines.append(stripped)
+            j += 1
 
-            conditions_lines.append(stripped)
+        full_text = " ".join(action_lines)
+        result = _parse_action_text(full_text)
 
-    if not conditions_lines:
+        # If no motion result found, skip (not a vote action, e.g. "minutes approved")
+        if not result["motion_result"]:
+            continue
+        # Skip the "minutes approval" action
+        if result["motion_result"] == "approved" and not result["action"]:
+            continue
+
+        # Try to find case number from surrounding context if not in action text
+        if not result["case_number"]:
+            cn = _find_case_number_in_context(
+                full_text, lines, start_idx,
+            )
+            if cn:
+                result["case_number"] = cn
+
+        votes.append(result)
+
+    return votes
+
+
+# ---------------------------------------------------------------------------
+# Full pipeline
+# ---------------------------------------------------------------------------
+
+def extract_votes_from_minutes(minutes_url: str) -> Optional[list[dict]]:
+    """Download minutes PDF, extract text, and parse vote records.
+
+    Returns a list of vote dicts, or None on failure.
+    """
+    pdf_path = download_minutes_pdf(minutes_url)
+    if not pdf_path:
         return None
 
-    return "\n".join(conditions_lines).strip()
+    try:
+        text = extract_minutes_text(pdf_path)
+        if not text:
+            return None
+
+        commissioners = parse_commissioners(text)
+        votes = parse_minutes_votes(text)
+
+        return {
+            "commissioners": commissioners,
+            "votes": votes,
+        }
+    finally:
+        Path(pdf_path).unlink(missing_ok=True)
