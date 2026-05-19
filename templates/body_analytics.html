@@ -266,7 +266,8 @@
 {# ─── 4. Per-Member Pairwise Alignment ─── #}
 <div class="card mb-4">
     <div class="card-header d-flex align-items-center gap-2">
-        <select id="pairwise-select" class="form-select" style="width:auto;font-size:1rem" onchange="showPairwise(this.value)">
+        <h5 class="mb-0">Pairwise Alignment</h5>
+        <select id="pairwise-select" class="form-select ms-3" style="width:auto;font-size:1rem" onchange="showPairwise(this.value)">
             {% for sup in active_sups %}
             {% set sd = alignments[sup.id] %}
             {% if sd.pairs %}
@@ -274,13 +275,12 @@
             {% endif %}
             {% endfor %}
         </select>
-        <h5 class="mb-0">Pairwise Alignment</h5>
     </div>
     <div class="card-body p-0">
         {% for sup in active_sups %}
         {% set sd = alignments[sup.id] %}
         {% if sd.pairs %}
-        <div class="pairwise-table" id="pairwise-{{ sup.id }}" style="display:{% if loop.first %}block{% else %}none{% endif %}">
+        <div class="pairwise-table" id="pairwise-{{ sup.id }}">
             <div class="table-responsive">
                 <table class="table table-sm table-hover mb-0">
                     <thead class="table-light">
@@ -337,6 +337,9 @@ function showPairwise(id) {
         el.style.display = el.id === 'pairwise-' + id ? 'block' : 'none';
     });
 }
+// Show the first member's table on load
+var firstOption = document.querySelector('#pairwise-select option');
+if (firstOption) showPairwise(firstOption.value);
 </script>
 
 {% else %}
