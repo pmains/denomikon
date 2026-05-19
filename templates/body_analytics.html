@@ -263,18 +263,24 @@
     </table>
 </div>
 
-{# ─── 4. Per-Member Detail Cards ─── #}
-{% for sup in active_sups %}
-    {% set sd = alignments[sup.id] %}
-    {% if sd.pairs %}
-    <div class="card mb-4">
-        <div class="card-header">
-            <h5 class="mb-0">
-                <a href="/members/{{ jurisdiction_slug }}/{{ body_code }}/{{ sd.slug }}" class="text-decoration-none">{{ sd.name }}</a>
-                &mdash; Pairwise Alignment
-            </h5>
-        </div>
-        <div class="card-body p-0">
+{# ─── 4. Per-Member Pairwise Alignment ─── #}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">Pairwise Alignment</h5>
+        <select id="pairwise-select" class="form-select form-select-sm" style="width:auto" onchange="showPairwise(this.value)">
+            {% for sup in active_sups %}
+            {% set sd = alignments[sup.id] %}
+            {% if sd.pairs %}
+            <option value="{{ sup.id }}">{{ sd.name }}</option>
+            {% endif %}
+            {% endfor %}
+        </select>
+    </div>
+    <div class="card-body p-0">
+        {% for sup in active_sups %}
+        {% set sd = alignments[sup.id] %}
+        {% if sd.pairs %}
+        <div class="pairwise-table" id="pairwise-{{ sup.id }}" style="display:{% if loop.first %}block{% else %}none{% endif %}">
             <div class="table-responsive">
                 <table class="table table-sm table-hover mb-0">
                     <thead class="table-light">
@@ -320,9 +326,18 @@
                 </table>
             </div>
         </div>
+        {% endif %}
+        {% endfor %}
     </div>
-    {% endif %}
-{% endfor %}
+</div>
+
+<script>
+function showPairwise(id) {
+    document.querySelectorAll('.pairwise-table').forEach(function(el) {
+        el.style.display = el.id === 'pairwise-' + id ? 'block' : 'none';
+    });
+}
+</script>
 
 {% else %}
 <p class="text-muted mb-4">No supervisors active during this time period.</p>
