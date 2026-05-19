@@ -1,0 +1,331 @@
+{% extends "base.html" %}
+{% block title %}Voting Alignment — {{ body_code|upper }} — Poliscopic Meetings{% endblock %}
+{% block content %}
+
+<a href="/bodies" class="btn btn-outline-secondary btn-sm mb-3">&larr; All bodies</a>
+
+<h3 class="mb-3">{{ body_code|upper }} — Voting Alignment</h3>
+
+{# ─── Year/Date Range Filter ─── #}
+{% set show_clear = start_date or start_year or end_date or end_year %}
+<form method="GET" class="d-flex flex-wrap gap-2 mb-4 align-items-center p-3 border rounded bg-light">
+    <label class="form-label mb-0 small fw-semibold me-1">Filter by year:</label>
+    <select name="start_year" class="form-select form-select-sm" style="width:auto">
+        <option value="">From</option>
+        {% for y in range(2020, 2027) %}
+        <option value="{{ y }}"{% if start_year == y|string %} selected{% endif %}>{{ y }}</option>
+        {% endfor %}
+    </select>
+    <span class="text-muted small">to</span>
+    <select name="end_year" class="form-select form-select-sm" style="width:auto">
+        <option value="">To</option>
+        {% for y in range(2020, 2027) %}
+        <option value="{{ y }}"{% if end_year == y|string %} selected{% endif %}>{{ y }}</option>
+        {% endfor %}
+    </select>
+    <button type="submit" class="btn btn-sm btn-outline-primary">Apply</button>
+    {% if show_clear %}
+    <a href="/members/{{ jurisdiction_slug }}/{{ body_code }}/analytics" class="btn btn-sm btn-outline-secondary">Clear</a>
+    {% endif %}
+    {% if start_date or end_date %}
+    <span class="badge bg-secondary p-2 ms-2">{{ start_date or '…' }} &ndash; {{ end_date or '…' }}</span>
+    {% elif start_year or end_year %}
+    <span class="badge bg-secondary p-2 ms-2">{% if start_year %}{{ start_year }}{% else %}…{% endif %} &ndash; {% if end_year %}{{ end_year }}{% else %}…{% endif %}</span>
+    {% endif %}
+</form>
+
+{% if active_sups %}
+
+{# ─── 0. Body Summary Cards ─── #}
+{% set s = body_stats %}
+<div class="row row-cols-2 row-cols-md-4 row-cols-lg-5 g-3 mb-4">
+    <div class="col">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0">{{ s.total_votes }}</h5>
+                <small class="text-muted">Total Votes</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-success">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-success">{{ s.yes }}</h5>
+                <small class="text-muted">Yes</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-danger">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-danger">{{ s.no }}</h5>
+                <small class="text-muted">No</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-warning">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-warning">{{ s.abstain }}</h5>
+                <small class="text-muted">Abstain</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-secondary">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-secondary">{{ s.absences }}</h5>
+                <small class="text-muted">Absences</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-info">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-info">{{ s.split_votes_attended }}</h5>
+                <small class="text-muted">Split Votes</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-success">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-success">{{ s.with_majority }}</h5>
+                <small class="text-muted">With Majority</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100 border-danger">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0 text-danger">{{ s.against_majority }}</h5>
+                <small class="text-muted">Against Majority</small>
+            </div>
+        </div>
+    </div>
+    <div class="col">
+        <div class="card text-center h-100">
+            <div class="card-body py-3">
+                <h5 class="card-title mb-0">
+                    {% if s.dissent_rate is not none %}
+                    {{ (s.dissent_rate * 100)|round(1) }}%
+                    {% else %}
+                    &mdash;
+                    {% endif %}
+                </h5>
+                <small class="text-muted">Dissent Rate</small>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# ─── 1. Alignment Heatmap ─── #}
+<h4 class="mb-2">Alignment Heatmap</h4>
+<p class="text-muted small mb-2">
+    Split-vote alignment percentage between each pair of members. Higher = more aligned. Diagonal shows no data.
+</p>
+<div class="table-responsive mb-4">
+    <table class="table table-sm table-bordered text-center" style="max-width:700px">
+        <thead class="table-light">
+            <tr>
+                <th style="width:140px"></th>
+                {% for m in heatmap_members %}
+                <th><a href="/members/{{ jurisdiction_slug }}/{{ body_code }}/{{ m.slug }}" class="text-decoration-none small">{{ m.name.split()|last }}</a></th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for m_i in heatmap_members %}
+            {% set i = loop.index0 %}
+            <tr>
+                <th class="text-start small"><a href="/members/{{ jurisdiction_slug }}/{{ body_code }}/{{ m_i.slug }}" class="text-decoration-none">{{ m_i.name.split()|first }}</a></th>
+                {% for j in range(heatmap_members|length) %}
+                    {% set pct = heatmap_matrix[i][j] %}
+                    <td style="{% if i == j %}
+                        background:#e9ecef;color:#6c757d
+                    {% elif pct is not none %}
+                        background:hsl(120, 70%, {{ 100 - (100 - pct) * 0.6 }}%);color:#000
+                    {% else %}
+                        background:#f8f9fa;color:#999
+                    {% endif %};font-weight:600;font-size:0.85rem">
+                        {% if i == j %}—{% elif pct is not none %}{{ pct }}%{% else %}—{% endif %}
+                    </td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{# ─── 2. Split Votes ─── #}
+<h4 class="mb-2">Split Votes <small class="text-muted">(board was divided)</small></h4>
+{% if split_votes %}
+<div class="table-controls-wrapper" data-table-id="split-votes">
+<div class="d-flex flex-wrap gap-2 mb-2 align-items-center">
+  <input type="search" class="form-control form-control-sm ts-search" placeholder="Search..." style="max-width:220px">
+  <span class="flex-grow-1"></span>
+  <select class="form-select form-select-sm ts-page-size" style="width:auto">
+    <option value="10">10</option>
+    <option value="25">25</option>
+    <option value="50">50</option>
+    <option value="100">100</option>
+  </select>
+</div>
+<div class="table-responsive mb-1">
+    <table class="table table-sm table-hover">
+        <thead class="table-light">
+            <tr>
+                <th>Date</th>
+                <th>Type</th>
+                <th>Item</th>
+                <th>Title</th>
+                <th>Tally</th>
+                <th>Result</th>
+                <th>Votes</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for sv in split_votes %}
+            <tr>
+                <td><a href="/meetings/{{ sv.meeting_id }}">{{ sv.meeting_date }}</a></td>
+                <td>{{ sv.meeting_type }}</td>
+                <td>{{ sv.agenda_item_number }}</td>
+                <td>{{ sv.agenda_item_title[:60] }}{% if sv.agenda_item_title|length > 60 %}...{% endif %}</td>
+                <td><code>{{ sv.vote_tally }}</code></td>
+                <td><span class="badge bg-secondary">{{ sv.motion_result or '' }}</span></td>
+                <td style="max-width:240px">
+                    {% for mv in sv.member_votes %}
+                    <a href="/members/{{ jurisdiction_slug }}/{{ body_code }}/{{ mv.slug }}" class="text-decoration-none badge bg-{{ {'yes':'success','aye':'success','no':'danger','nay':'danger','abstain':'warning','abstained':'warning','absent':'secondary','recused':'secondary'}.get(mv.vote|lower,'secondary') }} me-1">{{ mv.name.split()|last }}: {{ mv.vote|title }}</a>
+                    {% endfor %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <small class="text-muted ts-info"></small>
+  <nav>
+    <ul class="pagination pagination-sm mb-0">
+      <li class="page-item ts-prev disabled"><a class="page-link" href="#">Previous</a></li>
+      <li class="page-item ts-next"><a class="page-link" href="#">Next</a></li>
+    </ul>
+  </nav>
+</div>
+</div>
+{% else %}
+<p class="text-muted mb-4">No split votes recorded.</p>
+{% endif %}
+
+{# ─── 3. Body Voting Alignment Summary ─── #}
+<h4 class="mb-2">Voting Alignment Analysis</h4>
+<p class="text-muted small mb-2">
+    How often each member votes the same way as the rest of the body on comparable items.
+    Excludes abstentions and absences.
+</p>
+<div class="table-responsive mb-4">
+    <table class="table table-sm table-hover">
+        <thead class="table-light">
+            <tr>
+                <th>Member</th>
+                <th class="text-center">Comparable</th>
+                <th class="text-center">Same</th>
+                <th class="text-center">Different</th>
+                <th class="text-center">Overall</th>
+                <th class="text-center">Split Compares</th>
+                <th class="text-center">Split Same</th>
+                <th class="text-center">Split Alignment</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for bs in body_summary %}
+            <tr>
+                <td><a href="/members/{{ jurisdiction_slug }}/{{ body_code }}/{{ bs.slug }}"><strong>{{ bs.name }}</strong></a></td>
+                <td class="text-center">{{ bs.total_comparable }}</td>
+                <td class="text-center">{{ bs.same }}</td>
+                <td class="text-center">{{ bs.different }}</td>
+                <td class="text-center">
+                    {% if bs.overall_pct is not none %}
+                    <strong>{{ bs.overall_pct }}%</strong>
+                    {% else %}&mdash;{% endif %}
+                </td>
+                <td class="text-center">{{ bs.split_comparable }}</td>
+                <td class="text-center">{{ bs.split_same }}</td>
+                <td class="text-center">
+                    {% if bs.split_pct is not none %}
+                    <strong>{{ bs.split_pct }}%</strong>
+                    {% else %}&mdash;{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{# ─── 4. Per-Member Detail Cards ─── #}
+{% for sup in active_sups %}
+    {% set sd = alignments[sup.id] %}
+    {% if sd.pairs %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">
+                <a href="/members/{{ jurisdiction_slug }}/{{ body_code }}/{{ sd.slug }}" class="text-decoration-none">{{ sd.name }}</a>
+                &mdash; Pairwise Alignment
+            </h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Other Member</th>
+                            <th class="text-center">Comparable</th>
+                            <th class="text-center">Same</th>
+                            <th class="text-center">Different</th>
+                            <th class="text-center">Overall</th>
+                            <th class="text-center">Split Compares</th>
+                            <th class="text-center">Split Same</th>
+                            <th class="text-center">Split Alignment</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for va in sd.pairs %}
+                        <tr>
+                            <td>
+                                {% if va.slug %}
+                                <a href="/members/{{ jurisdiction_slug }}/{{ body_code }}/{{ va.slug }}"><strong>{{ va.other_name }}</strong></a>
+                                {% else %}
+                                <strong>{{ va.other_name }}</strong>
+                                {% endif %}
+                            </td>
+                            <td class="text-center">{{ va.total_comparable_votes }}</td>
+                            <td class="text-center">{{ va.same_votes }}</td>
+                            <td class="text-center">{{ va.different_votes }}</td>
+                            <td class="text-center">
+                                {% if va.overall_alignment_pct is not none %}
+                                <strong>{{ va.overall_alignment_pct }}%</strong>
+                                {% else %}&mdash;{% endif %}
+                            </td>
+                            <td class="text-center">{{ va.split_vote_comparable }}</td>
+                            <td class="text-center">{{ va.split_vote_same }}</td>
+                            <td class="text-center">
+                                {% if va.split_vote_alignment_pct is not none %}
+                                <strong>{{ va.split_vote_alignment_pct }}%</strong>
+                                {% else %}&mdash;{% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+{% endfor %}
+
+{% else %}
+<p class="text-muted mb-4">No supervisors active during this time period.</p>
+{% endif %}
+
+<p class="text-muted small mt-3"><a href="/bodies">&larr; Back to bodies</a></p>
+{% endblock %}

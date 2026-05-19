@@ -60,11 +60,10 @@ from db.queries import (
     get_supervisor_absences, get_supervisor_full_voting_record,
     get_supervisor_slug, get_supervisor_majority_alignment_stats,
     get_supervisor_voting_alignment, get_supervisor_swing_votes,
-    get_supervisor_controversial_votes,
     get_public_bodies_by_jurisdiction, get_body_members,
     _enhance_member_for_template,
 )
 from db.votes import (
     _normalize_vote_value, _make_supervisor_slug,
-    infer_majority_position, compute_vote_tally, detect_controversy_flags,
+    infer_majority_position, compute_vote_tally,
 )

@@ -18,9 +18,37 @@
                 </p>
             </div>
             <div>
-                <a href="/members/{{ slug }}/analytics" class="btn btn-outline-info btn-sm">View Analytics &rarr;</a>
+                <a href="{{ filtered_analytics_url }}" class="btn btn-outline-primary btn-sm">View Analytics &rarr;</a>
             </div>
         </div>
+
+        {# ─── Year Range Filter ─── #}
+        {% set show_clear = start_date or start_year or end_date or end_year %}
+        <form method="GET" class="mt-3 pt-2 border-top d-flex flex-wrap gap-2 align-items-center">
+            <label class="form-label mb-0 small fw-semibold me-1">Filter by year:</label>
+            <select name="start_year" class="form-select form-select-sm" style="width:auto">
+                <option value="">From</option>
+                {% for y in range(2020, 2027) %}
+                <option value="{{ y }}"{% if start_year == y|string %} selected{% endif %}>{{ y }}</option>
+                {% endfor %}
+            </select>
+            <span class="text-muted small">to</span>
+            <select name="end_year" class="form-select form-select-sm" style="width:auto">
+                <option value="">To</option>
+                {% for y in range(2020, 2027) %}
+                <option value="{{ y }}"{% if end_year == y|string %} selected{% endif %}>{{ y }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-sm btn-outline-primary">Apply</button>
+            {% if show_clear %}
+            <a href="/members/{{ slug }}" class="btn btn-sm btn-outline-secondary">Clear</a>
+            {% endif %}
+            {% if start_date or end_date %}
+            <span class="badge bg-secondary p-2 ms-2">{{ start_date or '…' }} &ndash; {{ end_date or '…' }}</span>
+            {% elif start_year or end_year %}
+            <span class="badge bg-secondary p-2 ms-2">{% if start_year %}{{ start_year }}{% else %}…{% endif %} &ndash; {% if end_year %}{{ end_year }}{% else %}…{% endif %}</span>
+            {% endif %}
+        </form>
     </div>
 </div>
 
@@ -263,7 +291,42 @@
 <p class="text-muted mb-4">No dissenting votes recorded.</p>
 {% endif %}
 
-{# ─── D. Abstentions ─── #}
+{# ─── D. Swing Votes ─── #}
+<h4 class="mb-2">Swing Votes <small class="text-muted">(split votes where margin was 1 vote)</small></h4>
+{% if swing_votes %}
+<div class="table-responsive mb-3">
+    <table class="table table-sm table-hover">
+        <thead class="table-light">
+            <tr>
+                <th>Date</th>
+                <th>Type</th>
+                <th>#</th>
+                <th>Title</th>
+                <th>Vote</th>
+                <th>Result</th>
+                <th>Tally</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for sw in swing_votes %}
+            <tr>
+                <td><a href="/meetings/{{ sw.meeting_id }}">{{ sw.meeting_date }}</a></td>
+                <td>{{ sw.meeting_type }}</td>
+                <td>{{ sw.agenda_item_number }}</td>
+                <td>{{ sw.agenda_item_title[:60] }}{% if sw.agenda_item_title|length > 60 %}...{% endif %}</td>
+                <td>{{ vote_badge(sw.supervisor_vote) }}</td>
+                <td><span class="badge bg-secondary">{{ sw.motion_result }}</span></td>
+                <td><code>{{ sw.vote_tally }}</code></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-muted mb-4">No swing votes identified.</p>
+{% endif %}
+
+{# ─── E. Abstentions ─── #}
 <h4 class="mb-2">Abstentions</h4>
 {% if abstentions %}
 {{ table_controls_wrapper("abstentions", fresult=["approved","denied","continued","carried"]) }}
@@ -294,7 +357,7 @@
 <p class="text-muted mb-4">No abstentions recorded.</p>
 {% endif %}
 
-{# ─── E. Absences ─── #}
+{# ─── F. Absences ─── #}
 <h4 class="mb-2">Absences</h4>
 {% if absences %}
 {{ table_controls_wrapper("absences") }}
@@ -321,7 +384,7 @@
 <p class="text-muted mb-4">No absences recorded.</p>
 {% endif %}
 
-{# ─── F. Full Voting Record (API-backed) ─── #}
+{# ─── G. Full Voting Record (API-backed) ─── #}
 <h4 class="mb-2">Full Voting Record <small class="text-muted">({{ full_record_count }} votes)</small></h4>
 {% if full_record_count %}
 <div class="table-controls-wrapper" data-table-id="full-record" data-api-url="{{ full_record_api_url }}">

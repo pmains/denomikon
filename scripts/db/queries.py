@@ -15,7 +15,7 @@ from db.models import (Person, Supervisor, Meeting, MeetingSupervisor,
     ExecutiveSessionParticipant, BodyMembership, PublicBody, Jurisdiction,
     BodySeat)
 from db.core import get_session
-from db.votes import _normalize_vote_value, detect_controversy_flags
+from db.votes import _normalize_vote_value
 
 def _resolve_jurisdiction_id(session: Session, body: str) -> Optional[int]:
     """Resolve a meeting's jurisdiction_id from its public body code."""
@@ -229,6 +229,8 @@ def get_supervisor_vote_stats(
     session: Session,
     sup_id: int,
     body: str = "bos",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> dict:
     """Get aggregated voting statistics for a supervisor.
 
@@ -238,19 +240,22 @@ def get_supervisor_vote_stats(
     from collections import Counter
 
     # --- 1. Vote counts via SQL GROUP BY (was: load all rows in Python) ---
-    rows = session.execute(
-        select(SupervisorVote.vote, func.count(SupervisorVote.id).label("cnt"),
+    q = select(SupervisorVote.vote, func.count(SupervisorVote.id).label("cnt"),
                SupervisorVote.agenda_item_vote_id)
-        .join(
-            AgendaItemVote,
-            AgendaItemVote.id == SupervisorVote.agenda_item_vote_id,
-        )
-        .where(
-            SupervisorVote.supervisor_id == sup_id,
-            AgendaItemVote.body == body,
-        )
-        .group_by(SupervisorVote.vote, SupervisorVote.agenda_item_vote_id)
-    ).all()
+    q = q.join(
+        AgendaItemVote,
+        AgendaItemVote.id == SupervisorVote.agenda_item_vote_id,
+    ).where(
+        SupervisorVote.supervisor_id == sup_id,
+        AgendaItemVote.body == body,
+    ).group_by(SupervisorVote.vote, SupervisorVote.agenda_item_vote_id)
+    if start_date or end_date:
+        q = q.join(Meeting, Meeting.meeting_id == AgendaItemVote.meeting_id)
+        if start_date:
+            q = q.where(Meeting.meeting_date >= start_date)
+        if end_date:
+            q = q.where(Meeting.meeting_date <= end_date)
+    rows = session.execute(q).all()
 
     # Aggregate in Python: group by normalized vote value
     total_votes = 0
@@ -359,6 +364,8 @@ def get_supervisor_split_votes(
     session: Session,
     sup_id: int,
     body: str = "bos",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> list[dict]:
     """Get all split votes involving this supervisor.
 
@@ -366,19 +373,32 @@ def get_supervisor_split_votes(
         meeting_id, meeting_date, meeting_type, agenda_item_number,
         agenda_item_title, c_number, supervisor_vote,
         motion_result, majority_position, with_or_against_majority
+
+    Args:
+        start_date: ISO date string (YYYY-MM-DD) to filter from (inclusive).
+        end_date: ISO date string (YYYY-MM-DD) to filter to (inclusive).
     """
-    # 1. Get all AIV IDs this supervisor voted on (body-scoped)
-    my_aiv_rows = session.execute(
+    # 1. Get all AIV IDs this supervisor voted on (body-scoped, date-filtered)
+    q = (
         select(SupervisorVote.agenda_item_vote_id, SupervisorVote.vote)
         .join(
             AgendaItemVote,
             AgendaItemVote.id == SupervisorVote.agenda_item_vote_id,
         )
+        .join(
+            Meeting,
+            Meeting.meeting_id == AgendaItemVote.meeting_id,
+        )
         .where(
             SupervisorVote.supervisor_id == sup_id,
             AgendaItemVote.body == body,
         )
-    ).all()
+    )
+    if start_date:
+        q = q.where(Meeting.meeting_date >= start_date)
+    if end_date:
+        q = q.where(Meeting.meeting_date <= end_date)
+    my_aiv_rows = session.execute(q).all()
 
     if not my_aiv_rows:
         return []
@@ -497,12 +517,33 @@ def get_supervisor_abstentions(
     session: Session,
     sup_id: int,
     body: str = "bos",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> list[dict]:
-    """Get votes where this supervisor abstained."""
+    """Get votes where this supervisor abstained.
+
+    Args:
+        start_date: ISO date string (YYYY-MM-DD) to filter from (inclusive).
+        end_date: ISO date string (YYYY-MM-DD) to filter to (inclusive).
+    """
     from sqlalchemy import text as sa_text
 
     # Use raw SQL to avoid ORM join-ambiguity issues with the 4-table chain
-    sql = sa_text("""
+    where_clauses = [
+        "sv.supervisor_id = :sup_id",
+        "aiv.body = :body",
+        "sv.vote IN ('abstain', 'abstained')",
+    ]
+    params: dict = {"sup_id": sup_id, "body": body}
+    if start_date:
+        where_clauses.append("m.meeting_date >= :start_date")
+        params["start_date"] = start_date
+    if end_date:
+        where_clauses.append("m.meeting_date <= :end_date")
+        params["end_date"] = end_date
+
+    where_sql = " AND ".join(where_clauses)
+    sql = sa_text(f"""
         SELECT
             aiv.meeting_id,
             aiv.agenda_item_number,
@@ -517,12 +558,10 @@ def get_supervisor_abstentions(
             ON ai.meeting_id = aiv.meeting_id
             AND ai.agenda_item_number = aiv.agenda_item_number
         LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id
-        WHERE sv.supervisor_id = :sup_id
-          AND aiv.body = :body
-          AND sv.vote IN ('abstain', 'abstained')
+        WHERE {where_sql}
         ORDER BY m.meeting_date, aiv.agenda_item_number
     """)
-    rows = session.execute(sql, {"sup_id": sup_id, "body": body}).all()
+    rows = session.execute(sql, params).all()
 
     return [
         {
@@ -541,11 +580,27 @@ def get_supervisor_absences(
     session: Session,
     sup_id: int,
     body: str = "bos",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> list[dict]:
     """Get meetings where this supervisor was marked absent.
 
+    Args:
+        start_date: ISO date string (YYYY-MM-DD) to filter from (inclusive).
+        end_date: ISO date string (YYYY-MM-DD) to filter to (inclusive).
+
     Returns list of dicts with meeting_id, meeting_date, meeting_type, title.
     """
+    conditions = [
+        MeetingSupervisor.supervisor_id == sup_id,
+        MeetingSupervisor.present == False,
+        Meeting.body == body,
+    ]
+    if start_date:
+        conditions.append(Meeting.meeting_date >= start_date)
+    if end_date:
+        conditions.append(Meeting.meeting_date <= end_date)
+
     rows = session.execute(
         select(
             Meeting.meeting_id,
@@ -559,11 +614,7 @@ def get_supervisor_absences(
             (MeetingSupervisor.meeting_id == Meeting.meeting_id)
             & (MeetingSupervisor.body == Meeting.body),
         )
-        .where(
-            MeetingSupervisor.supervisor_id == sup_id,
-            MeetingSupervisor.present == False,
-            Meeting.body == body,
-        )
+        .where(*conditions)
         .order_by(Meeting.meeting_date)
     ).all()
 
@@ -582,6 +633,8 @@ def get_supervisor_full_voting_record(
     sup_id: int,
     body: str = "bos",
     limit: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> list[dict]:
     """Get voting record for a supervisor.
 
@@ -592,6 +645,17 @@ def get_supervisor_full_voting_record(
     from sqlalchemy import text as sa_text
 
     limit_clause = f" LIMIT {int(limit)}" if limit else ""
+
+    where_clauses = ["sv.supervisor_id = :sup_id", "aiv.body = :body"]
+    params: dict = {"sup_id": sup_id, "body": body}
+    if start_date:
+        where_clauses.append("m.meeting_date >= :start_date")
+        params["start_date"] = start_date
+    if end_date:
+        where_clauses.append("m.meeting_date <= :end_date")
+        params["end_date"] = end_date
+
+    where_sql = " AND ".join(where_clauses)
 
     sql = sa_text(f"""
         SELECT
@@ -611,11 +675,10 @@ def get_supervisor_full_voting_record(
             ON ai.meeting_id = aiv.meeting_id
             AND ai.agenda_item_number = aiv.agenda_item_number
         LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id
-        WHERE sv.supervisor_id = :sup_id
-          AND aiv.body = :body
+        WHERE {where_sql}
         ORDER BY m.meeting_date DESC, aiv.agenda_item_number{limit_clause}
     """)
-    sup_votes = session.execute(sql, {"sup_id": sup_id, "body": body}).all()
+    sup_votes = session.execute(sql, params).all()
 
     if not sup_votes:
         return []
@@ -686,6 +749,8 @@ def get_supervisor_majority_alignment_stats(
     session: Session,
     sup_id: int,
     body: str = "bos",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> dict:
     """Get detailed majority alignment stats for a supervisor.
 
@@ -695,17 +760,21 @@ def get_supervisor_majority_alignment_stats(
     from collections import Counter
 
     # Get raw vote data
-    rows = session.execute(
-        select(SupervisorVote.vote, AgendaItemVote.id.label("aiv_id"))
-        .join(
-            AgendaItemVote,
-            AgendaItemVote.id == SupervisorVote.agenda_item_vote_id,
-        )
-        .where(
-            SupervisorVote.supervisor_id == sup_id,
-            AgendaItemVote.body == body,
-        )
-    ).all()
+    q = select(SupervisorVote.vote, AgendaItemVote.id.label("aiv_id"))
+    q = q.join(
+        AgendaItemVote,
+        AgendaItemVote.id == SupervisorVote.agenda_item_vote_id,
+    ).where(
+        SupervisorVote.supervisor_id == sup_id,
+        AgendaItemVote.body == body,
+    )
+    if start_date or end_date:
+        q = q.join(Meeting, Meeting.meeting_id == AgendaItemVote.meeting_id)
+        if start_date:
+            q = q.where(Meeting.meeting_date >= start_date)
+        if end_date:
+            q = q.where(Meeting.meeting_date <= end_date)
+    rows = session.execute(q).all()
 
     total_votes = len(rows)
     if total_votes == 0:
@@ -807,6 +876,8 @@ def get_supervisor_voting_alignment(
     session: Session,
     sup_id: int,
     body: str = "bos",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> list[dict]:
     """Compare voting patterns between this supervisor and all others.
 
@@ -844,9 +915,9 @@ def get_supervisor_voting_alignment(
     if not other_ids:
         return []
 
-    # Get all votes for this supervisor (body-scoped)
+    # Get all votes for this supervisor (body-scoped, date-filtered)
     sup_aiv_votes: dict[int, str] = {}
-    for r in session.execute(
+    q = (
         select(SupervisorVote.agenda_item_vote_id, SupervisorVote.vote)
         .join(
             AgendaItemVote,
@@ -856,7 +927,14 @@ def get_supervisor_voting_alignment(
             SupervisorVote.supervisor_id == sup_id,
             AgendaItemVote.body == body,
         )
-    ).all():
+    )
+    if start_date or end_date:
+        q = q.join(Meeting, Meeting.meeting_id == AgendaItemVote.meeting_id)
+        if start_date:
+            q = q.where(Meeting.meeting_date >= start_date)
+        if end_date:
+            q = q.where(Meeting.meeting_date <= end_date)
+    for r in session.execute(q).all():
         nv = _normalize_vote_value(r.vote)
         if nv in ("yes", "no"):
             sup_aiv_votes[r.agenda_item_vote_id] = nv
@@ -961,6 +1039,8 @@ def get_supervisor_swing_votes(
     session: Session,
     sup_id: int,
     body: str = "bos",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> list[dict]:
     """Identify swing votes for a BOS supervisor.
 
@@ -970,8 +1050,8 @@ def get_supervisor_swing_votes(
 
     Returns list of dicts with meeting/agenda/vote detail.
     """
-    # Get this supervisor's votes on split AIVs
-    sup_votes = session.execute(
+    # Get this supervisor's votes on split AIVs (date-filtered)
+    q = (
         select(
             SupervisorVote.vote,
             SupervisorVote.agenda_item_vote_id,
@@ -984,7 +1064,14 @@ def get_supervisor_swing_votes(
             SupervisorVote.supervisor_id == sup_id,
             AgendaItemVote.body == body,
         )
-    ).all()
+    )
+    if start_date or end_date:
+        q = q.join(Meeting, Meeting.meeting_id == AgendaItemVote.meeting_id)
+        if start_date:
+            q = q.where(Meeting.meeting_date >= start_date)
+        if end_date:
+            q = q.where(Meeting.meeting_date <= end_date)
+    sup_votes = session.execute(q).all()
 
     if not sup_votes:
         return []
@@ -1078,108 +1165,6 @@ def get_supervisor_swing_votes(
             "motion_result": r.motion_result or "",
             "vote_tally": f"{tally.get('yes',0)}-{tally.get('no',0)}",
             "prevailing_side": prev_side,
-        })
-
-    return results
-
-def get_supervisor_controversial_votes(
-    session: Session,
-    sup_id: int,
-    body: str = "bos",
-) -> list[dict]:
-    """Get controversial votes involving this supervisor.
-
-    Flags items as controversial using detect_controversy_flags heuristics.
-    Returns list of dicts with meeting/agenda detail and reason flags.
-    """
-    from sqlalchemy import text as sa_text
-    from collections import defaultdict
-
-    # Get this supervisor's votes with item text
-    sql = sa_text("""
-        SELECT
-            sv.vote,
-            sv.agenda_item_vote_id AS aiv_id,
-            aiv.meeting_id,
-            aiv.agenda_item_number,
-            aiv.c_number,
-            aiv.motion_result,
-            ai.agenda_item_title,
-            COALESCE(ai.agenda_item_text, '') AS agenda_item_text,
-            m.meeting_date,
-            m.meeting_type
-        FROM supervisor_votes sv
-        JOIN agenda_item_votes aiv ON aiv.id = sv.agenda_item_vote_id
-        LEFT JOIN agenda_items ai
-            ON ai.meeting_id = aiv.meeting_id
-            AND ai.agenda_item_number = aiv.agenda_item_number
-        LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id
-        WHERE sv.supervisor_id = :sup_id
-          AND aiv.body = :body
-        ORDER BY m.meeting_date, aiv.agenda_item_number
-    """)
-    rows = session.execute(sql, {"sup_id": sup_id, "body": body}).all()
-
-    if not rows:
-        return []
-
-    # Gather all AIV IDs to detect split votes and abstentions
-    aiv_ids = [r.aiv_id for r in rows]
-
-    # Get all votes on these AIVs
-    all_v = session.execute(
-        select(
-            SupervisorVote.agenda_item_vote_id,
-            SupervisorVote.vote,
-        )
-        .where(SupervisorVote.agenda_item_vote_id.in_(aiv_ids))
-    ).all()
-
-    aiv_has_abstention: set[int] = set()
-    aiv_is_split: set[int] = set()
-    aiv_votes: dict[int, list] = defaultdict(list)
-    for r in all_v:
-        aiv_votes[r.agenda_item_vote_id].append(r.vote)
-
-    for aiv_id, vlist in aiv_votes.items():
-        norm = [_normalize_vote_value(v) for v in vlist]
-        if "abstain" in norm:
-            aiv_has_abstention.add(aiv_id)
-        yes = sum(1 for v in norm if v == "yes")
-        no = sum(1 for v in norm if v == "no")
-        if yes > 0 and no > 0:
-            aiv_is_split.add(aiv_id)
-
-    results = []
-    for r in rows:
-        aiv_id = r.aiv_id
-        is_split = aiv_id in aiv_is_split
-        has_abst = aiv_id in aiv_has_abstention
-
-        flags = detect_controversy_flags(
-            item_title=r.agenda_item_title or "",
-            item_text=r.agenda_item_text or "",
-            is_split_vote=is_split,
-            motion_result=r.motion_result or "",
-            has_abstention=has_abst,
-        )
-
-        if not flags:
-            continue
-
-        sv = r.vote or ""
-        sup_nv = _normalize_vote_value(sv) if sv else "unknown"
-
-        results.append({
-            "meeting_id": r.meeting_id,
-            "meeting_date": r.meeting_date,
-            "meeting_type": r.meeting_type,
-            "agenda_item_number": r.agenda_item_number,
-            "agenda_item_title": r.agenda_item_title,
-            "c_number": r.c_number or "",
-            "supervisor_vote": sup_nv,
-            "motion_result": r.motion_result or "",
-            "controversy_flags": flags,
         })
 
     return results

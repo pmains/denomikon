@@ -13,9 +13,8 @@ from db import (
     get_supervisor_vote_stats, get_supervisor_split_votes,
     get_supervisor_dissents, get_supervisor_abstentions,
     get_supervisor_absences, get_supervisor_full_voting_record,
-    get_supervisor_slug, get_supervisor_majority_alignment_stats,
+    get_supervisor_slug,
     get_supervisor_voting_alignment, get_supervisor_swing_votes,
-    get_supervisor_controversial_votes,
     Jurisdiction, PublicBody, seed_default_jurisdictions,
     get_public_bodies_by_jurisdiction, get_body_members,
     Meeting, MeetingAttendance, ExecutiveSessionParticipant,
@@ -30,6 +29,26 @@ members_bp = Blueprint("members", __name__, url_prefix="")
 # ---------------------------------------------------------------------------
 # BOS Member / Supervisor Voting Portal — Routes
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _date_query_string(start_date, end_date, start_year, end_year) -> str:
+    """Build URL query string for date/year filter params."""
+    parts = []
+    if start_date:
+        parts.append(f"start_date={start_date}")
+    if end_date:
+        parts.append(f"end_date={end_date}")
+    if start_year:
+        parts.append(f"start_year={start_year}")
+    if end_year:
+        parts.append(f"end_year={end_year}")
+    if parts:
+        return "?" + "&".join(parts)
+    return ""
+
 
 VOTE_BADGE_CLASSES = {
     "yes": "success",
@@ -55,7 +74,14 @@ def members():
 def member_votes_api(slug):
     """JSON API for the Full Voting Record table.
 
-    Supports pagination, search, and per-column filtering via query params.
+    Supports pagination, search, date filtering, and per-column filtering
+    via query params.
+
+    Date filtering:
+        start_date=YYYY-MM-DD
+        end_date=YYYY-MM-DD
+        start_year=YYYY   (overrides start_date)
+        end_year=YYYY     (overrides end_date)
     """
     session = get_session()
 
@@ -79,8 +105,21 @@ def member_votes_api(slug):
     filter_majority = (request.args.get("majority") or "").strip().lower()
     filter_split = (request.args.get("split") or "").strip().lower()
 
-    # Load the full dataset
-    all_records = get_supervisor_full_voting_record(session, sup.id, body="bos")
+    # Parse date/year parameters
+    start_date = request.args.get("start_date")
+    end_date = request.args.get("end_date")
+    start_year = request.args.get("start_year")
+    end_year = request.args.get("end_year")
+    if start_year:
+        start_date = f"{start_year}-01-01"
+    if end_year:
+        end_date = f"{end_year}-12-31"
+
+    # Load the full dataset (date-filtered)
+    all_records = get_supervisor_full_voting_record(
+        session, sup.id, body="bos",
+        start_date=start_date, end_date=end_date,
+    )
     session.close()
 
     if not all_records:
@@ -145,9 +184,234 @@ def member_votes_api(slug):
     })
 
 
+@members_bp.route("/members/<jurisdiction_slug>/<body_code>/analytics")
+def body_analytics(jurisdiction_slug, body_code):
+    """Body-level analytics — cross-member voting alignment.
+
+    Supports date/year filtering via query parameters:
+        start_date=YYYY-MM-DD
+        end_date=YYYY-MM-DD
+        start_year=YYYY   (overrides start_date)
+        end_year=YYYY     (overrides end_date)
+    """
+    session = get_session()
+
+    # Parse date/year parameters
+    start_date = request.args.get("start_date")
+    end_date = request.args.get("end_date")
+    start_year = request.args.get("start_year")
+    end_year = request.args.get("end_year")
+    if start_year:
+        start_date = f"{start_year}-01-01"
+    if end_year:
+        end_date = f"{end_year}-12-31"
+
+    # Get all BOS supervisors, then filter by active in date range
+    all_sups = get_bos_supervisors(session)
+    active_sups = []
+    body_stats = {
+        "total_votes": 0, "yes": 0, "no": 0, "abstain": 0,
+        "absences": 0, "split_votes_attended": 0,
+        "with_majority": 0, "against_majority": 0,
+    }
+    for sup in all_sups:
+        stats = get_supervisor_vote_stats(
+            session, sup.id, body=body_code,
+            start_date=start_date, end_date=end_date,
+        )
+        if stats["total_votes"] == 0:
+            continue  # no meetings or votes in this time frame
+        active_sups.append(sup)
+        body_stats["total_votes"] += stats["total_votes"]
+        body_stats["yes"] += stats["yes"]
+        body_stats["no"] += stats["no"]
+        body_stats["abstain"] += stats["abstain"]
+        body_stats["absences"] += stats["absences"]
+        body_stats["split_votes_attended"] += stats["split_votes_attended"]
+        body_stats["with_majority"] += stats["with_majority"]
+        body_stats["against_majority"] += stats["against_majority"]
+
+    if not active_sups:
+        session.close()
+        return render_template(
+            "body_analytics.html",
+            jurisdiction_slug=jurisdiction_slug,
+            body_code=body_code,
+            active_sups=[], body_summary=[], alignments={},
+            heatmap_members=[], heatmap_matrix=[],
+            body_stats=body_stats,
+            start_date=start_date or "", end_date=end_date or "",
+            start_year=start_year or "", end_year=end_year or "",
+        )
+
+    # Aggregate dissent rate
+    sp = body_stats["split_votes_attended"]
+    body_stats["dissent_rate"] = (
+        round(body_stats["against_majority"] / sp, 4) if sp > 0 else None
+    )
+
+    # For each active supervisor, get voting alignment and stats
+    alignments = {}
+    body_summary = []
+    heatmap_members = []
+    heatmap_matrix = []
+    for sup in active_sups:
+        slug = sup.normalized_name.replace(" ", "-")
+        heatmap_members.append({"name": sup.name, "slug": slug, "id": sup.id})
+
+        stats = get_supervisor_vote_stats(
+            session, sup.id, body=body_code,
+            start_date=start_date, end_date=end_date,
+        )
+
+        al = get_supervisor_voting_alignment(
+            session, sup.id, body=body_code,
+            start_date=start_date, end_date=end_date,
+        )
+        alignments[sup.id] = {
+            "name": sup.name,
+            "slug": slug,
+            "stats": stats,
+            "pairs": al,
+        }
+        # Aggregate pairwise data
+        total = sum(a["total_comparable_votes"] for a in al)
+        same = sum(a["same_votes"] for a in al)
+        diff = sum(a["different_votes"] for a in al)
+        sp_total = sum(a["split_vote_comparable"] for a in al)
+        sp_same = sum(a["split_vote_same"] for a in al)
+        body_summary.append({
+            "name": sup.name,
+            "slug": slug,
+            "total_comparable": total,
+            "same": same,
+            "different": diff,
+            "overall_pct": round(same / total * 100, 1) if total else None,
+            "split_comparable": sp_total,
+            "split_same": sp_same,
+            "split_pct": round(sp_same / sp_total * 100, 1) if sp_total else None,
+        })
+
+    # Build heatmap matrix: matrix[i][j] = alignment% of member i vs member j
+    for i, sup_i in enumerate(active_sups):
+        row = [None]  # diagonal placeholder
+        pairs_by_oid = {
+            p["other_supervisor_id"]: p["split_vote_alignment_pct"]
+            for p in alignments[sup_i.id]["pairs"]
+        }
+        for j, sup_j in enumerate(active_sups):
+            if i == j:
+                row.append(None)
+            else:
+                row.append(pairs_by_oid.get(sup_j.id))
+        heatmap_matrix.append(row)
+
+    # ─── Split votes in this date range ───
+    split_votes_data = []
+    if body_stats["split_votes_attended"] > 0:
+        from sqlalchemy import text as sa_text
+        where_parts = ["aiv.body = :body", "aiv.is_split_vote = 1"]
+        params: dict = {"body": body_code}
+        if start_date:
+            where_parts.append("m.meeting_date >= :start_date")
+            params["start_date"] = start_date
+        if end_date:
+            where_parts.append("m.meeting_date <= :end_date")
+            params["end_date"] = end_date
+        where_sql = " AND ".join(where_parts)
+        rows = session.execute(sa_text(f"""
+            SELECT
+                aiv.id AS aiv_id,
+                aiv.meeting_id,
+                aiv.agenda_item_number,
+                aiv.c_number,
+                aiv.motion_result,
+                ai.agenda_item_title,
+                m.meeting_date,
+                m.meeting_type
+            FROM agenda_item_votes aiv
+            LEFT JOIN agenda_items ai
+                ON ai.meeting_id = aiv.meeting_id
+                AND ai.agenda_item_number = aiv.agenda_item_number
+            LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id
+            WHERE {where_sql}
+            ORDER BY m.meeting_date DESC, aiv.agenda_item_number
+        """), params).all()
+        aiv_ids = [r.aiv_id for r in rows]
+
+        if aiv_ids:
+            # Get per-member votes for each AIV
+            member_votes = session.execute(
+                select(
+                    SupervisorVote.agenda_item_vote_id,
+                    SupervisorVote.supervisor_id,
+                    SupervisorVote.vote,
+                    Person.name,
+                    Person.normalized_name,
+                )
+                .join(Person, Person.id == SupervisorVote.supervisor_id)
+                .where(SupervisorVote.agenda_item_vote_id.in_(aiv_ids))
+            ).all()
+
+            # Organize: aiv_id -> {sup_id -> vote, supervisor_name -> name, slug -> slug}
+            aiv_member_votes: dict = {}
+            for mv in member_votes:
+                aiv_member_votes.setdefault(mv.agenda_item_vote_id, []).append({
+                    "name": mv.name,
+                    "slug": mv.normalized_name.replace(" ", "-"),
+                    "vote": mv.vote or "",
+                })
+
+            # Build tally
+            for r in rows:
+                mvs = aiv_member_votes.get(r.aiv_id, [])
+                yes = sum(1 for m in mvs if m["vote"].lower() in ("yes", "aye"))
+                no = sum(1 for m in mvs if m["vote"].lower() in ("no", "nay"))
+                abst = sum(1 for m in mvs if m["vote"].lower() in ("abstain", "abstained"))
+                split_votes_data.append({
+                    "meeting_id": r.meeting_id,
+                    "meeting_date": r.meeting_date,
+                    "meeting_type": r.meeting_type,
+                    "agenda_item_number": r.agenda_item_number,
+                    "agenda_item_title": r.agenda_item_title,
+                    "c_number": r.c_number or "",
+                    "motion_result": r.motion_result or "",
+                    "vote_tally": f"{yes}-{no}",
+                    "member_votes": mvs,
+                })
+
+    session.close()
+
+    return render_template(
+        "body_analytics.html",
+        jurisdiction_slug=jurisdiction_slug,
+        body_code=body_code,
+        active_sups=active_sups,
+        body_summary=body_summary,
+        alignments=alignments,
+        body_stats=body_stats,
+        heatmap_members=heatmap_members,
+        heatmap_matrix=heatmap_matrix,
+        split_votes=split_votes_data,
+        start_date=start_date or "",
+        end_date=end_date or "",
+        start_year=start_year or "",
+        end_year=end_year or "",
+        vote_badges=VOTE_BADGE_CLASSES,
+        majority_badges=MAJORITY_BADGE_CLASSES,
+    )
+
+
 @members_bp.route("/members/<jurisdiction_slug>/<body_code>/<slug>")
 def member_detail(jurisdiction_slug, body_code, slug):
-    """Member profile by jurisdiction + body + slug — disambiguates name collisions."""
+    """Member profile by jurisdiction + body + slug — disambiguates name collisions.
+
+    Supports date/year filtering via query parameters:
+        start_date=YYYY-MM-DD
+        end_date=YYYY-MM-DD
+        start_year=YYYY   (overrides start_date)
+        end_year=YYYY     (overrides end_date)
+    """
     session = get_session()
 
     sup = get_supervisor_by_slug_or_name(session, slug)
@@ -155,25 +419,65 @@ def member_detail(jurisdiction_slug, body_code, slug):
         session.close()
         return render_template("member_detail.html", member=None, slug=slug)
 
+    # Parse date/year parameters
+    start_date = request.args.get("start_date")
+    end_date = request.args.get("end_date")
+    start_year = request.args.get("start_year")
+    end_year = request.args.get("end_year")
+    if start_year:
+        start_date = f"{start_year}-01-01"
+    if end_year:
+        end_date = f"{end_year}-12-31"
+
     slug_out = get_supervisor_slug(sup)
-    stats = get_supervisor_vote_stats(session, sup.id, body="bos")
-    split_votes = get_supervisor_split_votes(session, sup.id, body="bos")
+    stats = get_supervisor_vote_stats(
+        session, sup.id, body="bos",
+        start_date=start_date, end_date=end_date,
+    )
+    split_votes = get_supervisor_split_votes(
+        session, sup.id, body="bos",
+        start_date=start_date, end_date=end_date,
+    )
     dissents = [s for s in split_votes if s.get("with_or_against_majority") == "against_majority"]
-    abstentions = get_supervisor_abstentions(session, sup.id, body="bos")
-    absences = get_supervisor_absences(session, sup.id, body="bos")
-    full_record = get_supervisor_full_voting_record(session, sup.id, body="bos", limit=25)
-    full_record_count = session.execute(
+    abstentions = get_supervisor_abstentions(
+        session, sup.id, body="bos",
+        start_date=start_date, end_date=end_date,
+    )
+    absences = get_supervisor_absences(
+        session, sup.id, body="bos",
+        start_date=start_date, end_date=end_date,
+    )
+    full_record = get_supervisor_full_voting_record(
+        session, sup.id, body="bos", limit=25,
+        start_date=start_date, end_date=end_date,
+    )
+    swing_votes = get_supervisor_swing_votes(
+        session, sup.id, body="bos",
+        start_date=start_date, end_date=end_date,
+    )
+    count_q = (
         select(func.count())
         .select_from(SupervisorVote)
         .join(AgendaItemVote, AgendaItemVote.id == SupervisorVote.agenda_item_vote_id)
+        .join(Meeting, Meeting.meeting_id == AgendaItemVote.meeting_id)
         .where(SupervisorVote.supervisor_id == sup.id, AgendaItemVote.body == "bos")
-    ).scalar() or 0
+    )
+    if start_date:
+        count_q = count_q.where(Meeting.meeting_date >= start_date)
+    if end_date:
+        count_q = count_q.where(Meeting.meeting_date <= end_date)
+    full_record_count = session.execute(count_q).scalar() or 0
     session.close()
+
+    filtered_analytics_url = (
+        f"/members/{jurisdiction_slug}/{body_code}/analytics"
+    )
 
     return render_template(
         "member_detail.html",
         member=sup,
         slug=slug_out,
+        filtered_analytics_url=filtered_analytics_url,
         stats=stats,
         split_votes=split_votes,
         dissents=dissents,
@@ -181,22 +485,34 @@ def member_detail(jurisdiction_slug, body_code, slug):
         absences=absences,
         full_record=full_record,
         full_record_count=full_record_count,
-        full_record_api_url=f"/api/members/{slug_out}/votes",
+        swing_votes=swing_votes,
+        full_record_api_url=f"/api/members/{slug_out}/votes{_date_query_string(start_date, end_date, start_year, end_year)}",
         vote_badges=VOTE_BADGE_CLASSES,
         majority_badges=MAJORITY_BADGE_CLASSES,
         member_url=f"/members/{jurisdiction_slug}/{body_code}/{slug_out}",
+        start_date=start_date or "",
+        end_date=end_date or "",
+        start_year=start_year or "",
+        end_year=end_year or "",
     )
 
 
 @members_bp.route("/members/<slug>")
 def member_detail_legacy(slug):
-    """Legacy member route — redirect to qualified URL."""
+    """Legacy member route — redirect to qualified URL.
+
+    Preserves query parameters (e.g., ?start_year=2025).
+    """
     session = get_session()
     sup = get_supervisor_by_slug_or_name(session, slug)
     if sup:
         slug_out = get_supervisor_slug(sup)
         session.close()
-        return redirect(f"/members/maricopa-county/bos/{slug_out}")
+        qs = request.query_string.decode() if request.query_string else ""
+        target = f"/members/maricopa-county/bos/{slug_out}"
+        if qs:
+            target += "?" + qs
+        return redirect(target)
     session.close()
     return render_template("member_detail.html", member=None, slug=slug)
 
@@ -255,35 +571,10 @@ def debug_inferred_abstentions():
 
 @members_bp.route("/members/<slug>/analytics")
 def member_analytics(slug):
-    """Voting analytics profile page for a member."""
-    session = get_session()
-
-    sup = get_supervisor_by_slug_or_name(session, slug)
-    if not sup:
-        session.close()
-        return render_template(
-            "analytics.html",
-            member=None,
-            slug=slug,
-        )
-
-    slug_out = get_supervisor_slug(sup)
-    alignment_stats = get_supervisor_majority_alignment_stats(session, sup.id, body="bos")
-    voting_alignment = get_supervisor_voting_alignment(session, sup.id, body="bos")
-    swing_votes = get_supervisor_swing_votes(session, sup.id, body="bos")
-    controversial_votes = get_supervisor_controversial_votes(session, sup.id, body="bos")
-
-    session.close()
-
-    return render_template(
-        "analytics.html",
-        member=sup,
-        slug=slug_out,
-        alignment_stats=alignment_stats,
-        voting_alignment=voting_alignment,
-        swing_votes=swing_votes,
-        controversial_votes=controversial_votes,
-        vote_badges=VOTE_BADGE_CLASSES,
-        majority_badges=MAJORITY_BADGE_CLASSES,
-    )
+    """Legacy per-member analytics — redirect to member profile."""
+    qs = request.query_string.decode() if request.query_string else ""
+    target = f"/members/{slug}"
+    if qs:
+        target += "?" + qs
+    return redirect(target)
 

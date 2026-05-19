@@ -213,7 +213,8 @@
         }
       });
 
-      const url = this.apiUrl + '?' + params.toString();
+      const separator = this.apiUrl.includes('?') ? '&' : '?';
+const url = this.apiUrl + separator + params.toString();
 
       // Show loading indicator
       if (this.tbody) {

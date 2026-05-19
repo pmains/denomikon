@@ -14,22 +14,6 @@ from db.models import (AgendaItem, AgendaItemVote, SupervisorVote,
 from db.core import get_session
 
 
-# Controversy detection constants
-_CONTROVERSY_KEYWORDS = [
-    "controvers", "contentious", "split", "divided", "content",
-    "objection", "opposition", "debate", "disagree", "dispute",
-    "close vote", "tie", "deadlock", "impasse",
-    "overrule", "overruled", "appeal",
-    "recusal", "abstain",
-    "public hearing", "public comment",
-    "zoning", "rezon", "variance", "special use",
-    "conditional use", "text amendment", "comprehensive plan",
-    "general plan", "land use", "development agreement",
-]
-
-import re
-_DOLLAR_PATTERN = re.compile(r'\$[0-9,]+')
-
 def _normalize_vote_value(vote: str) -> str:
     """Normalize a vote value to canonical form."""
     v = (vote or "").lower().strip()
@@ -85,38 +69,5 @@ def compute_vote_tally(session, aiv_id: int) -> dict:
     abstain = sum(1 for v in norm if v == "abstain")
     return {"yes": yes, "no": no, "abstain": abstain, "total": len(votes)}
 
-def detect_controversy_flags(
-    item_title: str = "",
-    item_text: str = "",
-    is_split_vote: bool = False,
-    motion_result: str = "",
-    has_abstention: bool = False,
-) -> list[str]:
-    """Detect controversy flags for an agenda item.
 
-    Returns a list of reason strings like ["split", "keyword: zoning"]
-    """
-    flags: list[str] = []
-    combined = f"{item_title} {item_text}".lower()
-
-    if is_split_vote:
-        flags.append("split")
-
-    if has_abstention:
-        flags.append("abstention")
-
-    mr = motion_result.lower().strip()
-    if mr in ("continued", "denied", "deny"):
-        flags.append(f"motion_{mr}")
-
-    # Check keywords
-    for kw in _CONTROVERSY_KEYWORDS:
-        if kw in combined:
-            flags.append(f"keyword: {kw}")
-
-    # Check for dollar amounts
-    if _DOLLAR_PATTERN.search(combined):
-        flags.append("dollar-amount")
-
-    return flags
 

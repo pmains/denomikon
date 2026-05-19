@@ -40,7 +40,6 @@ from db import (
     get_supervisor_majority_alignment_stats,
     get_supervisor_voting_alignment,
     get_supervisor_swing_votes,
-    get_supervisor_controversial_votes,
 )
 from sqlalchemy import or_, select, func, and_
 
@@ -792,30 +791,6 @@ def cmd_swing_votes(args):
         print(f"  {sw['meeting_date']}  {sw['meeting_id']}  #{sw['agenda_item_number']:>4}  {sw['supervisor_vote']:<6}  {sw['motion_result']:<10}  tally={sw['vote_tally']}")
 
 
-def cmd_controversial_votes(args):
-    """Show controversial votes for a supervisor."""
-    session = get_session()
-    sup = get_supervisor_by_slug_or_name(session, args.name)
-    if not sup:
-        print(f"Member '{args.name}' not found.")
-        session.close()
-        return
-    body = getattr(args, 'body', None) or 'bos'
-    controversial = get_supervisor_controversial_votes(session, sup.id, body=body)
-    session.close()
-    if not controversial:
-        print(f"No controversial votes for {sup.name}.")
-        return
-    print(f"Controversial Votes — {sup.name} (body: {body}): {len(controversial)} vote(s)")
-    print(f"{'─' * 100}")
-    for cv in controversial[:20]:
-        flags = ", ".join(cv['controversy_flags'][:3])
-        title = (cv['agenda_item_title'] or '')[:40]
-        print(f"  {cv['meeting_date']}  {cv['meeting_id']}  #{cv['agenda_item_number']:>4}  {cv['supervisor_vote']:<6}  {cv['motion_result']:<10}  [{flags}]")
-    if len(controversial) > 20:
-        print(f"  ... and {len(controversial) - 20} more")
-
-
 def cmd_no_vote(args):
     """Search abstentions by a member. Uses get_supervisor_abstentions()."""
     session = get_session()
@@ -1085,11 +1060,6 @@ def parse_args(argv=None):
     sp_sv.add_argument("name", help="Member name")
     sp_sv.add_argument("--body", default="bos", help="Body scope (default: bos)")
 
-    # controversial-votes
-    sp_cv = sub.add_parser("controversial-votes", help="Show controversial votes for a member")
-    sp_cv.add_argument("name", help="Member name")
-    sp_cv.add_argument("--body", default="bos", help="Body scope (default: bos)")
-
     # no-vote
     sp_nv = sub.add_parser("no-vote", help="Search members who did not vote")
     sp_nv.add_argument("name", help="Member name")
@@ -1146,7 +1116,6 @@ def main(argv=None):
         "majority-alignment": cmd_majority_alignment,
         "voting-alignment": cmd_voting_alignment,
         "swing-votes": cmd_swing_votes,
-        "controversial-votes": cmd_controversial_votes,
         "no-vote": cmd_no_vote,
         "attendance": cmd_attendance,
         "meeting-attendance": cmd_meeting_attendance,

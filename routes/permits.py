@@ -66,6 +66,8 @@ def permits_index():
     jurisdiction_filter = request.args.get("jurisdiction", "")
     category_filter = request.args.get("category", "")  # legacy single-category filter
     year_filter = request.args.get("year", "")
+    year_start = request.args.get("year_start", "")
+    year_end = request.args.get("year_end", "")
     native_type_filter = request.args.get("native_type", "").strip()
     units_filter = request.args.get("_units", "").strip().lower() == "true"
 
@@ -132,6 +134,15 @@ def permits_index():
             parts.append("p.permit_issue_date LIKE :yr")
             params["yr"] = f"{year_filter}%"
             orm_filters.append(Permit.permit_issue_date.startswith(year_filter))
+        elif year_start or year_end:
+            if year_start:
+                parts.append("SUBSTR(p.permit_issue_date, 1, 4) >= :yr_start")
+                params["yr_start"] = year_start
+                orm_filters.append(Permit.permit_issue_date >= f"{year_start}-01-01")
+            if year_end:
+                parts.append("SUBSTR(p.permit_issue_date, 1, 4) <= :yr_end")
+                params["yr_end"] = year_end
+                orm_filters.append(Permit.permit_issue_date <= f"{year_end}-12-31")
         if native_type_filter:
             parts.append("p.native_type = :nt")
             params["nt"] = native_type_filter
@@ -804,6 +815,8 @@ def permits_chart_data():
     jf = request.args.get("jurisdiction", "")
     cf = request.args.get("category", "")
     yf = request.args.get("year", "")
+    yf_start = request.args.get("year_start", "")
+    yf_end = request.args.get("year_end", "")
 
     categories_filter = request.args.get("categories", "").strip()
     work_types_filter = request.args.get("work_types", "").strip()
@@ -858,6 +871,13 @@ def permits_chart_data():
     if yf:
         parts.append("p.permit_issue_date LIKE :yr")
         params["yr"] = f"{yf}%"
+    elif yf_start or yf_end:
+        if yf_start:
+            parts.append("SUBSTR(p.permit_issue_date, 1, 4) >= :yr_start")
+            params["yr_start"] = yf_start
+        if yf_end:
+            parts.append("SUBSTR(p.permit_issue_date, 1, 4) <= :yr_end")
+            params["yr_end"] = yf_end
     where = " AND ".join(parts)
 
     # ── Single CTE: years, sqft/count per year+category, and category totals ──
