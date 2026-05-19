@@ -836,14 +836,14 @@ def body_analytics(jurisdiction_slug, body_code):
 
     # Build heatmap matrix: matrix[i][j] = alignment% of member i vs member j
     for i, sup_i in enumerate(active_sups):
-        sup_i_id = sup_i["id"] if is_pz else sup_i.id
-        row = [None]  # diagonal placeholder
+        sup_i_id = sup_i["id"]
+        row = []  # diagonal handled by loop (i == j)
         pairs_by_oid = {
             p["other_supervisor_id"]: p["split_vote_alignment_pct"]
             for p in alignments.get(sup_i_id, {}).get("pairs", [])
         }
         for j, sup_j in enumerate(active_sups):
-            sup_j_id = sup_j["id"] if is_pz else sup_j.id
+            sup_j_id = sup_j["id"]
             if i == j:
                 row.append(None)
             else:
@@ -851,6 +851,7 @@ def body_analytics(jurisdiction_slug, body_code):
         heatmap_matrix.append(row)
 
     # ─── Split votes in this date range ───
+    split_votes_data = []
     if is_pz:
         split_votes_data = _get_pz_body_split_votes(
             session, start_date=start_date, end_date=end_date,
