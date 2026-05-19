@@ -34,7 +34,7 @@ def bodies_index():
         ).scalars().all()
         result.append((j, bodies))
     session.close()
-    return render_template("bodies_index.html", jurisdictions=result)
+    return render_template("bodies_index.html", jurisdictions=result, all_jurisdictions=jurisdictions)
 
 
 @bodies_bp.route("/bodies/<slug>")
