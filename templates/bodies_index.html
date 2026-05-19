@@ -28,17 +28,12 @@
 <p class="text-muted small mt-4"><a href="/members">&larr; All members</a></p>
 
 <script>
-function filterBodies(slug) {
-  document.querySelectorAll('.body-item').forEach(function(el) {
-    if (!slug || el.getAttribute('data-jurisdiction') === slug) {
-      el.style.display = '';
-    } else {
-      el.style.display = 'none';
-    }
-  });
-}
-document.getElementById('jurisdiction-filter').addEventListener('change', function() {
-  filterBodies(this.value);
-});
+document.getElementById('jurisdiction-filter').onchange = function() {
+  var slug = this.value;
+  var items = document.getElementsByClassName('body-item');
+  for (var i = 0; i < items.length; i++) {
+    items[i].style.display = (!slug || items[i].getAttribute('data-jurisdiction') === slug) ? '' : 'none';
+  }
+};
 </script>
 {% endblock %}
