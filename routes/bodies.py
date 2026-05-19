@@ -27,14 +27,22 @@ def bodies_index():
         select(Jurisdiction).order_by(Jurisdiction.name)
     ).scalars().all()
 
+    filter_jurisdiction = request.args.get("jurisdiction", "").strip()
+
     result = []
     for j in jurisdictions:
-        bodies = session.execute(
-            select(PublicBody).where(PublicBody.jurisdiction_id == j.id).order_by(PublicBody.name)
-        ).scalars().all()
+        q = select(PublicBody).where(PublicBody.jurisdiction_id == j.id).order_by(PublicBody.name)
+        if filter_jurisdiction and j.slug != filter_jurisdiction:
+            continue
+        bodies = session.execute(q).scalars().all()
         result.append((j, bodies))
     session.close()
-    return render_template("bodies_index.html", jurisdictions=result, all_jurisdictions=jurisdictions)
+    return render_template(
+        "bodies_index.html",
+        jurisdictions=result,
+        all_jurisdictions=jurisdictions,
+        filter_jurisdiction=filter_jurisdiction,
+    )
 
 
 @bodies_bp.route("/bodies/<slug>")
