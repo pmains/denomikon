@@ -2,7 +2,7 @@
 {% block title %}{{ member.name if member else 'Member not found' }} — Poliscopic Meetings{% endblock %}
 {% block content %}
 
-<a href="/members" class="btn btn-outline-secondary btn-sm mb-3">&larr; All members</a>
+<a href="/bodies/{% if body_slug %}{{ body_slug }}{% else %}members{% endif %}" class="btn btn-outline-secondary btn-sm mb-3">&larr; All members</a>
 
 {% if member %}
 

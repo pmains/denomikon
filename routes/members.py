@@ -795,6 +795,15 @@ def member_detail(jurisdiction_slug, body_code, slug):
             count_q = count_q.where(Meeting.meeting_date <= end_date)
         full_record_count = session.execute(count_q).scalar() or 0
 
+    # Resolve body slug for the "All members" back link
+    body_slug = None
+    if body_code:
+        _body = session.execute(
+            select(PublicBody).where(PublicBody.body_code == body_code)
+        ).scalar_one_or_none()
+        if _body:
+            body_slug = _body.slug
+
     session.close()
 
     filtered_analytics_url = (
@@ -805,6 +814,7 @@ def member_detail(jurisdiction_slug, body_code, slug):
         "member_detail.html",
         member=sup,
         slug=slug_out,
+        body_slug=body_slug,
         filtered_analytics_url=filtered_analytics_url,
         is_pz=is_pz,
         stats=stats,
