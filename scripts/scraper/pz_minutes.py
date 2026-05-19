@@ -287,7 +287,7 @@ def _parse_action_text(action_text: str) -> dict:
 
     # Nays list (may be on its own)
     # Nays list
-    m = re.search(r"Nays\s*:\s*([A-Z][a-zA-Z]+(?:,\s*[A-Z][a-zA-Z]+)*)", action_text, re.I)
+    m = re.search(r"Nay[s]?\s*:\s*([A-Z][a-zA-Z]+(?:,\s*[A-Z][a-zA-Z]+)*)", action_text, re.I)
     if m:
         names = [n.strip() for n in m.group(1).split(",")]
         result["nays"] = [n for n in names if n]

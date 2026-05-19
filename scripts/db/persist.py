@@ -884,15 +884,18 @@ def persist_pz_votes(
         name_to_id: dict[str, int] = {}
         for name in commissioner_names:
             norm = name.lower().strip()
-            existing = session.execute(
+            matches = session.execute(
                 select(Person).where(Person.normalized_name == norm)
-            ).scalar_one_or_none()
-            if not existing:
+            ).scalars().all()
+            if not matches:
                 # Minutes use last names only — try matching by last name
-                existing = session.execute(
+                matches = session.execute(
                     select(Person).where(Person.normalized_name.like(f"% {norm}"))
-                ).scalar_one_or_none()
-            if existing:
+                ).scalars().all()
+            if matches:
+                # Pick the most specific match (longest name = full name)
+                matches.sort(key=lambda p: len(p.name or ""), reverse=True)
+                existing = matches[0]
                 name_to_id[name] = existing.id
             else:
                 new_person = Person(
