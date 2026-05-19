@@ -887,6 +887,11 @@ def persist_pz_votes(
             existing = session.execute(
                 select(Person).where(Person.normalized_name == norm)
             ).scalar_one_or_none()
+            if not existing:
+                # Minutes use last names only — try matching by last name
+                existing = session.execute(
+                    select(Person).where(Person.normalized_name.like(f"% {norm}"))
+                ).scalar_one_or_none()
             if existing:
                 name_to_id[name] = existing.id
             else:

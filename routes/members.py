@@ -550,14 +550,24 @@ def member_detail_legacy(slug):
     """Legacy member route — redirect to qualified URL.
 
     Preserves query parameters (e.g., ?start_year=2025).
+    Detects whether the member is a BOS supervisor or PZ commissioner.
     """
     session = get_session()
     sup = get_supervisor_by_slug_or_name(session, slug)
     if sup:
         slug_out = get_supervisor_slug(sup)
+        # Detect body: check if this person has PZ votes
+        from db.models import MemberVote as _MV
+        from sqlalchemy import select as _sel, func as _fn
+        has_pz = session.execute(
+            _sel(_fn.count(_MV.id)).where(
+                _MV.member_id == sup.id, _MV.body == "pz",
+            )
+        ).scalar() or 0
+        body_code = "pz" if has_pz > 0 else "bos"
         session.close()
         qs = request.query_string.decode() if request.query_string else ""
-        target = f"/members/maricopa-county/bos/{slug_out}"
+        target = f"/members/maricopa-county/{body_code}/{slug_out}"
         if qs:
             target += "?" + qs
         return redirect(target)
