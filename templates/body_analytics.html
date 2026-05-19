@@ -144,7 +144,8 @@
                     <td style="{% if i == j %}
                         background:#e9ecef;color:#6c757d
                     {% elif pct is not none %}
-                        background:hsl(120, 70%, {{ 100 - (100 - pct) * 0.6 }}%);color:#000
+                        {% set hue = (pct * 1.2)|int %}
+                        background:hsl({{ hue }}, 70%, 45%);color:#fff
                     {% else %}
                         background:#f8f9fa;color:#999
                     {% endif %};font-weight:600;font-size:0.85rem">
