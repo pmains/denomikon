@@ -28,7 +28,7 @@
 <p class="text-muted small mt-4"><a href="/members">&larr; All members</a></p>
 
 <script>
-document.getElementById('jurisdiction-filter').onchange = function() {
+document.getElementById('jurisdiction-filter').oninput = function() {
   var slug = this.value;
   var items = document.getElementsByClassName('body-item');
   for (var i = 0; i < items.length; i++) {
