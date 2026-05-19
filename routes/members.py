@@ -338,6 +338,195 @@ def _get_pz_full_voting_record(session, person_id, start_date=None, end_date=Non
     ]
 
 
+# ---------------------------------------------------------------------------
+# PZ body-level analytics helpers
+# ---------------------------------------------------------------------------
+
+def _get_active_pz_commissioners(session, start_date=None, end_date=None):
+    """Get PZ commissioners who have votes in the given date range."""
+    from db.models import MemberVote, Meeting as MeetingModel
+    q = select(
+        Person.id, Person.name, Person.normalized_name,
+        func.count(MemberVote.id).label("cnt"),
+    )
+    q = q.join(MemberVote, MemberVote.member_id == Person.id)
+    q = q.join(AgendaItemVote, AgendaItemVote.id == MemberVote.agenda_item_vote_id)
+    q = q.join(MeetingModel, MeetingModel.meeting_id == AgendaItemVote.meeting_id)
+    q = q.where(MemberVote.body == "pz")
+    if start_date:
+        q = q.where(MeetingModel.meeting_date >= start_date)
+    if end_date:
+        q = q.where(MeetingModel.meeting_date <= end_date)
+    q = q.group_by(Person.id).order_by(Person.name)
+    rows = session.execute(q).all()
+    return [
+        {"id": r.id, "name": r.name,
+         "slug": r.normalized_name.replace(" ", "-")}
+        for r in rows
+    ]
+
+
+def _get_pz_voting_alignment(session, person_id, other_ids,
+                               start_date=None, end_date=None):
+    """Pairwise voting alignment for a PZ commissioner vs others."""
+    from db.models import MemberVote, Meeting as MeetingModel
+
+    # Get this person's substantive votes
+    q = select(MemberVote.agenda_item_vote_id, MemberVote.vote)
+    q = q.join(AgendaItemVote, AgendaItemVote.id == MemberVote.agenda_item_vote_id)
+    q = q.join(MeetingModel, MeetingModel.meeting_id == AgendaItemVote.meeting_id)
+    q = q.where(MemberVote.member_id == person_id, MemberVote.body == "pz")
+    if start_date:
+        q = q.where(MeetingModel.meeting_date >= start_date)
+    if end_date:
+        q = q.where(MeetingModel.meeting_date <= end_date)
+    my_rows = session.execute(q).all()
+    my_votes: dict[int, str] = {}
+    for r in my_rows:
+        nv = r.vote.lower() if r.vote else ""
+        if nv in ("yes", "no"):
+            my_votes[r.agenda_item_vote_id] = nv
+    if not my_votes:
+        return []
+
+    aiv_ids = list(my_votes.keys())
+
+    # Batch-load split vote flags for all relevant AIVs
+    split_aivs: set[int] = set()
+    for chunk_start in range(0, len(aiv_ids), 500):
+        chunk = aiv_ids[chunk_start:chunk_start + 500]
+        for row in session.execute(
+            select(AgendaItemVote.id).where(
+                AgendaItemVote.id.in_(chunk),
+                AgendaItemVote.is_split_vote == True,
+            )
+        ).all():
+            split_aivs.add(row[0])
+
+    other_rows = session.execute(
+        select(MemberVote.member_id, MemberVote.agenda_item_vote_id, MemberVote.vote)
+        .where(
+            MemberVote.member_id.in_(other_ids),
+            MemberVote.agenda_item_vote_id.in_(aiv_ids),
+            MemberVote.body == "pz",
+        )
+    ).all()
+
+    other_votes: dict[int, dict[int, str]] = {oid: {} for oid in other_ids}
+    for r in other_rows:
+        nv = r.vote.lower() if r.vote else ""
+        if nv in ("yes", "no"):
+            other_votes[r.member_id][r.agenda_item_vote_id] = nv
+
+    results = []
+    for oid in other_ids:
+        if oid == person_id:
+            continue
+        orow = session.execute(
+            select(Person.name, Person.normalized_name).where(Person.id == oid)
+        ).one_or_none()
+        if not orow:
+            continue
+        other_name, other_norm = orow
+        other_slug = other_norm.replace(" ", "-") if other_norm else None
+
+        ov = other_votes.get(oid, {})
+        common = set(my_votes.keys()) & set(ov.keys())
+        if not common:
+            continue
+
+        same = diff = 0
+        sp_same = sp_total = 0
+        for aiv_id in common:
+            if my_votes[aiv_id] == ov[aiv_id]:
+                same += 1
+            else:
+                diff += 1
+            if aiv_id in split_aivs:
+                sp_total += 1
+                if my_votes[aiv_id] == ov[aiv_id]:
+                    sp_same += 1
+
+        total = same + diff
+        results.append({
+            "other_supervisor_id": oid,
+            "other_name": other_name,
+            "slug": other_slug,
+            "total_comparable_votes": total,
+            "same_votes": same,
+            "different_votes": diff,
+            "overall_alignment_pct": round(same / total * 100, 1) if total else None,
+            "split_vote_comparable": sp_total,
+            "split_vote_same": sp_same,
+            "split_vote_alignment_pct": round(sp_same / sp_total * 100, 1) if sp_total else None,
+        })
+    return results
+
+
+def _get_pz_body_split_votes(session, start_date=None, end_date=None):
+    """All PZ split votes in date range with per-member breakdown."""
+    from db.models import MemberVote, Meeting as MeetingModel
+    from sqlalchemy import text as sa_text
+
+    where_parts = ["aiv.body = 'pz'", "aiv.is_split_vote = 1"]
+    params: dict = {}
+    if start_date:
+        where_parts.append("m.meeting_date >= :start_date")
+        params["start_date"] = start_date
+    if end_date:
+        where_parts.append("m.meeting_date <= :end_date")
+        params["end_date"] = end_date
+
+    rows = session.execute(sa_text(f"""
+        SELECT aiv.id AS aiv_id, aiv.meeting_id, aiv.agenda_item_number,
+               aiv.c_number, aiv.motion_result, ai.agenda_item_title,
+               m.meeting_date, m.meeting_type
+        FROM agenda_item_votes aiv
+        LEFT JOIN agenda_items ai ON ai.meeting_id = aiv.meeting_id
+            AND ai.agenda_item_number = aiv.agenda_item_number
+        LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id
+        WHERE {" AND ".join(where_parts)}
+        ORDER BY m.meeting_date DESC, aiv.agenda_item_number
+    """), params).all()
+
+    aiv_ids = [r.aiv_id for r in rows]
+    if not aiv_ids:
+        return []
+
+    mv_rows = session.execute(
+        select(MemberVote.agenda_item_vote_id, MemberVote.member_id,
+               MemberVote.vote, Person.name, Person.normalized_name)
+        .join(Person, Person.id == MemberVote.member_id)
+        .where(MemberVote.agenda_item_vote_id.in_(aiv_ids))
+    ).all()
+
+    aiv_mv: dict = {}
+    for mv in mv_rows:
+        aiv_mv.setdefault(mv.agenda_item_vote_id, []).append({
+            "name": mv.name,
+            "slug": mv.normalized_name.replace(" ", "-"),
+            "vote": mv.vote or "",
+        })
+
+    result = []
+    for r in rows:
+        mvs = aiv_mv.get(r.aiv_id, [])
+        yes = sum(1 for m in mvs if m["vote"].lower() in ("yes", "aye"))
+        no = sum(1 for m in mvs if m["vote"].lower() in ("no", "nay"))
+        result.append({
+            "meeting_id": r.meeting_id,
+            "meeting_date": r.meeting_date,
+            "meeting_type": r.meeting_type,
+            "agenda_item_number": r.agenda_item_number,
+            "agenda_item_title": r.agenda_item_title,
+            "c_number": r.c_number or "",
+            "motion_result": r.motion_result or "",
+            "vote_tally": f"{yes}-{no}",
+            "member_votes": mvs,
+        })
+    return result
+
+
 VOTE_BADGE_CLASSES = {
     "yes": "success",
     "no": "danger",
@@ -507,7 +696,14 @@ def body_analytics(jurisdiction_slug, body_code):
         end_date = f"{end_year}-12-31"
 
     # Get all BOS supervisors, then filter by active in date range
-    all_sups = get_bos_supervisors(session)
+    # Get supervisors/commissioners active in date range
+    is_pz = body_code == "pz"
+    if is_pz:
+        all_sups = _get_active_pz_commissioners(
+            session, start_date=start_date, end_date=end_date,
+        )
+    else:
+        all_sups = get_bos_supervisors(session)
     active_sups = []
     body_stats = {
         "total_votes": 0, "yes": 0, "no": 0, "abstain": 0,
@@ -515,12 +711,26 @@ def body_analytics(jurisdiction_slug, body_code):
         "with_majority": 0, "against_majority": 0,
     }
     for sup in all_sups:
-        stats = get_supervisor_vote_stats(
-            session, sup.id, body=body_code,
-            start_date=start_date, end_date=end_date,
-        )
+        sup_id = sup["id"] if is_pz else sup.id
+        if is_pz:
+            stats = _get_pz_member_stats(
+                session, sup_id,
+                start_date=start_date, end_date=end_date,
+            )
+        else:
+            stats = get_supervisor_vote_stats(
+                session, sup_id, body=body_code,
+                start_date=start_date, end_date=end_date,
+            )
         if stats["total_votes"] == 0:
             continue  # no meetings or votes in this time frame
+        # Normalize to dict for template compatibility (BOS Supervisor vs PZ dict)
+        if not isinstance(sup, dict):
+            sup = {
+                "id": sup.id,
+                "name": sup.name,
+                "slug": sup.normalized_name.replace(" ", "-"),
+            }
         active_sups.append(sup)
         body_stats["total_votes"] += stats["total_votes"]
         body_stats["yes"] += stats["yes"]
@@ -555,60 +765,97 @@ def body_analytics(jurisdiction_slug, body_code):
     body_summary = []
     heatmap_members = []
     heatmap_matrix = []
-    for sup in active_sups:
-        slug = sup.normalized_name.replace(" ", "-")
-        heatmap_members.append({"name": sup.name, "slug": slug, "id": sup.id})
 
-        stats = get_supervisor_vote_stats(
-            session, sup.id, body=body_code,
-            start_date=start_date, end_date=end_date,
-        )
+    if is_pz:
+        for sup in active_sups:
+            sid = sup["id"]
+            slug = sup.get("slug", sup["name"].lower().replace(" ", "-"))
+            heatmap_members.append({"name": sup["name"], "slug": slug, "id": sid})
 
-        al = get_supervisor_voting_alignment(
-            session, sup.id, body=body_code,
-            start_date=start_date, end_date=end_date,
-        )
-        alignments[sup.id] = {
-            "name": sup.name,
-            "slug": slug,
-            "stats": stats,
-            "pairs": al,
-        }
-        # Aggregate pairwise data
-        total = sum(a["total_comparable_votes"] for a in al)
-        same = sum(a["same_votes"] for a in al)
-        diff = sum(a["different_votes"] for a in al)
-        sp_total = sum(a["split_vote_comparable"] for a in al)
-        sp_same = sum(a["split_vote_same"] for a in al)
-        body_summary.append({
-            "name": sup.name,
-            "slug": slug,
-            "total_comparable": total,
-            "same": same,
-            "different": diff,
-            "overall_pct": round(same / total * 100, 1) if total else None,
-            "split_comparable": sp_total,
-            "split_same": sp_same,
-            "split_pct": round(sp_same / sp_total * 100, 1) if sp_total else None,
-        })
+            stats = _get_pz_member_stats(
+                session, sid,
+                start_date=start_date, end_date=end_date,
+            )
+
+            other_ids = [s["id"] for s in active_sups if s["id"] != sid]
+            al = _get_pz_voting_alignment(
+                session, sid, other_ids,
+                start_date=start_date, end_date=end_date,
+            )
+            alignments[sid] = {
+                "name": sup["name"],
+                "slug": slug,
+                "stats": stats,
+                "pairs": al,
+            }
+            total = sum(a["total_comparable_votes"] for a in al)
+            same = sum(a["same_votes"] for a in al)
+            diff = sum(a["different_votes"] for a in al)
+            sp_total = sum(a["split_vote_comparable"] for a in al)
+            sp_same = sum(a["split_vote_same"] for a in al)
+            body_summary.append({
+                "name": sup["name"], "slug": slug,
+                "total_comparable": total, "same": same, "different": diff,
+                "overall_pct": round(same / total * 100, 1) if total else None,
+                "split_comparable": sp_total, "split_same": sp_same,
+                "split_pct": round(sp_same / sp_total * 100, 1) if sp_total else None,
+            })
+    else:
+        for sup in active_sups:
+            sid = sup["id"]
+            slug = sup["slug"]
+            heatmap_members.append({"name": sup["name"], "slug": slug, "id": sid})
+
+            stats = get_supervisor_vote_stats(
+                session, sid, body=body_code,
+                start_date=start_date, end_date=end_date,
+            )
+
+            al = get_supervisor_voting_alignment(
+                session, sid, body=body_code,
+                start_date=start_date, end_date=end_date,
+            )
+            alignments[sid] = {
+                "name": sup["name"],
+                "slug": slug,
+                "stats": stats,
+                "pairs": al,
+            }
+            total = sum(a["total_comparable_votes"] for a in al)
+            same = sum(a["same_votes"] for a in al)
+            diff = sum(a["different_votes"] for a in al)
+            sp_total = sum(a["split_vote_comparable"] for a in al)
+            sp_same = sum(a["split_vote_same"] for a in al)
+            body_summary.append({
+                "name": sup["name"], "slug": slug,
+                "total_comparable": total, "same": same, "different": diff,
+                "overall_pct": round(same / total * 100, 1) if total else None,
+                "split_comparable": sp_total, "split_same": sp_same,
+                "split_pct": round(sp_same / sp_total * 100, 1) if sp_total else None,
+            })
 
     # Build heatmap matrix: matrix[i][j] = alignment% of member i vs member j
     for i, sup_i in enumerate(active_sups):
+        sup_i_id = sup_i["id"] if is_pz else sup_i.id
         row = [None]  # diagonal placeholder
         pairs_by_oid = {
             p["other_supervisor_id"]: p["split_vote_alignment_pct"]
-            for p in alignments[sup_i.id]["pairs"]
+            for p in alignments.get(sup_i_id, {}).get("pairs", [])
         }
         for j, sup_j in enumerate(active_sups):
+            sup_j_id = sup_j["id"] if is_pz else sup_j.id
             if i == j:
                 row.append(None)
             else:
-                row.append(pairs_by_oid.get(sup_j.id))
+                row.append(pairs_by_oid.get(sup_j_id))
         heatmap_matrix.append(row)
 
     # ─── Split votes in this date range ───
-    split_votes_data = []
-    if body_stats["split_votes_attended"] > 0:
+    if is_pz:
+        split_votes_data = _get_pz_body_split_votes(
+            session, start_date=start_date, end_date=end_date,
+        )
+    elif body_stats["split_votes_attended"] > 0:
         from sqlalchemy import text as sa_text
         where_parts = ["aiv.body = :body", "aiv.is_split_vote = 1"]
         params: dict = {"body": body_code}
