@@ -337,6 +337,20 @@ def meeting_detail(meeting_id, body=None):
                  "is_inferred": sv.raw_vote_text and sv.raw_vote_text.startswith("inferred abstention")}
             )
 
+        # For PZ meetings, also load MemberVote records
+        if meeting_body_val == "pz":
+            from db.models import MemberVote, Person as _Person
+            mv_rows = session.execute(
+                select(MemberVote, _Person.name, _Person.normalized_name)
+                .join(_Person, MemberVote.member_id == _Person.id)
+                .where(MemberVote.agenda_item_vote_id.in_(vote_ids))
+            ).all()
+            for mv, pname, pnorm in mv_rows:
+                slug = pnorm.replace(" ", "-") if pnorm else ""
+                supervisor_votes_by_vote.setdefault(mv.agenda_item_vote_id, []).append(
+                    {"name": pname, "vote": mv.vote, "slug": slug, "is_inferred": False}
+                )
+
     for av in item_votes:
         # Normalize to string key for lookup
         vote_key = str(av.agenda_item_number) if av.agenda_item_number is not None else ""
