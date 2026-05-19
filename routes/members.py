@@ -221,7 +221,7 @@ def debug_inferred_abstentions():
                 sup.normalized_name
             FROM supervisor_votes sv
             JOIN agenda_item_votes aiv ON aiv.id = sv.agenda_item_vote_id
-            JOIN supervisors sup ON sup.id = sv.supervisor_id
+            JOIN persons sup ON sup.id = sv.supervisor_id
             LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id
             WHERE sv.raw_vote_text LIKE :prefix
               AND aiv.body = :body
