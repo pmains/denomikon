@@ -404,10 +404,22 @@ def member_votes_api(slug):
         end_date = f"{end_year}-12-31"
 
     # Load the full dataset (date-filtered)
-    all_records = get_supervisor_full_voting_record(
-        session, sup.id, body="bos",
-        start_date=start_date, end_date=end_date,
-    )
+    from db.models import MemberVote as _MV
+    has_pz = session.execute(
+        select(func.count(_MV.id)).where(
+            _MV.member_id == sup.id, _MV.body == "pz",
+        )
+    ).scalar() or 0
+    if has_pz:
+        all_records = _get_pz_full_voting_record(
+            session, sup.id,
+            start_date=start_date, end_date=end_date,
+        )
+    else:
+        all_records = get_supervisor_full_voting_record(
+            session, sup.id, body="bos",
+            start_date=start_date, end_date=end_date,
+        )
     session.close()
 
     if not all_records:
