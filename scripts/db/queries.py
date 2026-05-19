@@ -232,16 +232,15 @@ def get_supervisor_vote_stats(
 ) -> dict:
     """Get aggregated voting statistics for a supervisor.
 
-    Returns a dict with:
-        total_votes, yes, no, abstain, absences,
-        split_votes_attended, with_majority, against_majority,
-        attendance_rate, attendance_present, attendance_absent
+    All counting pushed into SQL GROUP BY — Python only normalizes
+    the 3-5 distinct vote values.
     """
     from collections import Counter
 
-    # --- 1. Raw vote counts (filtered by body scope on AgendaItemVote) ---
+    # --- 1. Vote counts via SQL GROUP BY (was: load all rows in Python) ---
     rows = session.execute(
-        select(SupervisorVote.vote, AgendaItemVote.id.label("aiv_id"))
+        select(SupervisorVote.vote, func.count(SupervisorVote.id).label("cnt"),
+               SupervisorVote.agenda_item_vote_id)
         .join(
             AgendaItemVote,
             AgendaItemVote.id == SupervisorVote.agenda_item_vote_id,
@@ -250,79 +249,74 @@ def get_supervisor_vote_stats(
             SupervisorVote.supervisor_id == sup_id,
             AgendaItemVote.body == body,
         )
+        .group_by(SupervisorVote.vote, SupervisorVote.agenda_item_vote_id)
     ).all()
 
-    total_votes = len(rows)
+    # Aggregate in Python: group by normalized vote value
+    total_votes = 0
     norm_counts: Counter = Counter()
     aiv_ids: set[int] = set()
-    for row in rows:
-        norm_counts[_normalize_vote_value(row.vote)] += 1
-        aiv_ids.add(row.aiv_id)
+    for r in rows:
+        total_votes += r.cnt
+        norm_counts[_normalize_vote_value(r.vote)] += r.cnt
+        aiv_ids.add(r.agenda_item_vote_id)
 
     yes_count = norm_counts.get("yes", 0)
     no_count = norm_counts.get("no", 0)
     abstain_count = norm_counts.get("abstain", 0)
 
-    # --- 2. Vote-level attributes (split, majority) from other members ---
-    # Fetch all votes on the same AIVs from ALL supervisors
+    # --- 2. Split / majority analysis via SQL aggregation ---
     aiv_id_list = list(aiv_ids)
-    if aiv_id_list:
-        all_votes = session.execute(
-            select(
-                SupervisorVote.agenda_item_vote_id,
-                SupervisorVote.supervisor_id,
-                SupervisorVote.vote,
-            )
-            .where(SupervisorVote.agenda_item_vote_id.in_(aiv_id_list))
-        ).all()
-    else:
-        all_votes = []
-
-    # Build per-AIV data
-    aiv_votes: dict[int, dict[str, list[int]]] = {}
-    for av in all_votes:
-        aiv_votes.setdefault(av.agenda_item_vote_id, {"yes": [], "no": []})
-        nv = _normalize_vote_value(av.vote)
-        if nv == "yes":
-            aiv_votes[av.agenda_item_vote_id]["yes"].append(av.supervisor_id)
-        elif nv == "no":
-            aiv_votes[av.agenda_item_vote_id]["no"].append(av.supervisor_id)
-
     split_count = 0
     with_maj = 0
     against_maj = 0
 
-    for aiv_id, vd in aiv_votes.items():
-        yes_sup = len(vd["yes"])
-        no_sup = len(vd["no"])
-        is_split = yes_sup > 0 and no_sup > 0
-        if not is_split:
-            continue
-        split_count += 1
-        # Determine majority
-        if yes_sup > no_sup:
-            majority = "yes"
-        elif no_sup > yes_sup:
-            majority = "no"
-        else:
-            majority = "tie"
-        # Check where this supervisor voted
-        # Re-find the supervisor's vote for this AIV
-        sup_nv = None
-        for av in all_votes:
-            if av.agenda_item_vote_id == aiv_id and av.supervisor_id == sup_id:
-                sup_nv = _normalize_vote_value(av.vote)
-                break
-        if sup_nv is None:
-            continue
-        if majority == "tie":
-            continue
-        if sup_nv == majority:
-            with_maj += 1
-        elif sup_nv in ("yes", "no"):
-            against_maj += 1
+    if aiv_id_list:
+        # Get per-AIV vote tallies in ONE query (was: load all rows)
+        tallies = session.execute(
+            select(
+                SupervisorVote.agenda_item_vote_id,
+                func.sum(case((SupervisorVote.vote == "yes", 1), else_=0)).label("yes_cnt"),
+                func.sum(case((SupervisorVote.vote == "no", 1), else_=0)).label("no_cnt"),
+            )
+            .where(SupervisorVote.agenda_item_vote_id.in_(aiv_id_list))
+            .group_by(SupervisorVote.agenda_item_vote_id)
+        ).all()
 
-    # --- 3. Attendance ---
+        # Get this supervisor's votes for each AIV
+        sup_votes = {
+            r.agenda_item_vote_id: _normalize_vote_value(r.vote)
+            for r in session.execute(
+                select(SupervisorVote.agenda_item_vote_id, SupervisorVote.vote)
+                .where(
+                    SupervisorVote.agenda_item_vote_id.in_(aiv_id_list),
+                    SupervisorVote.supervisor_id == sup_id,
+                )
+            ).all()
+        }
+
+        for t in tallies:
+            yes_sup = t.yes_cnt or 0
+            no_sup = t.no_cnt or 0
+            is_split = yes_sup > 0 and no_sup > 0
+            if not is_split:
+                continue
+            split_count += 1
+            if yes_sup > no_sup:
+                majority = "yes"
+            elif no_sup > yes_sup:
+                majority = "no"
+            else:
+                continue  # tie
+            sup_nv = sup_votes.get(t.agenda_item_vote_id)
+            if sup_nv is None:
+                continue
+            if sup_nv == majority:
+                with_maj += 1
+            elif sup_nv in ("yes", "no"):
+                against_maj += 1
+
+    # --- 3. Attendance (already SQL, unchanged) ---
     present = session.execute(
         select(func.count())
         .select_from(MeetingSupervisor)
@@ -587,18 +581,19 @@ def get_supervisor_full_voting_record(
     session: Session,
     sup_id: int,
     body: str = "bos",
+    limit: Optional[int] = None,
 ) -> list[dict]:
-    """Get chronological list of all recorded votes for this supervisor.
+    """Get voting record for a supervisor.
 
-    Returns list of dicts with:
-        meeting_id, meeting_date, meeting_type, agenda_item_number,
-        agenda_item_title, c_number, vote (normalized), motion_result,
-        is_split_vote, majority_position, with_or_against_majority
+    Args:
+        limit: Max rows to return.  The member_detail page passes
+               limit=25 instead of loading thousands of rows.
     """
     from sqlalchemy import text as sa_text
 
-    # Use raw SQL to avoid ORM join-ambiguity issues with the 4-table chain
-    sql = sa_text("""
+    limit_clause = f" LIMIT {int(limit)}" if limit else ""
+
+    sql = sa_text(f"""
         SELECT
             sv.vote,
             sv.raw_vote_text,
@@ -618,49 +613,42 @@ def get_supervisor_full_voting_record(
         LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id
         WHERE sv.supervisor_id = :sup_id
           AND aiv.body = :body
-        ORDER BY m.meeting_date, aiv.agenda_item_number
+        ORDER BY m.meeting_date DESC, aiv.agenda_item_number{limit_clause}
     """)
     sup_votes = session.execute(sql, {"sup_id": sup_id, "body": body}).all()
 
     if not sup_votes:
         return []
 
-    # Gather all AIV IDs for split/majority detection
-    aiv_ids = [r.agenda_item_vote_id for r in sup_votes]
+    # Gather unique AIV IDs for split/majority detection
+    aiv_ids = list({r.agenda_item_vote_id for r in sup_votes})
 
-    # Get all votes on these AIVs (for split/majority detection)
-    all_v = session.execute(
+    # Get per-AIV tallies via SQL aggregation (was: load all rows into Python)
+    tallies = session.execute(
         select(
             SupervisorVote.agenda_item_vote_id,
-            SupervisorVote.vote,
+            func.sum(case((SupervisorVote.vote == "yes", 1), else_=0)).label("yes_cnt"),
+            func.sum(case((SupervisorVote.vote == "no", 1), else_=0)).label("no_cnt"),
         )
         .where(SupervisorVote.agenda_item_vote_id.in_(aiv_ids))
+        .group_by(SupervisorVote.agenda_item_vote_id)
     ).all()
-
-    aiv_group: dict[int, list[str]] = {}
-    for r in all_v:
-        aiv_group.setdefault(r.agenda_item_vote_id, []).append(
-            _normalize_vote_value(r.vote)
-        )
 
     is_split: dict[int, bool] = {}
     majority: dict[int, Optional[str]] = {}
-    for aiv_id, votes in aiv_group.items():
-        vote_set = set(votes)
-        has_yes = "yes" in vote_set
-        has_no = "no" in vote_set
-        is_split[aiv_id] = has_yes and has_no
-        if has_yes and has_no:
-            yes_cnt = sum(1 for v in votes if v == "yes")
-            no_cnt = sum(1 for v in votes if v == "no")
+    for t in tallies:
+        yes_cnt = t.yes_cnt or 0
+        no_cnt = t.no_cnt or 0
+        is_split[t.agenda_item_vote_id] = yes_cnt > 0 and no_cnt > 0
+        if yes_cnt > 0 and no_cnt > 0:
             if yes_cnt > no_cnt:
-                majority[aiv_id] = "yes"
+                majority[t.agenda_item_vote_id] = "yes"
             elif no_cnt > yes_cnt:
-                majority[aiv_id] = "no"
+                majority[t.agenda_item_vote_id] = "no"
             else:
-                majority[aiv_id] = "tie"
+                majority[t.agenda_item_vote_id] = "tie"
         else:
-            majority[aiv_id] = None
+            majority[t.agenda_item_vote_id] = None
 
     results = []
     for r in sup_votes:

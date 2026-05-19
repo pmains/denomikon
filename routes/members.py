@@ -19,7 +19,7 @@ from db import (
     Jurisdiction, PublicBody, seed_default_jurisdictions,
     get_public_bodies_by_jurisdiction, get_body_members,
     Meeting, MeetingAttendance, ExecutiveSessionParticipant,
-    AgendaItemVote, AgendaItem,
+    AgendaItemVote, AgendaItem, SupervisorVote,
 )
 from routes import SYNC_STATUS_BADGES, _cache
 
@@ -161,9 +161,13 @@ def member_detail(jurisdiction_slug, body_code, slug):
     dissents = [s for s in split_votes if s.get("with_or_against_majority") == "against_majority"]
     abstentions = get_supervisor_abstentions(session, sup.id, body="bos")
     absences = get_supervisor_absences(session, sup.id, body="bos")
-    full_record = get_supervisor_full_voting_record(session, sup.id, body="bos")
-    full_record_count = len(full_record)
-    full_record = full_record[:25]
+    full_record = get_supervisor_full_voting_record(session, sup.id, body="bos", limit=25)
+    full_record_count = session.execute(
+        select(func.count())
+        .select_from(SupervisorVote)
+        .join(AgendaItemVote, AgendaItemVote.id == SupervisorVote.agenda_item_vote_id)
+        .where(SupervisorVote.supervisor_id == sup.id, AgendaItemVote.body == "bos")
+    ).scalar() or 0
     session.close()
 
     return render_template(
