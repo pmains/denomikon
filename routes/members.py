@@ -279,6 +279,65 @@ def _get_pz_swing_votes(session, person_id, start_date=None, end_date=None):
     return results
 
 
+def _get_pz_full_voting_record(session, person_id, start_date=None, end_date=None, limit=25):
+    """Get full voting record for a PZ commissioner."""
+    from db.models import MemberVote, Meeting as MeetingModel
+    q = select(
+        MeetingModel.meeting_id,
+        MeetingModel.meeting_date,
+        MeetingModel.meeting_type,
+        AgendaItemVote.agenda_item_number,
+        AgendaItem.c_number,
+        AgendaItem.agenda_item_title,
+        MemberVote.vote,
+        AgendaItemVote.motion_result,
+        AgendaItemVote.is_split_vote,
+        AgendaItemVote.majority_position,
+        case(
+            (MemberVote.is_dissent == True, "against_majority"),
+            else_="with_majority",
+        ).label("with_or_against_majority"),
+    ).join(
+        AgendaItemVote, AgendaItemVote.id == MemberVote.agenda_item_vote_id,
+    ).join(
+        MeetingModel, MeetingModel.meeting_id == AgendaItemVote.meeting_id,
+    ).outerjoin(
+        AgendaItem,
+        (AgendaItem.meeting_id == AgendaItemVote.meeting_id)
+        & (AgendaItem.agenda_item_number == AgendaItemVote.agenda_item_number),
+    ).where(
+        MemberVote.member_id == person_id,
+        MemberVote.body == "pz",
+    ).order_by(
+        MeetingModel.meeting_date.desc(),
+        AgendaItemVote.agenda_item_number,
+    )
+    if start_date:
+        q = q.where(MeetingModel.meeting_date >= start_date)
+    if end_date:
+        q = q.where(MeetingModel.meeting_date <= end_date)
+    if limit:
+        q = q.limit(limit)
+    rows = session.execute(q).all()
+    return [
+        {
+            "meeting_id": r.meeting_id,
+            "meeting_date": r.meeting_date,
+            "meeting_type": r.meeting_type,
+            "agenda_item_number": r.agenda_item_number,
+            "agenda_item_title": r.agenda_item_title,
+            "c_number": r.c_number or "",
+            "vote": r.vote or "",
+            "motion_result": r.motion_result or "",
+            "is_split_vote": bool(r.is_split_vote) if r.is_split_vote is not None else False,
+            "is_inferred": False,
+            "majority_position": r.majority_position or "",
+            "with_or_against_majority": r.with_or_against_majority or "",
+        }
+        for r in rows
+    ]
+
+
 VOTE_BADGE_CLASSES = {
     "yes": "success",
     "no": "danger",
@@ -676,7 +735,10 @@ def member_detail(jurisdiction_slug, body_code, slug):
         )
         abstentions = []
         absences = []
-        full_record = []
+        full_record = _get_pz_full_voting_record(
+            session, sup.id, limit=25,
+            start_date=start_date, end_date=end_date,
+        )
         full_record_count = stats["total_votes"]
         swing_votes = _get_pz_swing_votes(
             session, sup.id,
