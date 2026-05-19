@@ -265,9 +265,8 @@
 
 {# ─── 4. Per-Member Pairwise Alignment ─── #}
 <div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0">Pairwise Alignment</h5>
-        <select id="pairwise-select" class="form-select form-select-sm" style="width:auto" onchange="showPairwise(this.value)">
+    <div class="card-header d-flex align-items-center gap-2">
+        <select id="pairwise-select" class="form-select" style="width:auto;font-size:1rem" onchange="showPairwise(this.value)">
             {% for sup in active_sups %}
             {% set sd = alignments[sup.id] %}
             {% if sd.pairs %}
@@ -275,6 +274,7 @@
             {% endif %}
             {% endfor %}
         </select>
+        <h5 class="mb-0">Pairwise Alignment</h5>
     </div>
     <div class="card-body p-0">
         {% for sup in active_sups %}
