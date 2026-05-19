@@ -5,15 +5,58 @@ from collections import defaultdict
 from typing import Optional
 
 from flask import Blueprint, render_template, request, jsonify, redirect
-from sqlalchemy import cast, Float, func, select, text as _sa_text
+from sqlalchemy import cast, Float, func, select, text, text as _sa_text
 
 from db import get_session, Jurisdiction, PublicBody, Permit, PermitReport
 from routes import _cache
 
 log = logging.getLogger(__name__)
 
-permits_bp = Blueprint("permits", __name__, url_prefix="")
+# Chandler excluded from jurisdiction filter dropdown (not yet synced)
+_EXCLUDED_JURISDICTIONS = {"City of Chandler"}
 
+# Module-level caches for static filter values (computed once, never change mid-process)
+# Avoids SELECT DISTINCT scans on 899k rows on every request.
+_CACHED_CATEGORIES = None
+_CACHED_WORK_TYPES = None
+_CACHED_JURISDICTIONS = None
+
+
+def _get_cached_categories(session):
+    global _CACHED_CATEGORIES
+    if _CACHED_CATEGORIES is None:
+        _CACHED_CATEGORIES = sorted(set(
+            r[0] for r in session.execute(
+                text("SELECT DISTINCT normalized_category FROM permits WHERE normalized_category IS NOT NULL")
+            ).all()
+        ))
+    return _CACHED_CATEGORIES
+
+
+def _get_cached_work_types(session):
+    global _CACHED_WORK_TYPES
+    if _CACHED_WORK_TYPES is None:
+        _CACHED_WORK_TYPES = sorted(set(
+            r[0] for r in session.execute(
+                text("SELECT DISTINCT work_type FROM permits WHERE work_type IS NOT NULL AND work_type != ''")
+            ).all()
+        ))
+    return _CACHED_WORK_TYPES
+
+
+def _get_cached_jurisdictions(session):
+    """Return distinct jurisdictions, filtered and sorted."""
+    global _CACHED_JURISDICTIONS
+    if _CACHED_JURISDICTIONS is None:
+        _CACHED_JURISDICTIONS = sorted(set(
+            r[0] for r in session.execute(
+                text("SELECT DISTINCT jurisdiction FROM permits WHERE jurisdiction IS NOT NULL")
+            ).all()
+        ))
+    return _CACHED_JURISDICTIONS
+
+
+permits_bp = Blueprint("permits", __name__, url_prefix="")
 @permits_bp.route("/permits")
 @_cache(timeout=604800, query_string=True)  # 7 days — invalidated on sync
 def permits_index():
@@ -37,17 +80,9 @@ def permits_index():
     exclude_wt_filter = request.args.get("exclude_work_type", "").strip()
 
     # Convert legacy exclusion to inclusion when possible
-    from sqlalchemy import text as _sa_text
-    all_categories = sorted(set(
-        r[0] for r in session.execute(
-            _sa_text("SELECT DISTINCT normalized_category FROM permits WHERE normalized_category IS NOT NULL")
-        ).all()
-    ))
-    all_work_types = sorted(set(
-        r[0] for r in session.execute(
-            _sa_text("SELECT DISTINCT work_type FROM permits WHERE work_type IS NOT NULL AND work_type != ''")
-        ).all()
-    ))
+    # Use cached values — avoids SELECT DISTINCT on 899k rows per request
+    all_categories = _get_cached_categories(session)
+    all_work_types = _get_cached_work_types(session)
 
     if exclude_filter and not categories_filter:
         excluded = set(c.strip() for c in exclude_filter.split(",") if c.strip())
@@ -120,43 +155,141 @@ def permits_index():
             )
         return q
 
-    # ── Single dedup CTE with SQL GROUP BY ────────────────────────────────
-    # Weekly reports are cumulative snapshots — the same permit can appear
-    # in many reports.  A single dedup pass removes duplicates, then SQL
-    # GROUP BY collapses the result into ~hundreds of aggregate rows that
-    # Python reshapes for the template/chart structures.
+    # ── Raw view: early return (skip aggregate pipeline) ────────────────
+    # The aggregate query (dedup CTE + housing + chart reshaping) is expensive.
+    # Raw views don't need ANY of it — just paginated rows + filter dropdowns.
+    if view == "raw":
+        # ── Year options for filter dropdown ──
+        yr_q = select(Permit.permit_issue_date).distinct().where(
+            Permit.permit_issue_date.isnot(None)
+        )
+        yr_q = _apply_filters(yr_q)
+        year_options = sorted(set(
+            d[:4] for d in session.execute(yr_q).scalars().all()
+            if d and len(d) >= 4
+        ), reverse=True)
+
+        # ── Jurisdiction filter dropdown ──
+        jur_q = select(Permit.jurisdiction).distinct().where(
+            Permit.jurisdiction.isnot(None)
+        )
+        jur_q = _apply_filters(jur_q)
+        filtered_jurs = [r[0] for r in session.execute(jur_q.order_by(Permit.jurisdiction)).all()]
+        jurisdictions = [j for j in filtered_jurs if j not in _EXCLUDED_JURISDICTIONS] if filtered_jurs else []
+
+        # ── Zero-categories warning ──
+        zero_categories = [c for c in selected_categories if c not in all_categories]
+
+        # ── Paginated raw query ──
+        page = request.args.get("page", 1, type=int)
+        per_page = request.args.get("per_page", 25, type=int)
+        if units_filter:
+            base_q = select(Permit).order_by(
+                Permit.job_address.asc().nullslast(),
+                Permit.permit_issue_date.desc().nullslast(),
+                Permit.id.desc()
+            )
+        else:
+            base_q = select(Permit).order_by(
+                Permit.permit_issue_date.desc().nullslast(),
+                Permit.id.desc()
+            )
+        count_q = select(func.count(Permit.id))
+        base_q = _apply_filters(base_q)
+        count_q = _apply_filters(count_q)
+        total = session.execute(count_q).scalar() or 0
+        total_pages = max(1, (total + per_page + 1) // per_page) if per_page else 1
+        page = max(1, min(page, total_pages))
+        offset = (page - 1) * per_page
+        permits_raw = session.execute(base_q.offset(offset).limit(per_page)).scalars().all()
+
+        session.close()
+        return render_template(
+            "permits.html",
+            view=view,
+            by_jurisdiction=[],
+            by_category=[],
+            by_type_top=[],
+            permits_raw=permits_raw,
+            page=page,
+            total_pages=total_pages,
+            total=total,
+            per_page=per_page,
+            years=year_options,
+            jurisdictions=jurisdictions,
+            categories=all_categories,
+            jurisdiction_filter=jurisdiction_filter,
+            category_filter=category_filter,
+            year_filter=year_filter,
+            categories_filter=categories_filter,
+            work_types_filter=work_types_filter,
+            selected_categories=selected_categories,
+            selected_work_types=selected_work_types,
+            zero_categories=zero_categories,
+            work_types_all=work_types_all,
+            sqft_by_year={},
+            permits_by_year={},
+            chart_data={"category_totals": [], "sqft_by_year": {}, "permits_by_year": {}, "years": []},
+            unit_data={"by_jurisdiction": {}, "all_years": []},
+        )
+
+    # ── Aggregate view: dedup CTE with SQL GROUP BY ───────────────────────
     from sqlalchemy import text as _sa_text
     from collections import defaultdict
 
-    where, params, _orm_filters = _build_filters()
+    from sqlalchemy import cast, Float, case
 
-    sql = _sa_text(f"""
-        WITH deduped AS (
-            SELECT *,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY COALESCE(p.permit_number, p.row_hash),
-                                     COALESCE(p.permit_square_feet, '')
-                       ORDER BY p.permit_issue_date
-                   ) AS rn
-            FROM permits p
-            WHERE {where}
-        )
-        SELECT d.jurisdiction,
-               COALESCE(d.normalized_category, 'Other') AS category,
-               d.native_type,
-               d.work_type AS wt,
-               SUBSTR(d.permit_issue_date, 1, 4) AS yr,
-               COUNT(*) AS cnt,
-               SUM(CAST(NULLIF(d.permit_valuation, '') AS REAL)) AS tot_val,
-               SUM(CAST(NULLIF(d.permit_square_feet, '') AS REAL)) AS tot_sqft,
-               COALESCE(SUM(CAST(NULLIF(COALESCE(d.units, d.no_units, ''), '') AS REAL)), 0) AS tot_units,
-               SUM(CASE WHEN LOWER(d.permit_status) IN ('finaled','final','completed','closed') THEN 1 ELSE 0 END) AS completed_cnt,
-               SUM(CASE WHEN d.certificate_of_occupancy_date IS NOT NULL AND d.certificate_of_occupancy_date != '' THEN 1 ELSE 0 END) AS co_cnt
-        FROM deduped d
-        WHERE d.rn = 1
-          AND d.permit_issue_date IS NOT NULL
-        GROUP BY d.jurisdiction, d.normalized_category, d.native_type, d.work_type, yr
-    """)
+    # ── ORM CTE (replaces f-string SQL — no injection vector) ────────────
+    window = func.row_number().over(
+        partition_by=[
+            func.coalesce(Permit.permit_number, Permit.row_hash),
+            func.coalesce(Permit.permit_square_feet, ''),
+        ],
+        order_by=Permit.permit_issue_date,
+    ).label("rn")
+
+    deduped = select(
+        Permit,
+        window,
+    ).select_from(Permit).where(
+        *orm_filters
+    ).cte("deduped")
+
+    sql = select(
+        deduped.c.jurisdiction,
+        func.coalesce(deduped.c.normalized_category, "Other").label("category"),
+        deduped.c.native_type,
+        deduped.c.work_type.label("wt"),
+        func.substr(deduped.c.permit_issue_date, 1, 4).label("yr"),
+        func.count().label("cnt"),
+        func.sum(cast(func.nullif(deduped.c.permit_valuation, ''), Float)).label("tot_val"),
+        func.sum(cast(func.nullif(deduped.c.permit_square_feet, ''), Float)).label("tot_sqft"),
+        func.coalesce(func.sum(cast(func.nullif(
+            func.coalesce(deduped.c.units, deduped.c.no_units, ''), ''), Float)), 0).label("tot_units"),
+        func.sum(case(
+            (deduped.c.permit_status.ilike("finaled"), 1),
+            (deduped.c.permit_status.ilike("final"), 1),
+            (deduped.c.permit_status.ilike("completed"), 1),
+            (deduped.c.permit_status.ilike("closed"), 1),
+            else_=0
+        )).label("completed_cnt"),
+        func.sum(case(
+            (deduped.c.certificate_of_occupancy_date.isnot(None), 1),
+            (deduped.c.certificate_of_occupancy_date != '', 1),
+            else_=0
+        )).label("co_cnt"),
+    ).where(
+        deduped.c.rn == 1,
+        deduped.c.permit_issue_date.isnot(None),
+    ).group_by(
+        deduped.c.jurisdiction,
+        deduped.c.normalized_category,
+        deduped.c.native_type,
+        deduped.c.work_type,
+        "yr",
+    )
+
+    params = {}
 
     jur_tot: dict = defaultdict(lambda: {"count": 0, "sqft": 0.0, "val": 0.0, "units": 0.0, "completed": 0, "co_issued": 0})
     cat_tot: dict = defaultdict(lambda: {"count": 0, "sqft": 0.0, "val": 0.0})
@@ -168,7 +301,7 @@ def permits_index():
     # Track new housing units (Residential + New Construction) per jurisdiction per year
     residential_units_cache: dict = defaultdict(lambda: defaultdict(int))
 
-    for r in session.execute(sql, params):
+    for r in session.execute(sql):
         j = r.jurisdiction
         cat = r.category
         t = r.native_type
@@ -223,9 +356,7 @@ def permits_index():
     # once, partition them by strategy in Python, and use an IN (...) clause
     # with exact names for index-efficient equality lookups.
     _HOUSING_CAPABLE_PDD = ['BLD','TCO','COND','LPRN','LPRR','LPRM','LPRT','LPRX','CSIT','PRLM','PAPP','PHAS','SCMJ','SCSU']
-    _jur_names = [r[0] for r in session.execute(
-        _sa_text("SELECT DISTINCT jurisdiction FROM permits")
-    ).all()]
+    _jur_names = _get_cached_jurisdictions(session)
     _all_jur_lower = {j: j.lower() for j in _jur_names}
 
     # ── Strategy A: Standard dedup by (permit_number, square_feet) ──────
@@ -388,7 +519,6 @@ def permits_index():
         for c in cats_ordered
     ]
 
-    _EXCLUDED_JURISDICTIONS = {"City of Chandler"}
     by_jurisdiction = sorted(
         [{"jurisdiction": k, "count": v["count"],
           "total_valuation": v["val"], "total_sqft": v["sqft"],
@@ -592,29 +722,12 @@ def permits_index():
 
     categories = all_categories  # from backward-compat query above
 
-    # Raw list mode
+    # Default pagination values (aggregate view doesn't paginate)
     permits_raw = []
     page = 1
     total_pages = 1
     total = 0
     per_page = 25
-
-    if view == "raw":
-        page = request.args.get("page", 1, type=int)
-        if units_filter:
-            # Group related permits by address so multiple stages of the same
-            # project appear together
-            base_q = select(Permit).order_by(Permit.job_address.asc().nullslast(), Permit.permit_issue_date.desc().nullslast(), Permit.id.desc())
-        else:
-            base_q = select(Permit).order_by(Permit.permit_issue_date.desc().nullslast(), Permit.id.desc())
-        count_q = select(func.count(Permit.id))
-        base_q = _apply_filters(base_q)
-        count_q = _apply_filters(count_q)
-        total = session.execute(count_q).scalar() or 0
-        total_pages = max(1, (total + per_page - 1) // per_page)
-        page = max(1, min(page, total_pages))
-        offset = (page - 1) * per_page
-        permits_raw = session.execute(base_q.offset(offset).limit(per_page)).scalars().all()
 
     # ── Residential units by jurisdiction and year ────────────────────────
     # Data was accumulated from the same dedup pass above (no second CTE scan).
