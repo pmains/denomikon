@@ -4,7 +4,7 @@
 <h1 class="mb-3">Public Bodies</h1>
 
 <div class="mb-4">
-  <select id="jurisdiction-filter" class="form-select" style="max-width:400px" onchange="filterBodies(this.value)">
+  <select id="jurisdiction-filter" class="form-select" style="max-width:400px">
     <option value="">All jurisdictions</option>
     {% for j in all_jurisdictions %}
     <option value="{{ j.slug }}">{{ j.name }}</option>
@@ -37,5 +37,8 @@ function filterBodies(slug) {
     }
   });
 }
+document.getElementById('jurisdiction-filter').addEventListener('change', function() {
+  filterBodies(this.value);
+});
 </script>
 {% endblock %}
