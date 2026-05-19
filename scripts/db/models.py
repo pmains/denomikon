@@ -612,4 +612,5 @@ class Permit(Base):
         Index("ix_permits_valuation", "permit_valuation"),
         Index("ix_permits_square_feet", "permit_square_feet"),
         Index("ix_permits_jur_cat_wt_issuedate", "jurisdiction", "normalized_category", "work_type", "permit_issue_date"),
+        Index("ix_permits_dedup_parts", "permit_number", "row_hash", "permit_square_feet"),
     )
