@@ -883,7 +883,7 @@ def persist_pz_votes(
 
         name_to_id: dict[str, int] = {}
         for name in commissioner_names:
-            norm = name.lower().strip()
+            norm = name.lower().strip().rstrip(".")
             matches = session.execute(
                 select(Person).where(Person.normalized_name == norm)
             ).scalars().all()
@@ -893,9 +893,12 @@ def persist_pz_votes(
                     select(Person).where(Person.normalized_name.like(f"% {norm}"))
                 ).scalars().all()
             if matches:
-                # Pick the most specific match (longest name = full name)
-                matches.sort(key=lambda p: len(p.name or ""), reverse=True)
-                existing = matches[0]
+                # Prefer full-name records (contain space) over single-name duplicates
+                full = [m for m in matches if " " in (m.name or "")]
+                if full:
+                    existing = full[0]
+                else:
+                    existing = matches[0]
                 name_to_id[name] = existing.id
             else:
                 new_person = Person(
