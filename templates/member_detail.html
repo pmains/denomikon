@@ -218,7 +218,6 @@
 </div>
 
 {# ─── B. Split Votes ─── #}
-{% if not is_pz %}
 <h4 class="mb-2">Split Votes</h4>
 {% if split_votes %}
 {{ table_controls_wrapper("split", fvote=["yes","no","abstain"], fresult=["approved","denied","continued","carried"], falignment=["with_majority","against_majority"]) }}
@@ -387,7 +386,6 @@
 {{ table_controls_footer() }}
 {% else %}
 <p class="text-muted mb-4">No absences recorded.</p>
-{% endif %}
 {% endif %}
 
 {# ─── G. Full Voting Record (API-backed) ─── #}

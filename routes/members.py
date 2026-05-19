@@ -74,11 +74,209 @@ def _get_pz_member_stats(session, person_id, start_date=None, end_date=None):
     yes = row.yes or 0
     no = row.no or 0
     abstain = max(total - yes - no, 0)
+
+    # Count split votes attended and dissent
+    split_q = select(func.count(AgendaItemVote.id.distinct())).join(
+        MemberVote, MemberVote.agenda_item_vote_id == AgendaItemVote.id,
+    ).join(
+        MeetingModel, MeetingModel.meeting_id == AgendaItemVote.meeting_id,
+    ).where(
+        MemberVote.member_id == person_id,
+        MemberVote.body == "pz",
+        AgendaItemVote.is_split_vote == True,
+    )
+    if start_date:
+        split_q = split_q.where(MeetingModel.meeting_date >= start_date)
+    if end_date:
+        split_q = split_q.where(MeetingModel.meeting_date <= end_date)
+    split_attended = session.execute(split_q).scalar() or 0
+
+    # Count dissents (voted with minority)
+    dissent_q = select(func.count(MemberVote.id)).where(
+        MemberVote.member_id == person_id,
+        MemberVote.body == "pz",
+        MemberVote.is_dissent == True,
+    )
+    if start_date:
+        dissent_q = dissent_q.join(
+            AgendaItemVote, AgendaItemVote.id == MemberVote.agenda_item_vote_id
+        ).join(
+            MeetingModel, MeetingModel.meeting_id == AgendaItemVote.meeting_id,
+        )
+        dissent_q = dissent_q.where(MeetingModel.meeting_date >= start_date)
+        dissent_q = dissent_q.where(MeetingModel.meeting_date <= end_date)
+    against = session.execute(dissent_q).scalar() or 0
+
     return {
         "total_votes": total, "yes": yes, "no": no, "abstain": abstain,
-        "absences": 0, "attendance_rate": None, "split_votes_attended": 0,
-        "with_majority": 0, "against_majority": 0, "dissent_rate": None,
+        "absences": 0, "attendance_rate": None,
+        "split_votes_attended": split_attended,
+        "with_majority": split_attended - against,
+        "against_majority": against,
+        "dissent_rate": round(against / split_attended, 4) if split_attended > 0 else None,
     }
+
+
+def _get_pz_split_votes(session, person_id, start_date=None, end_date=None):
+    """Get split votes involving this PZ commissioner."""
+    from db.models import MemberVote, Meeting as MeetingModel
+    q = select(
+        AgendaItemVote.meeting_id,
+        MeetingModel.meeting_date,
+        MeetingModel.meeting_type,
+        AgendaItemVote.agenda_item_number,
+        AgendaItem.c_number,
+        AgendaItem.agenda_item_title,
+        MemberVote.vote.label("supervisor_vote"),
+        AgendaItemVote.motion_result,
+        AgendaItemVote.majority_position,
+        case(
+            (MemberVote.is_dissent == True, "against_majority"),
+            else_="with_majority",
+        ).label("with_or_against_majority"),
+    ).join(
+        AgendaItemVote, AgendaItemVote.id == MemberVote.agenda_item_vote_id,
+    ).join(
+        MeetingModel, MeetingModel.meeting_id == AgendaItemVote.meeting_id,
+    ).outerjoin(
+        AgendaItem,
+        (AgendaItem.meeting_id == AgendaItemVote.meeting_id)
+        & (AgendaItem.agenda_item_number == AgendaItemVote.agenda_item_number),
+    ).where(
+        MemberVote.member_id == person_id,
+        MemberVote.body == "pz",
+        AgendaItemVote.is_split_vote == True,
+    ).order_by(MeetingModel.meeting_date, AgendaItemVote.agenda_item_number)
+    if start_date:
+        q = q.where(MeetingModel.meeting_date >= start_date)
+    if end_date:
+        q = q.where(MeetingModel.meeting_date <= end_date)
+    rows = session.execute(q).all()
+    return [
+        {
+            "meeting_id": r.meeting_id,
+            "meeting_date": r.meeting_date,
+            "meeting_type": r.meeting_type,
+            "agenda_item_number": r.agenda_item_number,
+            "agenda_item_title": r.agenda_item_title,
+            "c_number": r.c_number or "",
+            "supervisor_vote": r.supervisor_vote or "",
+            "motion_result": r.motion_result or "",
+            "majority_position": r.majority_position or "",
+            "with_or_against_majority": r.with_or_against_majority or "",
+        }
+        for r in rows
+    ]
+
+
+def _get_pz_dissents(session, person_id, start_date=None, end_date=None):
+    """Get dissenting votes for a PZ commissioner."""
+    rows = _get_pz_split_votes(session, person_id, start_date, end_date)
+    return [r for r in rows if r["with_or_against_majority"] == "against_majority"]
+
+
+def _get_pz_swing_votes(session, person_id, start_date=None, end_date=None):
+    """Get swing votes for a PZ commissioner."""
+    from db.models import MemberVote, Meeting as MeetingModel
+    from collections import Counter
+
+    # Get all split AIVs this member voted on
+    q = select(
+        MemberVote.agenda_item_vote_id,
+        MemberVote.vote,
+    ).join(
+        AgendaItemVote, AgendaItemVote.id == MemberVote.agenda_item_vote_id,
+    ).join(
+        MeetingModel, MeetingModel.meeting_id == AgendaItemVote.meeting_id,
+    ).where(
+        MemberVote.member_id == person_id,
+        MemberVote.body == "pz",
+        AgendaItemVote.is_split_vote == True,
+    )
+    if start_date:
+        q = q.where(MeetingModel.meeting_date >= start_date)
+    if end_date:
+        q = q.where(MeetingModel.meeting_date <= end_date)
+    rows = session.execute(q).all()
+
+    if not rows:
+        return []
+
+    aiv_ids = [r.agenda_item_vote_id for r in rows]
+    sup_vote_map = {r.agenda_item_vote_id: r.vote for r in rows}
+
+    # Get all votes on these AIVs to tally
+    all_v = session.execute(
+        select(MemberVote.agenda_item_vote_id, MemberVote.vote)
+        .where(MemberVote.agenda_item_vote_id.in_(aiv_ids))
+    ).all()
+
+    aiv_tallies: dict[int, Counter] = {}
+    for mv in all_v:
+        aiv_tallies.setdefault(mv.agenda_item_vote_id, Counter())
+        nv = mv.vote.lower() if mv.vote else ""
+        if nv in ("yes", "no"):
+            aiv_tallies[mv.agenda_item_vote_id][nv] += 1
+
+    swing_aiv_ids: set[int] = set()
+    for aiv_id, tally in aiv_tallies.items():
+        yes = tally.get("yes", 0)
+        no = tally.get("no", 0)
+        if yes <= 0 or no <= 0:
+            continue
+        margin = abs(yes - no)
+        if margin != 1:
+            continue
+        sup_nv = sup_vote_map.get(aiv_id, "").lower()
+        if sup_nv not in ("yes", "no"):
+            continue
+        prev_side = "yes" if yes > no else "no"
+        if sup_nv == prev_side:
+            swing_aiv_ids.add(aiv_id)
+
+    if not swing_aiv_ids:
+        return []
+
+    ids_list = list(swing_aiv_ids)
+    from sqlalchemy import text as sa_text
+    ids_str = ",".join(str(x) for x in ids_list)
+    detail_rows = session.execute(
+        sa_text(f"""
+            SELECT
+                aiv.id AS aiv_id,
+                aiv.meeting_id,
+                aiv.agenda_item_number,
+                aiv.c_number,
+                aiv.motion_result,
+                ai.agenda_item_title,
+                m.meeting_date,
+                m.meeting_type
+            FROM agenda_item_votes aiv
+            LEFT JOIN agenda_items ai
+                ON ai.meeting_id = aiv.meeting_id
+                AND ai.agenda_item_number = aiv.agenda_item_number
+            LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id
+            WHERE aiv.id IN ({ids_str})
+            ORDER BY m.meeting_date, aiv.agenda_item_number
+        """)
+    ).all()
+
+    results = []
+    for r in detail_rows:
+        tally = aiv_tallies.get(r.aiv_id, Counter())
+        sup_nv = sup_vote_map.get(r.aiv_id, "unknown")
+        results.append({
+            "meeting_id": r.meeting_id,
+            "meeting_date": r.meeting_date,
+            "meeting_type": r.meeting_type,
+            "agenda_item_number": r.agenda_item_number,
+            "agenda_item_title": r.agenda_item_title,
+            "c_number": r.c_number or "",
+            "supervisor_vote": sup_nv,
+            "motion_result": r.motion_result or "",
+            "vote_tally": f"{tally.get('yes',0)}-{tally.get('no',0)}",
+        })
+    return results
 
 
 VOTE_BADGE_CLASSES = {
@@ -468,13 +666,22 @@ def member_detail(jurisdiction_slug, body_code, slug):
             session, sup.id,
             start_date=start_date, end_date=end_date,
         )
-        split_votes = []
-        dissents = []
+        split_votes = _get_pz_split_votes(
+            session, sup.id,
+            start_date=start_date, end_date=end_date,
+        )
+        dissents = _get_pz_dissents(
+            session, sup.id,
+            start_date=start_date, end_date=end_date,
+        )
         abstentions = []
         absences = []
         full_record = []
-        full_record_count = 0
-        swing_votes = []
+        full_record_count = stats["total_votes"]
+        swing_votes = _get_pz_swing_votes(
+            session, sup.id,
+            start_date=start_date, end_date=end_date,
+        )
     else:
         stats = get_supervisor_vote_stats(
             session, sup.id, body="bos",
