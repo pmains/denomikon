@@ -213,7 +213,7 @@
                     <tr>
                         <td class="pe-3">
                             {%- if sv.slug -%}
-                            <a href="/members/{{ sv.slug }}">{{ sv.name }}</a>
+                            <a href="/members/{{ jurisdiction_slug }}/{{ body_code }}/{{ sv.slug }}">{{ sv.name }}</a>
                             {%- else -%}
                             {{ sv.name }}
                             {%- endif -%}

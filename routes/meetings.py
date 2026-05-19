@@ -405,6 +405,13 @@ def meeting_detail(meeting_id, body=None):
                     if pz_events:
                         related_pz[cn] = pz_events
 
+    # Resolve jurisdiction slug from meeting
+    from db.models import Jurisdiction as _Jur
+    _jur = session.execute(
+        select(_Jur).where(_Jur.id == (meeting.jurisdiction_id or 1))
+    ).scalar_one_or_none()
+    jurisdiction_slug = _jur.slug if _jur else "maricopa-county"
+
     session.close()
 
     badge = SYNC_STATUS_BADGES.get((meeting.sync_status or "").lower(), "secondary")
@@ -413,6 +420,8 @@ def meeting_detail(meeting_id, body=None):
         "meeting_detail.html",
         meeting=meeting,
         meeting_id=meeting_id,
+        body_code=meeting_body_val,
+        jurisdiction_slug=jurisdiction_slug,
         items=items,
         docs_by_item=docs_by_item,
         meeting_docs=meeting_docs,
