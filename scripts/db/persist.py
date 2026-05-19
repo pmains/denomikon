@@ -792,6 +792,7 @@ def persist_pz_votes(
     session: Session,
     meeting_id: str,
     votes: list[dict],
+    absent_commissioner_names: Optional[list[str]] = None,
 ) -> int:
     """Persist PZ commission votes extracted from meeting minutes.
 
@@ -799,11 +800,13 @@ def persist_pz_votes(
     2. Create/update AgendaItemVote records with motion results.
     3. Upsert Person records for commissioners.
     4. Create MemberVote records for each commissioner's vote.
+    5. Create "absent" MemberVote records for absent commissioners.
 
     Args:
         session: DB session
         meeting_id: The PZ meeting identifier
         votes: List of vote dicts from pz_minutes.parse_minutes_votes()
+        absent_commissioner_names: List of names from MEMBERS ABSENT section
 
     Returns:
         Number of vote records persisted.
@@ -945,6 +948,48 @@ def persist_pz_votes(
                 is_dissent=True,
             ))
             count += 1
+
+    # ─── Absent commissioners ───
+    if absent_commissioner_names:
+        for name in absent_commissioner_names:
+            norm = name.lower().strip().rstrip(".")
+            matches = session.execute(
+                select(Person).where(Person.normalized_name == norm)
+            ).scalars().all()
+            if not matches:
+                matches = session.execute(
+                    select(Person).where(Person.normalized_name.like(f"% {norm}"))
+                ).scalars().all()
+            if not matches:
+                new_p = Person(name=name.strip(), normalized_name=norm)
+                session.add(new_p)
+                session.flush()
+                matches = [new_p]
+            full = [m for m in matches if " " in (m.name or "")]
+            pid = (full[0] if full else matches[0]).id
+            aivs = session.execute(
+                select(AgendaItemVote).where(
+                    AgendaItemVote.body == body,
+                    AgendaItemVote.meeting_id == meeting_id,
+                )
+            ).scalars().all()
+            for aiv in aivs:
+                existing_mv = session.execute(
+                    select(MemberVote).where(
+                        MemberVote.agenda_item_vote_id == aiv.id,
+                        MemberVote.member_id == pid,
+                    )
+                ).scalar_one_or_none()
+                if existing_mv:
+                    continue
+                session.add(MemberVote(
+                    body=body,
+                    agenda_item_vote_id=aiv.id,
+                    member_id=pid,
+                    vote="absent",
+                    is_dissent=False,
+                ))
+                count += 1
 
     session.commit()
     return count

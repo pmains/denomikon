@@ -54,10 +54,11 @@ for m in meetings:
         continue
 
     votes = result['votes']
-    print(f" -> {len(votes)} vote(s)", end='', flush=True)
+    absent_names = (result.get('commissioners') or {}).get('absent', [])
+    print(f" -> {len(votes)} vote(s)" + (f", {len(absent_names)} absent" if absent_names else ""), end='', flush=True)
 
     try:
-        count = persist_pz_votes(session, mid, votes)
+        count = persist_pz_votes(session, mid, votes, absent_names)
         print(f", {count} member-votes")
         parsed += 1
         total_votes += count
