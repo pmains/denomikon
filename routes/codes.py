@@ -394,9 +394,24 @@ def _get_type_codes_for_jurisdiction(jurisdiction: str) -> dict:
     dropdown (483 codes). Falls back to permit data for codes not in that list.
     Returns a dict of {code: info} suitable for JSON serialization.
     """
-    from scripts.scraper.phoenix_permits import (
-        PHX_CATEGORY_MAP, PHX_WORK_TYPE_MAP, categorize_phoenix_type,
-    )
+    # Import Phoenix permit type helpers
+    # On development, this lives at scripts/scraper/phoenix_permits.py.
+    # On production (older deployments), it may be at scraper/phoenix_permits.py
+    # due to directory structure differences. Handle both.
+    import sys as _sys
+    from pathlib import Path as _Path
+    _scraper_dir = _Path(__file__).resolve().parent.parent / "scraper"
+    if str(_scraper_dir) not in _sys.path:
+        _sys.path.insert(0, str(_scraper_dir))
+    try:
+        from phoenix_permits import (
+            PHX_CATEGORY_MAP, PHX_WORK_TYPE_MAP, categorize_phoenix_type,
+        )
+    except ImportError:
+        # Fallback: try scripts.scraper.phoenix_permits
+        from scripts.scraper.phoenix_permits import (
+            PHX_CATEGORY_MAP, PHX_WORK_TYPE_MAP, categorize_phoenix_type,
+        )
     jur_lower = jurisdiction.lower().strip() if jurisdiction else ""
 
     if "phoenix" in jur_lower:
