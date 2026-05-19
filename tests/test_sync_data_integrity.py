@@ -24,9 +24,22 @@ from sqlalchemy import select, func
 _real_db_path = str(Path(__file__).resolve().parent.parent / "data" / "maricopa.sqlite")
 
 
+
+
 def _use_real_db():
-    """Force connection to the real database, not a test fixture temp DB."""
+    """Force connection to the real database, not a test fixture temp DB.
+
+    Since db.core's default DATABASE_URL now points to a temp file (not
+    production), this is safe to call without saving/restoring.  Subsequent
+    test modules set their own URL via set_database_url().
+    """
     set_database_url(f"sqlite:///{_real_db_path}")
+
+
+# _restore_db_url is not needed — the default DATABASE_URL is now a temp
+# file (/tmp/poliscopic_dev.sqlite), not the production path.  Any test
+# that runs after this module and calls set_database_url() or
+# _reset_db_engine() will create its own temp path.
 
 
 EXPECTED_BODIES = {
@@ -57,6 +70,7 @@ class TestSyncedMeetingsDataIntegrity(unittest.TestCase):
 
     def tearDown(self):
         self.s.close()
+
 
     def _meeting_stats(self, body):
         """Return dict of meeting stats for a body."""
@@ -169,6 +183,7 @@ class TestAgendaItemIntegrity(unittest.TestCase):
     def tearDown(self):
         self.s.close()
 
+
     def test_no_empty_titles(self):
         """No agenda item has a NULL or empty title."""
         count = self.s.execute(
@@ -232,6 +247,7 @@ class TestVoteDataIntegrity(unittest.TestCase):
     def tearDown(self):
         self.s.close()
 
+
     def test_bos_has_votes(self):
         """BOS meetings have vote records."""
         count = self.s.execute(
@@ -276,6 +292,7 @@ class TestMembershipDataIntegrity(unittest.TestCase):
     def tearDown(self):
         self.s.close()
 
+
     def test_bos_has_memberships(self):
         """BOS has at least 5 BodyMembership records."""
         count = self.s.execute(
@@ -316,6 +333,7 @@ class TestPermitDataIntegrity(unittest.TestCase):
 
     def tearDown(self):
         self.s.close()
+
 
     def test_permits_exist(self):
         """Permit records exist in the database."""

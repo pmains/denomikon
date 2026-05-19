@@ -49,12 +49,30 @@ init_db()
 
 
 def _reset_db_engine():
-    """Dispose and reset the DB engine so the next get_engine() creates
-    a fresh connection to the current DATABASE_URL."""
-    if _db_mod._engine:
-        _db_mod._engine.dispose()
-    _db_mod._engine = None
-    _db_mod._SessionLocal = None
+    """Dispose and reset the DB engine to a FRESH temp database.
+
+    Creates a new temp file and switches DATABASE_URL to it, then runs
+    init_db() to set up the schema.  This guarantees destructive operations
+    like Meeting.__table__.delete() never touch the production database."""
+    global _test_db_path
+    import db.core as _dc
+    import tempfile
+    import os as _os
+    import db as _db
+    if _dc._engine:
+        _dc._engine.dispose()
+    _dc._engine = None
+    _dc._SessionLocal = None
+    # Fresh temp database — never reuse a path that another module
+    # might have set DATABASE_URL to.
+    if _test_db_path:
+        try:
+            _os.unlink(_test_db_path)
+        except FileNotFoundError:
+            pass
+    _test_db_path = tempfile.mktemp(suffix=".sqlite")
+    set_database_url(f"sqlite:///{_test_db_path}")
+    _db.init_db()
 
 
 @integration_test
@@ -85,7 +103,7 @@ class TestInitDbIdempotent(unittest.TestCase):
 class TestPersistMeeting(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        init_db()
+        _reset_db_engine()
 
     def setUp(self):
         self.session = get_session()
@@ -942,11 +960,17 @@ class TestCanceledMeetingDetection(unittest.TestCase):
 
 
 def _reset_engine_cache():
-    """Reset the db engine cache for test isolation."""
+    """Reset the db engine cache for test isolation.
+
+    Called at process exit via atexit.  Restores DATABASE_URL to the
+    module-level temp path so any atexit cleanup that calls get_engine()
+    doesn't connect to a stale URL (e.g. the production database path
+    set by test_sync_data_integrity._use_real_db()).
+    """
     try:
-        import db as _db_mod
-        _db_mod._engine = None
-        _db_mod._SessionLocal = None
+        import db.core as _dc
+        _dc._engine = None
+        _dc._SessionLocal = None
     except ImportError:
         pass
 

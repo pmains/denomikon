@@ -932,16 +932,13 @@ class PZStaffReportRegressionTests(unittest.TestCase):
         from scripts.db import get_session, get_engine, Base, Meeting, AgendaItem, SupportingDocument
         from sqlalchemy import create_engine, inspect
 
-        # Create an in-memory SQLite database with the schema
-        db_url = "sqlite://"
-        import os
-        old_url = os.environ.get("DATABASE_URL")
-        os.environ["DATABASE_URL"] = db_url
+        import tempfile
+        _tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+        _tmp.close()
+        from db import set_database_url as _set_url
+        _set_url(f"sqlite:///{_tmp.name}")
         try:
-            # Reload db module with new URL
-            import importlib
-            from scripts import db
-            importlib.reload(db)
+            import scripts.db as db
 
             db.init_db()
             session = db.get_session()
@@ -1005,17 +1002,21 @@ class PZStaffReportRegressionTests(unittest.TestCase):
 
             session.close()
         finally:
-            os.environ["DATABASE_URL"] = old_url or ""
+            import os as _os
+            try:
+                _os.unlink(_tmp.name)
+            except Exception:
+                pass
 
     def test_persist_meeting_body_scope_isolation(self):
         """persist_meeting with different body values should not interfere."""
-        import os
-        old_url = os.environ.get("DATABASE_URL")
-        os.environ["DATABASE_URL"] = "sqlite:///"
+        import tempfile
+        _tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+        _tmp.close()
+        from db import set_database_url as _set_url
+        _set_url(f"sqlite:///{_tmp.name}")
         try:
-            from scripts import db as db_mod
-            import importlib
-            importlib.reload(db_mod)
+            import scripts.db as db_mod
 
             db_mod.init_db()
             session = db_mod.get_session()
@@ -1063,7 +1064,11 @@ class PZStaffReportRegressionTests(unittest.TestCase):
 
             session.close()
         finally:
-            os.environ["DATABASE_URL"] = old_url or ""
+            import os as _os
+            try:
+                _os.unlink(_tmp.name)
+            except Exception:
+                pass
 
 
 class PZParserRegressionTests(unittest.TestCase):
@@ -1154,13 +1159,13 @@ class PZParserRegressionTests(unittest.TestCase):
         Regression: persist_meeting must deduplicate agenda items by
         agenda_item_id to avoid UNIQUE constraint violations.
         """
-        import os
-        old_url = os.environ.get("DATABASE_URL")
-        os.environ["DATABASE_URL"] = "sqlite:///"
+        import tempfile
+        _tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+        _tmp.close()
+        from db import set_database_url as _set_url
+        _set_url(f"sqlite:///{_tmp.name}")
         try:
-            from scripts import db
-            import importlib
-            importlib.reload(db)
+            import scripts.db as db
 
             db.init_db()
             session = db.get_session()
@@ -1212,7 +1217,11 @@ class PZParserRegressionTests(unittest.TestCase):
 
             session.close()
         finally:
-            os.environ["DATABASE_URL"] = old_url or ""
+            import os as _os
+            try:
+                _os.unlink(_tmp.name)
+            except Exception:
+                pass
 
     def test_parse_pz_overview_no_heading_blocks(self):
         """parse_pz_overview returns None when page has no h1/h2.title."""
@@ -1344,13 +1353,13 @@ class PZParserRegressionTests(unittest.TestCase):
         constraint. Two items in the same meeting can reference the same
         AgendaItem.id value.
         """
-        import os
-        old_url = os.environ.get("DATABASE_URL")
-        os.environ["DATABASE_URL"] = "sqlite:///"
+        import tempfile
+        _tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+        _tmp.close()
+        from db import set_database_url as _set_url
+        _set_url(f"sqlite:///{_tmp.name}")
         try:
-            from scripts import db
-            import importlib
-            importlib.reload(db)
+            import scripts.db as db
 
             db.init_db()
             session = db.get_session()
@@ -1392,7 +1401,11 @@ class PZParserRegressionTests(unittest.TestCase):
 
             session.close()
         finally:
-            os.environ["DATABASE_URL"] = old_url or ""
+            import os as _os
+            try:
+                _os.unlink(_tmp.name)
+            except Exception:
+                pass
 
 
 class TestPZImports(unittest.TestCase):

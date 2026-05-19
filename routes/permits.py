@@ -70,45 +70,47 @@ def permits_index():
     # Gather distinct work_types for filter UI
     work_types_all = all_work_types
 
-    # ── Helper: build inclusion-based WHERE clause parts ────────────────
-    def _build_parts():
+    # ── Unified filter builder (replaces _build_parts + _base_filter) ──
+    # Returns (where_clause_str, params_dict) for raw SQL queries.
+    # Also returns a list of ORM filter clauses for the same conditions.
+    def _build_filters():
         parts = []
         params = {}
+        orm_filters = []
         if jurisdiction_filter:
             parts.append("p.jurisdiction = :jur")
             params["jur"] = jurisdiction_filter
+            orm_filters.append(Permit.jurisdiction == jurisdiction_filter)
         if selected_categories:
             phs = ",".join(f":cat_{i}" for i in range(len(selected_categories)))
             parts.append(f"p.normalized_category IN ({phs})")
             for i, c in enumerate(selected_categories):
                 params[f"cat_{i}"] = c
+            orm_filters.append(Permit.normalized_category.in_(selected_categories))
         if selected_work_types:
             phs = ",".join(f":wt_{i}" for i in range(len(selected_work_types)))
             parts.append(f"p.work_type IN ({phs})")
             for i, w in enumerate(selected_work_types):
                 params[f"wt_{i}"] = w
+            orm_filters.append(Permit.work_type.in_(selected_work_types))
         if year_filter:
             parts.append("p.permit_issue_date LIKE :yr")
             params["yr"] = f"{year_filter}%"
+            orm_filters.append(Permit.permit_issue_date.startswith(year_filter))
         if native_type_filter:
             parts.append("p.native_type = :nt")
             params["nt"] = native_type_filter
-        return parts, params
+            orm_filters.append(Permit.native_type == native_type_filter)
+        where = " AND ".join(parts) if parts else "1=1"
+        return where, params, orm_filters
 
-    # ── Filter builder for raw-list mode (non-deduped) ──────────────────
-    def _base_filter(q):
-        if jurisdiction_filter:
-            q = q.where(Permit.jurisdiction == jurisdiction_filter)
-        if selected_categories:
-            q = q.where(Permit.normalized_category.in_(selected_categories))
-        if selected_work_types:
-            q = q.where(Permit.work_type.in_(selected_work_types))
-        if year_filter:
-            q = q.where(Permit.permit_issue_date.startswith(year_filter))
-        if native_type_filter:
-            q = q.where(Permit.native_type == native_type_filter)
+    where, params, orm_filters = _build_filters()
+
+    def _apply_filters(q):
+        """Apply the shared ORM filters to a query."""
+        for f in orm_filters:
+            q = q.where(f)
         if units_filter:
-            # Show only permits that carry housing units
             q = q.filter(
                 func.coalesce(
                     func.cast(Permit.units, Float),
@@ -126,8 +128,7 @@ def permits_index():
     from sqlalchemy import text as _sa_text
     from collections import defaultdict
 
-    parts, params = _build_parts()
-    where = " AND ".join(parts) if parts else "1=1"
+    where, params, _orm_filters = _build_filters()
 
     sql = _sa_text(f"""
         WITH deduped AS (
@@ -413,167 +414,117 @@ def permits_index():
     # Phoenix uses short codes (RSF, BLD, SGNP). Tempe and Maricopa use
     # descriptive labels (Building (Residential), New Commercial).
     # Consolidate them into meaningful labels for the Top Types table.
+    _TYPE_PATTERNS = [
+        # (prefix_or_exact, label, is_exact) — ordered by specificity
+        # Phoenix R-prefix: residential
+        (("RSF", "RSME", "RSP"), "Single-Family Home", False),
+        (("RS",), "Single-Family Home", False),
+        (("RV",), "Residential (Multi-Unit)", False),
+        (("RMC", "REC"), "Residential (Commercial)", False),
+        (("RM",), "Multi-Family", False),
+        (("RPV", "RPBI"), "Residential Patio Villa", True),
+        (("RE", "REM", "RSE", "RPSC", "RPR", "RWH", "RFEN"), "Residential Alteration", False),
+        (("RNSP", "RDEM"), "Residential Demolition", False),
+        (("RCIT", "RSTD"), "Residential Addition", False),
+        (("R",), "Residential (Other)", False),
+        # Phoenix commercial
+        (("BLD", "BLDS", "BLDA", "BLSC"), "Commercial Building", False),
+        (("CSW", "CSL"), "Commercial Shell", False),
+        (("CSIT", "CSE", "CSLC"), "Commercial Interior", False),
+        (("CCO", "CPR", "CES"), "Commercial Alteration", False),
+        (("CGD", "CDW"), "Commercial Grading", False),
+        (("CLS", "CLT", "CMC"), "Commercial Construction", False),
+        (("CDF", "CPA"), "Commercial Plan/Design", False),
+        (("CPGD",), "Commercial Grading", True),
+        (("CP",), "Commercial Plan/Design", False),
+        (("C",), "Commercial (Other)", False),
+        # Trade codes
+        (("ELEC", "PLMB", "MECH"), "Trade (Elec/Plumb/Mech)", False),
+        (("ELEV", "ELFT"), "Trade (Elevator)", False),
+        (("EHYD",), "Trade (Hydronic)", False),
+        (("ENVR",), "Trade (Environmental)", False),
+        (("ETRC",), "Trade (Electrical Tr.)", False),
+        # Fire — check exact fire codes first (F + digits)
+        (("F",), "Fire System", None),  # special: isdigit check
+        (("FPP", "FPS", "FP", "FBB", "FITM", "FLRV", "FLSR", "FOCS", "FPAP"), "Fire Protection", False),
+        # Signs
+        (("SGN", "S"), "Sign", False),
+        # Service / Trade
+        (("SE", "SME", "SM"), "Service Existing", False),
+        (("SP", "SPE", "SPM", "SC"), "Trade (Other)", False),
+        # Land Use / Plan Review
+        (("LPRM", "LPRR", "LPRS"), "Plan Review", False),
+        (("LP", "LS"), "Plan Review", False),
+        # Infrastructure
+        (("WS",), "Infrastructure (Water/Sewer)", False),
+        (("TRFN",), "Infrastructure (Traffic)", False),
+        # Demolition
+        (("DEM", "ABND"), "Demolition", False),
+        # Other
+        (("POOL",), "Pool", False),
+        (("OE", "OP", "OS", "OBLD", "OM"), "Other Existing", False),
+        (("PHAS", "PLAT", "PLZA", "PAPP", "PR"), "Plans/Zoning", False),
+        (("COFO", "COFC"), "Certificate of Occupancy", False),
+        (("TCO",), "Temp Certificate of Occupancy", False),
+        (("MHZ", "MDHM"), "Manufactured/Mobile Home", False),
+        (("INSP",), "Inspection", False),
+        (("AMND",), "Amendment", False),
+        (("EXTR",), "Excavation/Trench", False),
+        (("CAT",), "Catenary/Telecom", False),
+        (("CHA",), "Change of Use", False),
+        (("CHG",), "Change", False),
+        (("DAPP", "DEDI"), "Design/Development", False),
+        (("FEN",), "Fence/Wall", False),
+        (("EL",), "Trade (Elec/Plumb/Mech)", False),
+    ]
+
+    _DESCRIPTIVE_KEYWORDS = [
+        # Tempe/Maricopa descriptive labels — checked by keyword in lowercased text
+        (("new", "build"), "Single-Family Home", lambda n, kw: "residential" in n and any(k in n for k in kw)),
+        (("alter", "addition"), "Residential Alteration", lambda n, kw: "residential" in n and any(k in n for k in kw)),
+        (("new", "build"), "Commercial Building", lambda n, kw: "commercial" in n and any(k in n for k in kw)),
+        (("alter",), "Commercial Alteration", lambda n, kw: "commercial" in n and "alter" in n),
+        (("electrical", "plumbing", "mechanical"), "Trade (General)", lambda n, kw: any(k in n for k in kw)),
+        (("demolition",), "Demolition", lambda n, kw: "demolition" in n),
+        (("infrastructure", "grading"), "Infrastructure", lambda n, kw: any(k in n for k in kw)),
+    ]
+
     def _type_label(nt: str) -> str:
         """Map raw native_type to a consolidated, human-readable label."""
         if not nt:
             return "Other"
         code = nt.upper().strip()
-        # Phoenix R-prefix codes → Residential
-        if code.startswith("RSF") or code.startswith("RSME") or code == "RSP":
-            return "Single-Family Home"
-        if code.startswith("RS"):
-            return "Single-Family Home"
-        if code.startswith("RV"):
-            return "Residential (Multi-Unit)"
-        if code.startswith("RM") and not code.startswith("RMC"):
-            return "Multi-Family"
-        if code.startswith("RMC") or code.startswith("REC"):
-            return "Residential (Commercial)"
-        if code == "RPV" or code == "RPBI":
-            return "Residential Patio Villa"
-        if code == "RE" or code == "REM":
-            return "Residential Alteration"
-        if code == "RSE":
-            return "Residential Alteration"
-        if code.startswith("RPSC") or code.startswith("RPR"):
-            return "Residential Alteration"
-        if code.startswith("RWH") or code.startswith("RFEN"):
-            return "Residential Alteration"
-        if code.startswith("RNSP") or code == "RDEM":
-            return "Residential Demolition"
-        if code.startswith("RCIT") or code.startswith("RSTD"):
-            return "Residential Addition"
-        if code.startswith("R"):
-            return "Residential (Other)"
-        # Phoenix C-prefix and BLD → Commercial
-        if code == "BLD" or code.startswith("BLDS") or code.startswith("BLDA") or code.startswith("BLSC"):
-            return "Commercial Building"
-        if code.startswith("CSW") or code.startswith("CSL"):
-            return "Commercial Shell"
-        if code.startswith("CSIT") or code.startswith("CSE") or code.startswith("CSLC"):
-            return "Commercial Interior"
-        if code.startswith("CCO") or code.startswith("CPR") or code.startswith("CES"):
-            return "Commercial Alteration"
-        if code.startswith("CGD") or code.startswith("CDW"):
-            return "Commercial Grading"
-        if code.startswith("CLS") or code.startswith("CLT") or code.startswith("CMC"):
-            return "Commercial Construction"
-        if code.startswith("CDF") or code.startswith("CPA"):
-            return "Commercial Plan/Design"
-        if code.startswith("CP") and code != "CPGD":
-            return "Commercial Plan/Design"
-        if code == "CPGD":
-            return "Commercial Grading"
-        if code.startswith("C"):
-            return "Commercial (Other)"
-        # Phoenix trade codes
-        if code == "ELEC" or code.startswith("EL") or code == "PLMB" or code == "MECH":
-            return "Trade (Elec/Plumb/Mech)"
-        if code.startswith("ELEV") or code.startswith("ELFT"):
-            return "Trade (Elevator)"
-        if code.startswith("EHYD"):
-            return "Trade (Hydronic)"
-        if code.startswith("ENVR"):
-            return "Trade (Environmental)"
-        if code.startswith("ETRC"):
-            return "Trade (Electrical Tr.)"
-        # Phoenix FENCE permits
-        if code == "FEN":
-            return "Fence/Wall"
-        # Phoenix fire codes → Trade
+        low = nt.lower()
+
+        # Phoenix BLD- with descriptive suffix
+        if code.startswith("BLD-"):
+            if "RESIDENTIAL" in nt.upper():
+                return "Single-Family Home"
+            if "COMMERCIAL" in nt.upper():
+                return "Commercial Building"
+
+        # Phoenix fire codes: F followed by digits
         if code.startswith("F") and len(code) >= 2 and code[1:].isdigit():
             return "Fire System"
-        if code.startswith("FPP") or code.startswith("FPS") or code.startswith("FP"):
-            return "Fire Protection"
-        if code.startswith("FBB") or code.startswith("FITM"):
-            return "Fire Protection"
-        if code.startswith("FLRV"):
-            return "Fire Protection"
-        if code.startswith("FLSR") or code.startswith("FOCS") or code.startswith("FPAP"):
-            return "Fire Protection"
-        # Phoenix sign codes
-        if code.startswith("SGN") or code == "S":
-            return "Sign"
-        # Phoenix SE, SME, SCSR, SP, etc.
-        if code.startswith("SE") or code.startswith("SME") or code == "SM":
-            return "Service Existing"
-        if code.startswith("SP") or code.startswith("SPE") or code.startswith("SPM"):
-            return "Trade (Other)"
-        if code.startswith("SC"):
-            return "Trade (Other)"
-        # Phoenix LP/LS codes → Land Use / Plan Review
-        if code.startswith("LPRM") or code.startswith("LPRR") or code.startswith("LPRS"):
-            return "Plan Review"
-        if code.startswith("LP"):
-            return "Plan Review"
-        if code.startswith("LS"):
-            return "Plan Review"
-        # Phoenix infrastructure
-        if code.startswith("WS"):
-            return "Infrastructure (Water/Sewer)"
-        if code.startswith("TRFN"):
-            return "Infrastructure (Traffic)"
-        # Phoenix demolition
-        if code.startswith("DEM") or code.startswith("ABND"):
-            return "Demolition"
-        # Phoenix pool
-        if code.startswith("POOL"):
-            return "Pool"
-        # Phoenix other/existing
-        if code.startswith("OE") or code.startswith("OP") or code.startswith("OS"):
-            return "Other Existing"
-        if code.startswith("OBLD"):
-            return "Other Existing"
-        if code.startswith("OM"):
-            return "Other Existing"
-        if code.startswith("PHAS") or code.startswith("PLAT") or code.startswith("PLZA"):
-            return "Plans/Zoning"
-        if code.startswith("PAPP") or code.startswith("PR"):
-            return "Plans/Zoning"
-        if code.startswith("COFO") or code.startswith("COFC"):
-            return "Certificate of Occupancy"
-        if code.startswith("TCO"):
-            return "Temp Certificate of Occupancy"
-        if code.startswith("MHZ") or code.startswith("MDHM"):
-            return "Manufactured/Mobile Home"
-        if code.startswith("INSP"):
-            return "Inspection"
-        if code.startswith("AMND"):
-            return "Amendment"
-        if code.startswith("EXTR"):
-            return "Excavation/Trench"
-        if code.startswith("CAT"):
-            return "Catenary/Telecom"
-        if code.startswith("CHA"):
-            return "Change of Use"
-        if code.startswith("CHG"):
-            return "Change"
-        if code.startswith("DAPP") or code.startswith("DEDI"):
-            return "Design/Development"
-        if code.startswith("SC") or code == "SM" or code == "SP" or code.startswith("SPE"):
-            return "Trade (Other)"
-        if code.startswith("BLD-") and "RESIDENTIAL" in nt.upper():
-            return "Single-Family Home"
-        if code.startswith("BLD-") and "COMMERCIAL" in nt.upper():
-            return "Commercial Building"
-        # Tempe/Maricopa descriptive labels — normalize these too
-        low = nt.lower()
-        if "residential" in low and ("new" in low or "build" in low):
-            return "Single-Family Home"
-        if "residential" in low and ("alter" in low or "addition" in low):
-            return "Residential Alteration"
-        if "commercial" in low and ("new" in low or "build" in low):
-            return "Commercial Building"
-        if "commercial" in low and "alter" in low:
-            return "Commercial Alteration"
-        if "trade" in low or "electrical" in low or "plumbing" in low or "mechanical" in low:
+
+        # Match against prefix patterns (most specific first)
+        for prefixes, label, match_mode in _TYPE_PATTERNS:
+            if match_mode is True:
+                # Exact match
+                if code in prefixes:
+                    return label
+            elif match_mode is None:
+                # Special case already handled above
+                continue
+            else:
+                # Prefix match
+                for p in prefixes:
+                    if code.startswith(p):
+                        return label
+
+        # Tempe/Maricopa descriptive keywords
+        if "trade" in low:
             return "Trade (General)"
-        if "demolition" in low:
-            return "Demolition"
-        if "infrastructure" in low or "grading" in low:
-            return "Infrastructure"
-        if "standard" in low or "plan" in low:
-            return "Standard Plan"
         if "sign" in low or "awning" in low:
             return "Sign"
         if "pool" in low or "spa" in low:
@@ -592,7 +543,8 @@ def permits_index():
             return "Certificate of Occupancy"
         if "addition" in low:
             return "Addition"
-        # Fallback: use the raw type but clean it up a bit
+
+        # Fallback
         return nt.strip()
 
     # Build type counts by consolidated label
@@ -656,8 +608,8 @@ def permits_index():
         else:
             base_q = select(Permit).order_by(Permit.permit_issue_date.desc().nullslast(), Permit.id.desc())
         count_q = select(func.count(Permit.id))
-        base_q = _base_filter(base_q)
-        count_q = _base_filter(count_q)
+        base_q = _apply_filters(base_q)
+        count_q = _apply_filters(count_q)
         total = session.execute(count_q).scalar() or 0
         total_pages = max(1, (total + per_page - 1) // per_page)
         page = max(1, min(page, total_pages))
@@ -729,6 +681,10 @@ def permits_chart_data():
 
     Returns sqft_by_year, permits_by_year, and category_totals,
     optionally filtered by jurisdiction, category, work type, or year.
+
+    Executes exactly ONE dedup CTE instead of three separate ones.
+    The years list, sqft/count per year/category, and category totals
+    are all derived from a single result set.
     """
     from sqlalchemy import text
     session = get_session()
@@ -736,15 +692,13 @@ def permits_chart_data():
     cf = request.args.get("category", "")
     yf = request.args.get("year", "")
 
-    # New positive inclusion filters
     categories_filter = request.args.get("categories", "").strip()
     work_types_filter = request.args.get("work_types", "").strip()
 
-    # Legacy exclusion filters (backward compat)
+    # Legacy exclusion → inclusion conversion (only when legacy params present)
     ef = request.args.get("exclude", "").strip()
     ewtf = request.args.get("exclude_work_type", "").strip()
 
-    # Convert legacy exclusion to inclusion
     if ef and not categories_filter:
         all_cats = sorted(set(
             r[0] for r in session.execute(
@@ -755,7 +709,6 @@ def permits_chart_data():
         included = [c for c in all_cats if c not in excluded]
         if included:
             categories_filter = ",".join(included)
-        ef = ""
 
     if ewtf and not work_types_filter:
         all_wts = sorted(set(
@@ -767,7 +720,6 @@ def permits_chart_data():
         included = [w for w in all_wts if w not in excluded]
         if included:
             work_types_filter = ",".join(included)
-        ewtf = ""
 
     selected_cats = [c.strip() for c in categories_filter.split(",") if c.strip()]
     selected_wts = [w.strip() for w in work_types_filter.split(",") if w.strip()]
@@ -795,17 +747,9 @@ def permits_chart_data():
         params["yr"] = f"{yf}%"
     where = " AND ".join(parts)
 
-    # Years that have data, sorted
-    years_sql = text(f"""
-        SELECT DISTINCT SUBSTR(p.permit_issue_date, 1, 4) AS yr
-        FROM permits p
-        WHERE p.permit_issue_date IS NOT NULL AND {where}
-        ORDER BY yr
-    """)
-    years = [r[0] for r in session.execute(years_sql, params).all()]
-
-    # Sqft per year per category
-    sqft_sql = text(f"""
+    # ── Single CTE: years, sqft/count per year+category, and category totals ──
+    # Previously three separate CTE executions for the same dedup.
+    sql = text(f"""
         WITH deduped AS (
             SELECT *,
                    ROW_NUMBER() OVER (
@@ -819,46 +763,39 @@ def permits_chart_data():
         SELECT SUBSTR(d.permit_issue_date, 1, 4) AS yr,
                COALESCE(d.normalized_category, 'Other') AS cat,
                COALESCE(SUM(CAST(NULLIF(d.permit_square_feet, '') AS REAL)), 0) AS sqft,
+               COALESCE(SUM(CAST(NULLIF(d.permit_valuation, '') AS REAL)), 0) AS valuation,
                COUNT(*) AS cnt
         FROM deduped d
         WHERE d.rn = 1 AND d.permit_issue_date IS NOT NULL
         GROUP BY yr, cat
         ORDER BY yr, cat
     """)
+
     sqft_by_year: dict[str, dict[str, float]] = {}
     permits_by_year: dict[str, dict[str, int]] = {}
-    for r in session.execute(sqft_sql, params).all():
-        yr, cat, sqft, cnt = r
+    cat_aggr: dict[str, dict[str, float]] = {}
+    years_set: set[str] = set()
+
+    for r in session.execute(sql, params).all():
+        yr, cat, sqft, valuation, cnt = r
+        years_set.add(yr)
         sqft_by_year.setdefault(yr, {})[cat] = sqft
         permits_by_year.setdefault(yr, {})[cat] = cnt
+        ca = cat_aggr.setdefault(cat, {"sqft": 0.0, "valuation": 0.0, "count": 0})
+        ca["sqft"] += sqft
+        ca["valuation"] += valuation
+        ca["count"] += cnt
 
-    # Category totals (all years)
-    cat_totals_sql = text(f"""
-        WITH deduped AS (
-            SELECT *,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY COALESCE(p.permit_number, p.row_hash),
-                                     COALESCE(p.permit_square_feet, '')
-                       ORDER BY p.permit_issue_date
-                   ) AS rn
-            FROM permits p
-            WHERE {where}
-        )
-        SELECT COALESCE(d.normalized_category, 'Other') AS cat,
-               COALESCE(SUM(CAST(NULLIF(d.permit_square_feet, '') AS REAL)), 0) AS sqft,
-               COALESCE(SUM(CAST(NULLIF(d.permit_valuation, '') AS REAL)), 0) AS valuation,
-               COUNT(*) AS cnt
-        FROM deduped d
-        WHERE d.rn = 1
-        GROUP BY cat
-        ORDER BY cnt DESC
-    """)
-    category_totals: list[dict] = []
-    for r in session.execute(cat_totals_sql, params).all():
-        category_totals.append({"category": r[0], "sqft": r[1], "valuation": r[2], "count": r[3]})
+    years = sorted(years_set)
+
+    category_totals: list[dict] = sorted(
+        [{"category": cat, "sqft": v["sqft"], "valuation": v["valuation"], "count": v["count"]}
+         for cat, v in cat_aggr.items()],
+        key=lambda r: r["count"],
+        reverse=True,
+    )
 
     session.close()
-
     return {
         "years": years,
         "sqft_by_year": sqft_by_year,

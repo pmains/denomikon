@@ -41,10 +41,18 @@ init_db()
 
 
 def _reset_db_engine():
-    if _db_mod._engine:
-        _db_mod._engine.dispose()
-    _db_mod._engine = None
-    _db_mod._SessionLocal = None
+    """Dispose and reset the DB engine so the next get_engine() creates
+    a fresh connection to the module-level temp database URL.
+
+    Also restores DATABASE_URL to the module-level temp path in case
+    other test modules (e.g. test_sync_data_integrity) overwrote it."""
+    import db.core as _dc
+    if _dc._engine:
+        _dc._engine.dispose()
+    _dc._engine = None
+    _dc._SessionLocal = None
+    if _test_db_path:
+        set_database_url(f"sqlite:///{_test_db_path}")
 
 
 # ── ArcGIS date parsing ────────────────────────────────────────────────────
