@@ -485,6 +485,37 @@ def _ensure_membership(
     session.flush()
     return membership
 
+
+def _normalize_motion_result(raw: Optional[str]) -> str:
+    """Normalize motion_result to a standard short form.
+
+    Extracts the first word and maps common action verbs so that all
+    parsers (summary_dom, votes, tempe_summary) produce consistent
+    badge-friendly values.  The full raw text is preserved in
+    ``agenda_item_votes.vote_text`` and ``agenda_items.agenda_item_text``,
+    so no detail is lost.
+
+    Verbs not in the map pass through unchanged.
+    """
+    if not raw:
+        return "approved"
+    raw = raw.strip()
+    first = raw.split(None, 1)[0].lower() if raw else ""
+    mapped = {
+        "approve": "approved",
+        "appoint": "approved",
+        "concur": "approved",
+        "deny": "denied",
+        "denied": "denied",
+        "continue": "continued",
+        "continued": "continued",
+        "withdraw": "withdrawn",
+        "accept": "accepted",
+        "reject": "rejected",
+    }.get(first)
+    return mapped if mapped is not None else raw
+
+
 def persist_votes(
     session: Session,
     body: str,
@@ -637,7 +668,7 @@ def persist_votes(
             agenda_item_number=item_number,
             c_number=vote.get("c_number"),
             c_number_base=vote.get("c_number_base"),
-            motion_result=vote.get("motion_result"),
+            motion_result=_normalize_motion_result(vote.get("motion_result")),
             vote_text=vote.get("vote_text"),
         )
         session.add(aiv)
@@ -849,7 +880,7 @@ def persist_pz_votes(
             )
         ).scalar_one_or_none()
 
-        motion_result = vote.get("motion_result", "").capitalize()
+        motion_result = _normalize_motion_result(vote.get("motion_result"))
         tally_yes = vote.get("tally_yes", 0)
         tally_no = vote.get("tally_no", 0)
         is_split = tally_no > 0

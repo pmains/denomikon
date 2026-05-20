@@ -103,7 +103,7 @@
                 <span class="badge bg-secondary text-white ms-2 me-1 small">{{ item.agenda_category }}</span>
                 {% endif %}
                 {% if item_vote.get('motion_result') %}
-                <span class="badge bg-{% if item_vote.motion_result in ('approved',) %}success{% elif item_vote.motion_result in ('denied',) %}danger{% else %}secondary{% endif %} ms-2 me-1">
+                <span class="badge bg-{% if item_vote.motion_result|lower in ('approved', 'approve', 'appoint', 'adopted', 'carried', 'pass') %}success{% elif item_vote.motion_result|lower in ('denied',) %}danger{% else %}secondary{% endif %} ms-2 me-1">
                     {{ item_vote.motion_result }}
                 </span>
                 {% endif %}

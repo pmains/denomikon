@@ -101,24 +101,9 @@ async def process_meeting(page, meeting_id: str, dry_run: bool = False) -> dict:
         session.close()
         return result
 
-    # Persist: delete old votes, insert new
+    # Persist: let persist_votes handle all deletion + insertion
     from db import persist_votes
 
-    # Delete existing votes for this meeting
-    session.execute(
-        text(
-            "DELETE FROM supervisor_votes WHERE agenda_item_vote_id IN "
-            "(SELECT id FROM agenda_item_votes WHERE meeting_id = :mid)"
-        ),
-        {"mid": meeting_id},
-    )
-    session.execute(
-        text("DELETE FROM agenda_item_votes WHERE meeting_id = :mid"),
-        {"mid": meeting_id},
-    )
-    session.commit()
-
-    # Persist new votes
     count = persist_votes(session, "bos", meeting_id, supervisors, votes)
     session.commit()
     result["persisted"] = count
