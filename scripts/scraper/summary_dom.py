@@ -356,7 +356,15 @@ def _parse_supervisors(member_table_text: str) -> list[dict]:
         })
         i += 2
 
-    return supervisors
+    # Deduplicate by normalized_name (keep first occurrence)
+    seen = set()
+    unique = []
+    for s in supervisors:
+        if s["normalized_name"] not in seen:
+            seen.add(s["normalized_name"])
+            unique.append(s)
+
+    return unique
 
 
 # ── main extraction ──────────────────────────────────────────────────
