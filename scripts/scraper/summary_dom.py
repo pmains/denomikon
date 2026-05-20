@@ -349,9 +349,10 @@ def _parse_supervisors(member_table_text: str) -> list[dict]:
 
         supervisors.append({
             "name": name_candidate,
-            "normalized_name": name_candidate.upper().replace(" ", "_"),
+            "normalized_name": re.sub(r"[^a-z0-9]+", " ", name_candidate.lower()).strip(),
             "district": district,
             "role": role,
+            "present": True,
         })
         i += 2
 

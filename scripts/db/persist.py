@@ -662,7 +662,6 @@ def persist_votes(
                     new = Supervisor(
                         name=name,
                         normalized_name=norm_name,
-                        body=body,
                     )
                     session.add(new)
                     session.flush()
