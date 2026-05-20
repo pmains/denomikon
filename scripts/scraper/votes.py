@@ -263,7 +263,7 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
 
         # Find Ayes - capture names and stop before text that isn't a name
         ayes: list[str] = []
-        ayes_match = re.search(r"Ayes:\s*(.*?)(?:\s*Nay:|\s*$)", section_text, re.I)
+        ayes_match = re.search(r"Ayes:\s*(.*?)(?:\s*Nay:|\s*Absent:|\s*$)", section_text, re.I)
         if ayes_match:
             raw = ayes_match.group(1).strip()
             # Only keep entries that look like names (shorter than 60 chars, start with capital letter)
