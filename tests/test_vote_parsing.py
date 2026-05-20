@@ -5,9 +5,16 @@ meeting summary page) and the expected supervisor votes.  These cases
 represent real votes that our parsers previously missed.
 """
 
+import os
 import re
+import sys
 import unittest
+from pathlib import Path
 
+# Ensure scripts/ is on the path so we can import scraper modules
+_scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
+if _scripts_dir not in sys.path:
+    sys.path.insert(0, _scripts_dir)
 
 # ── Helpers replicating the parser's extraction logic ──────────────────────
 
@@ -562,6 +569,160 @@ class TestSupervisorExtraction(unittest.TestCase):
         self.assertEqual(by_name["Debbie Lesko"]["present"], False)
         self.assertEqual(by_name["Steve Gallardo"]["present"], False)
         self.assertEqual(len(sups), 4)
+
+
+# ── Summary DOM regex and name-parsing tests ───────────────────────────
+
+class TestSummaryDOMNameParsing(unittest.TestCase):
+    """Regression tests for summary_dom.py name extraction.
+
+    Tests the _AYES_RE / _NAYS_RE / _parse_names functions used by
+    the DOM-based backfill parser (extract_votes_from_summary_dom).
+
+    Bugs fixed in this class:
+    - _AYES_RE used `Nay:` (singular) but vote text has `Nays:` (plural),
+      causing the lazy match to consume past the Nays section.
+    - _parse_names had no filter for fragments containing vote/agenda
+      keywords like "Nays:", "Recused:", "BOARD OF SUPERVISORS", etc.
+    """
+
+    def setUp(self):
+        from scraper.summary_dom import _AYES_RE, _NAYS_RE, _ABSENT_RE, _parse_names
+        self._AYES_RE = _AYES_RE
+        self._NAYS_RE = _NAYS_RE
+        self._ABSENT_RE = _ABSENT_RE
+        self._parse_names = _parse_names
+
+    # ── _AYES_RE boundary tests ────────────────────────────────────────
+
+    def test_ayes_re_stops_at_nays_plural(self):
+        """'Nays:' (plural) after Ayes list must NOT be consumed."""
+        text = (
+            "Ayes: Thomas Galvin, Kate Brophy McGee, "
+            "Mark Stewart, Debbie Lesko, Steve Gallardo "
+            "Nays: None"
+        )
+        m = self._AYES_RE.search(text)
+        self.assertIsNotNone(m, "_AYES_RE should match")
+        ayes = m.group("ayes")
+        self.assertNotIn("Nays", ayes,
+            "_AYES_RE consumed past Nays: (plural) boundary")
+        self.assertIn("Thomas Galvin", ayes)
+        self.assertIn("Steve Gallardo", ayes)
+
+    def test_ayes_re_stops_at_nays_with_real_names(self):
+        """'Nays:' followed by actual supervisor names must be excluded."""
+        text = "Ayes: Steve Gallardo, Bill Gates Nays: Debbie Lesko"
+        m = self._AYES_RE.search(text)
+        self.assertIsNotNone(m)
+        ayes = m.group("ayes")
+        self.assertNotIn("Nays", ayes,
+            "_AYES_RE should stop at 'Nays:'")
+        self.assertIn("Steve Gallardo", ayes)
+        self.assertIn("Bill Gates", ayes)
+
+    def test_ayes_re_stops_at_recused(self):
+        """'Recused:' after Ayes list must NOT be consumed."""
+        text = "Ayes: Steve Gallardo, Bill Gates Recused: Kate Brophy McGee"
+        m = self._AYES_RE.search(text)
+        self.assertIsNotNone(m)
+        ayes = m.group("ayes")
+        self.assertNotIn("Recused", ayes,
+            "_AYES_RE should stop at 'Recused:'")
+        self.assertIn("Steve Gallardo", ayes)
+
+    def test_ayes_re_stops_at_absent(self):
+        """'Absent:' after Ayes list must NOT be consumed."""
+        text = "Ayes: Thomas Galvin, Steve Gallardo Absent: Debbie Lesko"
+        m = self._AYES_RE.search(text)
+        self.assertIsNotNone(m)
+        ayes = m.group("ayes")
+        self.assertNotIn("Absent", ayes,
+            "_AYES_RE should stop at 'Absent:'")
+        self.assertIn("Thomas Galvin", ayes)
+
+    # ── _NAYS_RE boundary tests ────────────────────────────────────────
+
+    def test_nays_re_stops_at_recused(self):
+        """'Recused:' after Nays list must NOT be consumed."""
+        text = "Nays: Debbie Lesko Recused: Steve Gallardo"
+        m = self._NAYS_RE.search(text)
+        self.assertIsNotNone(m)
+        nays = m.group("nays")
+        self.assertNotIn("Recused", nays,
+            "_NAYS_RE should stop at 'Recused:'")
+        self.assertIn("Debbie Lesko", nays)
+
+    def test_nays_re_stops_at_absent(self):
+        """'Absent:' after Nays list must NOT be consumed."""
+        text = "Nays: Mark Stewart Absent: Steve Gallardo"
+        m = self._NAYS_RE.search(text)
+        self.assertIsNotNone(m)
+        nays = m.group("nays")
+        self.assertNotIn("Absent", nays,
+            "_NAYS_RE should stop at 'Absent:'")
+        self.assertIn("Mark Stewart", nays)
+
+    # ── _parse_names filter tests ──────────────────────────────────────
+
+    def test_parse_names_rejects_concatenated_nays_fragment(self):
+        """Fragment like 'Bill GatesNays: Steve Gallardo' must be rejected.
+
+        This happens when there is no comma (or space) between the last
+        Ayes name and the Nays: label.
+        """
+        names = self._parse_names(
+            "Bill GatesNays: Steve Gallardo, Thomas Galvin")
+        self.assertNotIn("Bill GatesNays: Steve Gallardo", names,
+            "Concatenated 'Nays' fragment not filtered")
+        self.assertIn("Thomas Galvin", names)
+
+    def test_parse_names_rejects_recused_fragment(self):
+        """Fragment containing 'Recused:' must be rejected."""
+        names = self._parse_names(
+            "Steve Gallardo Recused: Bill Gates, Thomas Galvin")
+        self.assertNotIn("Steve Gallardo Recused: Bill Gates", names,
+            "Recused fragment not filtered")
+        self.assertIn("Thomas Galvin", names)
+
+    def test_parse_names_rejects_agenda_title_fragment(self):
+        """Fragment like 'Steve Gallardo BOARD OF SUPERVISORS...' rejected."""
+        names = self._parse_names(
+            "Steve Gallardo BOARD OF SUPERVISORS REGULAR AGENDA, Thomas Galvin")
+        self.assertNotIn("Steve Gallardo BOARD OF SUPERVISORS REGULAR AGENDA", names,
+            "Agenda title fragment not filtered")
+        self.assertIn("Thomas Galvin", names)
+
+    def test_parse_names_rejects_spanish_translation_fragment(self):
+        """Fragment containing Spanish keywords rejected."""
+        names = self._parse_names(
+            "Steve Gallardo Planificación y Desarrollo, Kate Brophy McGee")
+        self.assertNotIn("Steve Gallardo Planificación y Desarrollo", names,
+            "Spanish keyword fragment not filtered")
+        self.assertIn("Kate Brophy McGee", names)
+
+    def test_parse_names_rejects_road_file_fragment(self):
+        """Fragment like 'Steve Gallardo 73.ROAD FILE...' rejected."""
+        names = self._parse_names(
+            "Steve Gallardo 73.ROAD FILE 6037, Debbie Lesko")
+        self.assertNotIn("Steve Gallardo 73.ROAD FILE 6037", names,
+            "Road file fragment not filtered")
+        self.assertIn("Debbie Lesko", names)
+
+    def test_parse_names_keeps_clean_five_supervisors(self):
+        """Normal supervisor names pass through unchanged."""
+        names = self._parse_names(
+            "Thomas Galvin, Kate Brophy McGee, Mark Stewart, "
+            "Debbie Lesko, Steve Gallardo")
+        expected = ["Thomas Galvin", "Kate Brophy McGee",
+                    "Mark Stewart", "Debbie Lesko", "Steve Gallardo"]
+        self.assertEqual(names, expected)
+
+    def test_parse_names_strips_and_prefix(self):
+        """'and Supervisor Name' strips 'and'."""
+        names = self._parse_names(
+            "Thomas Galvin, and Steve Gallardo")
+        self.assertIn("Steve Gallardo", names)
 
 
 if __name__ == "__main__":

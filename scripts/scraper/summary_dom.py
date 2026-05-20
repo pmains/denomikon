@@ -244,12 +244,12 @@ _MOTION_RE = re.compile(
 )
 
 _AYES_RE = re.compile(
-    r"Ayes:\s*(?P<ayes>.*?)(?:\s*Nay:|\s*Absent:|\s*$)",
+    r"Ayes:\s*(?P<ayes>.*?)(?:\s*(?:Nays?|Recused):|\s*Absent:|\s*$)",
     re.I,
 )
 
 _NAYS_RE = re.compile(
-    r"Nays?:\s*(?P<nays>.*?)(?:\s*Absent:|\s*$)",
+    r"Nays?:\s*(?P<nays>.*?)(?:\s*(?:Nays?|Recused):|\s*Absent:|\s*$)",
     re.I,
 )
 
@@ -272,16 +272,29 @@ def _parse_motion(text: str) -> dict | None:
     }
 
 
+_BAD_NAME_KEYWORDS = re.compile(
+    r"(?:Nays?|Ayes|Recused|Absent|Abstain|Approve|Motion|Setting|Agenda|Road|Flood|Regular|Configuración|Audiencias|Planificación|Distrito|Control|Inundaciones):?",
+    re.I,
+)
+
+
 def _parse_names(text: str) -> list[str]:
-    """Split comma-separated name list, stripping whitespace and periods."""
+    """Split comma-separated name list, stripping whitespace and periods.
+
+    Filters out fragments containing vote/agenda keywords that shouldn't
+    be part of a supervisor name (e.g. "Bill GatesNays: Debbie Lesko").
+    """
     names = []
     for part in text.split(","):
         name = part.strip().rstrip(".")
-        if name and not name.lower().startswith("and "):
-            names.append(name)
-        elif name.lower().startswith("and "):
-            # "and Supervisor Name" → strip "and "
-            names.append(re.sub(r"^and\s+", "", name, flags=re.I).rstrip("."))
+        if not name:
+            continue
+        if name.lower().startswith("and "):
+            name = re.sub(r"^and\s+", "", name, flags=re.I).rstrip(".")
+        # Reject names containing vote/agenda keywords
+        if _BAD_NAME_KEYWORDS.search(name):
+            continue
+        names.append(name)
     return names
 
 
