@@ -92,7 +92,7 @@
     {% set item_docs = docs_by_item.get(item.agenda_item_number, []) %}
     {% set item_key = item.agenda_item_number|string if item.agenda_item_number is not none else '' %}
     {% set item_vote = votes_by_item.get(item_key, {}) %}
-    <div class="accordion-item">
+    <div class="accordion-item" id="item-{{ item.agenda_item_number }}">
         <h2 class="accordion-header" id="heading{{ item.agenda_item_number }}">
             <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
                     data-bs-target="#collapse{{ item.agenda_item_number }}"

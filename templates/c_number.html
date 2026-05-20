@@ -7,47 +7,101 @@
 <h3 class="mb-3">C-number: <code>{{ c_number_base }}</code></h3>
 
 {% if items %}
-<div class="table-responsive">
-    <table class="table table-striped table-hover align-middle small">
-        <thead class="table-dark">
-            <tr>
-                <th>Date</th>
-                <th>Source</th>
-                <th>Type</th>
-                <th>Item</th>
-                <th>C-number</th>
-                <th>Revision</th>
-                <th>Title</th>
-                <th>Vote</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for item in items %}
-            <tr>
-                <td><a href="/meetings/{{ item.meeting_id }}">{{ item.meeting_date }}</a></td>
-                <td>
-                    {% if item.meeting_type == 'Planning & Zoning' %}
-                    <span class="badge bg-secondary">PZ</span>
-                    {% else %}
-                    <span class="badge bg-primary">BOS</span>
-                    {% endif %}
-                </td>
-                <td>{{ item.meeting_type }}</td>
-                <td>
-                    <a href="/meetings/{{ item.meeting_id }}#item-{{ item.agenda_item_number }}">
-                        #{{ item.agenda_item_number }}
-                    </a>
-                </td>
-                <td><code>{{ item.c_number }}</code></td>
-                <td>{{ item.c_number_revision or '-' }}</td>
-                <td>{{ item.agenda_item_title[:60] }}{% if item.agenda_item_title|length > 60 %}...{% endif %}</td>
-                <td>{{ item.vote_or_action[:20] if item.vote_or_action else '' }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+<div class="accordion" id="cNumberAccordion">
+  {% for item in items %}
+  {% set item_key = item.meeting_id ~ ':' ~ item.agenda_item_number %}
+  {% set docs = docs_by_item.get(item_key, []) %}
+  {% set vote = votes_by_item.get(item_key, {}) %}
+  <div class="accordion-item" id="item-{{ item.agenda_item_number }}">
+    <h2 class="accordion-header" id="heading-cn-{{ loop.index }}">
+      <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+              data-bs-target="#collapse-cn-{{ loop.index }}" aria-expanded="false">
+        <span class="fw-bold me-2">{{ item.agenda_item_number }}.</span>
+        <span class="flex-grow-1">{{ item.agenda_item_title[:80] }}</span>
+        {% if vote.motion_result %}
+        <span class="badge bg-{{ 'success' if vote.motion_result in ('approved',) else 'danger' }} me-2">{{ vote.motion_result }}</span>
+        {% endif %}
+        {% if docs %}
+        <span class="badge bg-info text-dark me-2">{{ docs|length }} file(s)</span>
+        {% endif %}
+        <a href="/meetings/{{ item.meeting_id }}#item-{{ item.agenda_item_number }}" class="text-decoration-none small me-2" title="View in agenda">
+          <i class="bi bi-box-arrow-up-right"></i>
+        </a>
+      </button>
+    </h2>
+    <div id="collapse-cn-{{ loop.index }}" class="accordion-collapse collapse"
+         aria-labelledby="heading-cn-{{ loop.index }}" data-bs-parent="#cNumberAccordion">
+      <div class="accordion-body">
+        <div class="row g-2 mb-2">
+          <div class="col-sm-3"><strong>Date:</strong> <a href="/meetings/{{ item.meeting_id }}">{{ item.meeting_date }}</a></div>
+          <div class="col-sm-2"><strong>Source:</strong>
+            {% if item.meeting_type == 'Planning & Zoning' %}
+            <span class="badge bg-secondary">PZ</span>
+            {% else %}
+            <span class="badge bg-primary">BOS</span>
+            {% endif %}
+            {{ item.meeting_type }}
+          </div>
+          <div class="col-sm-2"><strong>Item:</strong> #{{ item.agenda_item_number }}</div>
+          <div class="col-sm-2"><strong>C-number:</strong> <code>{{ item.c_number }}</code></div>
+          <div class="col-sm-1"><strong>Rev:</strong> {{ item.c_number_revision or '-' }}</div>
+        </div>
+
+        {# Vote detail #}
+        {% if vote.motion_result %}
+        <h6>Vote — {{ vote.motion_result }}</h6>
+        {% if vote.member_votes %}
+        <table class="table table-sm table-borderless small mb-2" style="width:auto">
+          {% for mv in vote.member_votes %}
+          <tr>
+            <td class="pe-3">
+              {%- if mv.slug -%}
+              <a href="/members/{{ mv.slug }}">{{ mv.name }}</a>
+              {%- else -%}
+              {{ mv.name }}
+              {%- endif -%}
+            </td>
+            <td>
+              {% set v = mv.vote.lower() %}
+              <span class="badge bg-{% if v in ('yes', 'aye') %}success{% elif v in ('no', 'nay') %}danger{% else %}secondary{% endif %}">
+                {{ mv.vote }}
+              </span>
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+        {% endif %}
+        {% if vote.vote_text %}
+        <pre class="small text-muted mb-2" style="max-height:6em; overflow-y:auto;">{{ vote.vote_text }}</pre>
+        {% endif %}
+        {% elif item.vote_or_action %}
+        <p class="text-muted small mb-2">Vote: {{ item.vote_or_action }}</p>
+        {% endif %}
+
+        {# Item text #}
+        {% if item.agenda_item_text %}
+        <h6>Item Text</h6>
+        <pre class="small text-muted mb-2" style="max-height:10em; overflow-y:auto;">{{ item.agenda_item_text }}</pre>
+        {% endif %}
+
+        {# Supporting documents #}
+        {% if docs %}
+        <h6>Attachments ({{ docs|length }})</h6>
+        <div class="list-group list-group-flush small mb-2">
+          {% for d in docs %}
+          <a href="{{ d.document_url }}" target="_blank" rel="noopener" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+            <span>{{ d.document_title or d.file_name }}</span>
+            <span class="badge bg-secondary rounded-pill">{{ d.file_extension }}</span>
+          </a>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
 </div>
-<p class="text-muted small">{{ items|length }} item(s) sharing C-number base <code>{{ c_number_base }}</code></p>
+<p class="text-muted small mt-3">{{ items|length }} item(s) sharing C-number base <code>{{ c_number_base }}</code></p>
 {% else %}
 <div class="alert alert-info">No items found for C-number base <code>{{ c_number_base }}</code>.</div>
 {% endif %}

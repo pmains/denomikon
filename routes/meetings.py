@@ -445,6 +445,7 @@ def c_number_revisions(c_number_base):
             AgendaItem.meeting_id,
             AgendaItem.agenda_item_number,
             AgendaItem.agenda_item_title,
+            AgendaItem.agenda_item_text,
             AgendaItem.c_number,
             AgendaItem.c_number_base,
             AgendaItem.c_number_revision,
@@ -463,12 +464,73 @@ def c_number_revisions(c_number_base):
         .order_by(Meeting.meeting_date, AgendaItem.agenda_item_number)
     ).all()
 
+    # Batch-load supporting docs and vote data
+    from db.models import SupportingDocument as _SD, AgendaItemVote, SupervisorVote, Person as _Person, MemberVote
+
+    doc_keys = [(r.meeting_id, r.agenda_item_number) for r in items]
+    docs_by_item: dict[str, list] = {}
+    if doc_keys:
+        from sqlalchemy import or_ as _or
+        conditions = [
+            (_SD.body == Meeting.body) &
+            (_SD.meeting_id == k[0]) &
+            (_SD.agenda_item_number == k[1])
+            for k in doc_keys
+        ]
+        all_docs = session.execute(
+            select(_SD, Meeting.body)
+            .join(Meeting, Meeting.meeting_id == _SD.meeting_id)
+            .where(or_(*conditions))
+        ).all()
+        for sd, body_code in all_docs:
+            key = f"{sd.meeting_id}:{sd.agenda_item_number}"
+            docs_by_item.setdefault(key, []).append(sd)
+
+    votes_by_item: dict[str, dict] = {}
+    for r in items:
+        key = f"{r.meeting_id}:{r.agenda_item_number}"
+        aiv = session.execute(
+            select(AgendaItemVote).where(
+                AgendaItemVote.meeting_id == r.meeting_id,
+                AgendaItemVote.agenda_item_number == r.agenda_item_number,
+            )
+        ).scalar_one_or_none()
+        if aiv:
+            member_votes = []
+            if aiv.body == "pz":
+                mv_rows = session.execute(
+                    select(MemberVote, _Person.name, _Person.normalized_name)
+                    .join(_Person, MemberVote.member_id == _Person.id)
+                    .where(MemberVote.agenda_item_vote_id == aiv.id)
+                ).all()
+                for mv, pname, pnorm in mv_rows:
+                    member_votes.append({"name": pname, "vote": mv.vote,
+                                         "slug": pnorm.replace(" ", "-") if pnorm else ""})
+            else:
+                sv_rows = session.execute(
+                    select(SupervisorVote, _Person.name, _Person.normalized_name)
+                    .join(_Person, SupervisorVote.supervisor_id == _Person.id)
+                    .where(SupervisorVote.agenda_item_vote_id == aiv.id)
+                ).all()
+                for sv, pname, pnorm in sv_rows:
+                    member_votes.append({"name": pname, "vote": sv.vote,
+                                         "slug": pnorm.replace(" ", "-") if pnorm else ""})
+
+            votes_by_item[key] = {
+                "motion_result": aiv.motion_result,
+                "vote_text": (aiv.vote_text or "")[:500],
+                "is_split_vote": aiv.is_split_vote,
+                "member_votes": member_votes,
+            }
+
     session.close()
 
     return render_template(
         "c_number.html",
         c_number_base=c_number_base,
         items=items,
+        docs_by_item=docs_by_item,
+        votes_by_item=votes_by_item,
     )
 
 
