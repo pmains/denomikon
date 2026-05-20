@@ -168,7 +168,8 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
     # Use character positions for splitting, since all items may share one line.
     full_text = "\n".join(lines) if len(lines) > 1 else lines[0] if lines else ""
     
-    item_boundaries: dict[int, tuple[int, str, str]] = {}
+    # Build all item boundary candidates, then pick the best one per item number
+    item_candidates: dict[int, list[tuple[int, str, str]]] = {}
     valid_item_nums = {int(a.get("agenda_item_number", 0)) for a in agenda_items if a.get("agenda_item_number")}
     for m in re.finditer(r"(?:^|[^\w\'\u2019\u2018])(\d{1,3})\.(?=\s*[A-Z0-9])", full_text):
         num = m.group(1)
@@ -187,25 +188,64 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
             after_dot = full_text[m.end():m.end()+3]
             if re.match(r'\d{2}%', after_dot):
                 continue
-        # Check 3: condition sub-numbers in PZ consent text, where text after
-        # the dot is a space (" 7. Drainage" vs real " 7.OFF 17 NORTH").
-        if len(full_text) > m.end() and full_text[m.end()] == ' ':
-            continue
-        # Check 4: budget/salary numbers like "85.10 $114,500" where the char
-        # after the dot is a digit.  Real items always have a letter ("85.AMENDMENT").
-        if len(full_text) > m.end() and full_text[m.end()].isdigit():
-            continue
-        # Keep the LATEST match for each item number (spurious budget matches
-        # come first in the salary table; real items come later).
+        # Check 3: budget/salary numbers — skip if char after dot is space or digit
+        # (budget format like "85.10 $") or a digit followed by dot (sub-reference like "93.069.")
+        if m.end() < len(full_text):
+            next_c = full_text[m.end()]
+            if next_c == ' ':
+                continue
+            if next_c.isdigit():
+                # Check if it's a sub-reference (digit.digit like "93.069.")
+                end_search = min(m.end() + 15, len(full_text))
+                if re.match(r'\d+\.', full_text[m.end():end_search]):
+                    continue
+                # Check if it's a budget continuation (digit + space + $)
+                if m.end() + 2 < len(full_text):
+                    after = full_text[m.end():m.end()+3]
+                    if re.match(r'\d+\s+\$', after):
+                        continue
+
         pos = m.start()
         rest = full_text[pos:].lstrip()
         rest = re.sub(r"^\d+\.\s*", "", rest)
         c_m = re.search(r"\(([A-Z]-\d{2}-\d{2}-\d{3}(?:-[A-Z0-9]{1,3}){1,3})\)", rest)
         c_num = c_m.group(1) if c_m else item_cnumber_map.get(num, "")
-        item_boundaries[num_int] = (pos, num, c_num)
+        item_candidates.setdefault(num_int, []).append((pos, num, c_num))
 
-    # Convert to sorted list
-    item_boundaries_list = sorted(item_boundaries.values(), key=lambda x: x[0])
+    # For each item number, pick the best candidate
+    def _candidate_section_has_vote(cpos, cnum_text, ccnum, next_pos):
+        cend = next_pos if next_pos else len(full_text)
+        csect = full_text[cpos:cend]
+        csect = re.sub(r'\s+', ' ', csect[:3000])  # check first 3000 chars
+        return bool(re.search(r'Motion to \w+|Ayes:|Approve(?:,| the|, by| by)', csect, re.I))
+
+    item_boundaries_list: list[tuple[int, str, str]] = []
+    for num_int in sorted(item_candidates.keys()):
+        candidates = item_candidates[num_int]
+        candidates.sort(key=lambda x: x[0])
+        # Prefer the candidate with a motion/Ayes in its section
+        all_sorted = sorted(
+            [(p, n, c) for nums in item_candidates.values() for (p, n, c) in nums],
+            key=lambda x: x[0],
+        )
+        best = candidates[-1]  # default: last candidate
+        for ci, (cpos, cnum_text, ccnum) in enumerate(candidates):
+            # Find next boundary position for this candidate
+            ci_next = None
+            try:
+                idx_in_all = all_sorted.index((cpos, cnum_text, ccnum))
+                for j in range(idx_in_all + 1, len(all_sorted)):
+                    if all_sorted[j][1] != cnum_text:
+                        ci_next = all_sorted[j][0]
+                        break
+            except ValueError:
+                pass
+            if _candidate_section_has_vote(cpos, cnum_text, ccnum, ci_next):
+                best = (cpos, cnum_text, ccnum)
+                break
+        item_boundaries_list.append(best)
+
+    item_boundaries_list.sort(key=lambda x: x[0])
 
     # Use a counter for unique agenda_item_id within this batch
     agenda_item_counter = 0
