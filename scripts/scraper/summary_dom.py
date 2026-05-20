@@ -63,7 +63,8 @@ def _is_section_header(text: str) -> bool:
 async def _get_content_div(page: Page) -> dict | None:
     """Get the last DIV child of #agendaView (the content container).
 
-    Returns a Playwright ElementHandle or None.
+    Returns a Playwright ElementHandle or None if the container is empty
+    (e.g. Executive session summaries with no vote records).
     """
     try:
         handle = await page.evaluate_handle(
@@ -71,6 +72,7 @@ async def _get_content_div(page: Page) -> dict | None:
                 const av = document.getElementById("agendaView");
                 if (!av) return null;
                 const divs = av.querySelectorAll(":scope > div");
+                if (divs.length === 0) return null;
                 return divs[divs.length - 1];
             }"""
         )
@@ -392,7 +394,11 @@ async def extract_votes_from_summary_dom(
     if content_div is None:
         return [], []
 
-    children = await _get_children_tags(content_div)
+    # Guard: the handle may point to null (empty agendaView divs)
+    try:
+        children = await _get_children_tags(content_div)
+    except Exception:
+        return [], []
     if not children:
         return [], []
 
