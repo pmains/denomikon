@@ -290,16 +290,23 @@ def _parse_supervisors(member_table_text: str) -> list[dict]:
       "Board MembersClint Hickman, Chairman, District 4Jack Sellers, ..."
     where names run together without spaces (Aspose.Words rendering).
 
-    Strategy: split on "District N" boundaries, then parse each segment.
+    For non-Formal meetings the TABLE may start with "Informal Meeting
+    Summary..." or "Special Meeting Summary..." before the Board Members
+    section.  We locate "Board Members" and start from there.
 
     Returns [{name, normalized_name, district, role}] or empty list.
     """
     if not member_table_text:
         return []
 
-    # Normalize \xa0 and strip "Board Members" prefix (glued to first name)
+    # Normalize \xa0 and collapse whitespace
     member_table_text = member_table_text.replace("\xa0", " ").strip()
-    member_table_text = re.sub(r"^Board\s+Members\s*", "", member_table_text, count=1)
+
+    # Find "Board Members" anywhere (may be after meeting type header)
+    bm_match = re.search(r"Board\s+Members\s*", member_table_text, re.I)
+    if bm_match:
+        # Start from after "Board Members"
+        member_table_text = member_table_text[bm_match.end():]
 
     # Split on "District N" to separate entries
     parts = re.split(r"(District\s+\d+)\s*", member_table_text)
