@@ -191,6 +191,10 @@ async def extract_votes_from_summary(page, source_url: str, agenda_items: list[d
         # the dot is a space (" 7. Drainage" vs real " 7.OFF 17 NORTH").
         if len(full_text) > m.end() and full_text[m.end()] == ' ':
             continue
+        # Check 4: budget/salary numbers like "85.10 $114,500" where the char
+        # after the dot is a digit.  Real items always have a letter ("85.AMENDMENT").
+        if len(full_text) > m.end() and full_text[m.end()].isdigit():
+            continue
         # Keep the LATEST match for each item number (spurious budget matches
         # come first in the salary table; real items come later).
         pos = m.start()
