@@ -29,12 +29,21 @@ def bodies_index():
 
     filter_jurisdiction = request.args.get("jurisdiction", "").strip()
 
+    # Slug patterns that identify primary bodies (Council / Board of Supervisors)
+    _PRIMARY_SLUGS = {
+        "board-of-supervisors",
+        "phoenix-city-council", "tempe-city-council", "mesa-city-council",
+        "chandler-city-council", "gilbert-town-council", "scottsdale-city-council",
+    }
+
     result = []
     for j in jurisdictions:
-        q = select(PublicBody).where(PublicBody.jurisdiction_id == j.id).order_by(PublicBody.name)
+        q = select(PublicBody).where(PublicBody.jurisdiction_id == j.id)
         if filter_jurisdiction and j.slug != filter_jurisdiction:
             continue
         bodies = session.execute(q).scalars().all()
+        # Sort: primary body first, then alphabetical
+        bodies = sorted(bodies, key=lambda b: (b.slug not in _PRIMARY_SLUGS, b.name))
         result.append((j, bodies))
     session.close()
     return render_template(

@@ -21,6 +21,96 @@ from db.meeting_utils import (
     extract_meeting_body, build_meeting_display_name,
 )
 
+# ── Name validation safeguard for persist_votes ──
+# Known first names extracted from existing Person records in our database.
+# Used to verify that a candidate name contains at least one plausible
+# first or last name, rejecting agenda-item titles and section headers.
+_KNOWN_FIRST_NAMES = frozenset({
+    "mark", "scott", "rich", "jennifer", "alicia", "francisco", "dorean",
+    "john", "julie", "kevin", "angel", "christine", "matt", "jane",
+    "bill", "clint", "steve", "thomas", "debbie", "kate", "kelly",
+    "jen", "brooke", "jennifer", "nikki", "arlene", "doreen", "berdetta",
+    "randy", "corey", "joel", "jack", "lucas", "lily", "erik", "spike",
+    "jimmy", "jay", "greg", "kevin", "francisca", "jan", "mihai", "linda",
+    "alex", "warren", "derrik", "mitchell", "jackie", "denny",
+    "tom", "john", "jane", "od",
+})
+
+_KNOWN_LAST_NAMES = frozenset({
+    "freeman", "somers", "adams", "duff", "goforth",
+    "heredia", "taylor", "giles", "spilsbury", "hartke", "encinas",
+    "ellis", "orlando", "harris", "poston", "hawkins", "sehgal",
+    "garcia", "bivens", "carroll", "reed", "hernandez", "korte",
+    "briggs", "brown", "hackel", "udall", "keim", "hodge",
+    "williamson", "woods", "arredondo", "garlid", "navarro", "shah",
+    "ballesteros", "gage", "starr", "evans", "cegar", "johnson",
+    "jones", "valenzuela", "lesko", "galvin", "stewart", "lake",
+    "meggesto", "thompson", "cook", "santos", "brophy", "rodriguez",
+    "baker", "curley", "landolt", "lindblom", "swart", "arnett",
+    "danzeisen", "montoya", "leighton", "toma", "milhaven", "finter",
+    "whitney", "rochwalik", "schlosser", "chucri", "hickman", "gallardo",
+})
+
+
+def _name_has_plausible_component(name: str) -> bool:
+    """Does *name* contain at least one word that looks like a real first or last name?
+
+    This is the core structural check that separates real person names
+    ("Mark Freeman", "Jennifer Duff") from section headers and agenda
+    titles ("Study Session", "Admin Spaces", "Previous Studies").
+    """
+    if not name or not isinstance(name, str):
+        return False
+    words = name.lower().split()
+    for w in words:
+        if w in _KNOWN_FIRST_NAMES or w in _KNOWN_LAST_NAMES:
+            return True
+    return False
+
+
+def _name_looks_like_a_person(name: str) -> bool:
+    """Quick sanity check: does *name* look like a real person's name?
+
+    Uses structural checks + a known-name dictionary to reject section
+    headers, presentation titles, and other garbage that leaks into
+    supervisor lists from minutes PDFs.
+    """
+    if not name or not isinstance(name, str):
+        return False
+    name = name.strip()
+    if not name or len(name) < 2:
+        return False
+
+    # Core structural check: must contain a known-first or known-last name
+    if not _name_has_plausible_component(name):
+        return False
+
+    words = name.split()
+
+    # Reject if every word starts lowercase (text artifacts like "mayor giles conducted")
+    if len(words) >= 2 and all(w[0].islower() for w in words):
+        return False
+
+    # Reject if all caps (section headers like "BUDGET OVERVIEW")
+    if name.upper() == name and len(name) > 4:
+        return False
+
+    # Reject if too many words (> 3)
+    if len(words) > 3:
+        return False
+
+    # Reject if too long (> 35 chars)
+    if len(name) > 35:
+        return False
+
+    # Reject names containing numbers
+    for ch in name:
+        if ch.isdigit():
+            return False
+
+    return True
+
+
 def create_or_get_meeting(session: Session, body: str, meeting_dict: dict) -> Meeting:
     """Get or create a meeting row, setting sync_status=pending for new rows.
 
@@ -551,25 +641,32 @@ def persist_votes(
         except (ValueError, TypeError):
             pass
 
-    # 1. Upsert supervisors
+    # 1. Upsert supervisors (with name validation)
     supervisor_map: dict[str, int] = {}
     for sup in supervisors:
         norm = sup.get("normalized_name", sup.get("name", "").lower().strip())
         if not norm:
             continue
+        sup_name = sup.get("name", "")
+
+        # Safety check: reject names that don't look like a person
+        if not _name_looks_like_a_person(sup_name):
+            log.warning("Rejecting non-person name in persist_votes: %r", sup_name)
+            continue
+
         with session.no_autoflush:
             existing = session.execute(
                 select(Supervisor).where(Supervisor.normalized_name == norm)
             ).scalar_one_or_none()
         if existing:
-            existing.name = sup.get("name", existing.name)
+            existing.name = sup_name
             existing.updated_at = datetime.now(timezone.utc)
             # Ensure BodyMembership exists for this person + body
             _ensure_membership(session, existing.id, body, meeting_date)
             supervisor_map[norm] = existing.id
         else:
             new = Supervisor(
-                name=sup.get("name", ""),
+                name=sup_name,
                 normalized_name=norm,
             )
             session.add(new)

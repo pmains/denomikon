@@ -317,7 +317,7 @@
                 <td><a href="/meetings/{{ sw.meeting_id }}">{{ sw.meeting_date }}</a></td>
                 <td>{{ sw.meeting_type }}</td>
                 <td>{{ sw.agenda_item_number }}</td>
-                <td>{{ sw.agenda_item_title[:60] }}{% if sw.agenda_item_title|length > 60 %}...{% endif %}</td>
+                <td>{{ (sw.agenda_item_title or '')[:60] }}{% if (sw.agenda_item_title or '')|length > 60 %}...{% endif %}</td>
                 <td>{{ vote_badge(sw.supervisor_vote) }}</td>
                 <td><span class="badge bg-secondary">{{ sw.motion_result }}</span></td>
                 <td><code>{{ sw.vote_tally }}</code></td>

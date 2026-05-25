@@ -161,11 +161,15 @@ def backfill_multi_jurisdiction_columns(engine):
         for row in rows:
             body_map[row[1]] = row[0]
 
-        # Backfill meetings
+        # Backfill meetings — use actual jurisdiction_id from the public body
         conn.execute(
             text("""
                 UPDATE meetings
-                SET jurisdiction_id = 1,
+                SET jurisdiction_id = COALESCE(
+                        (SELECT pb.jurisdiction_id FROM public_bodies pb
+                         WHERE pb.body_code = meetings.body LIMIT 1),
+                        1
+                    ),
                     public_body_id = (
                         SELECT pb.id FROM public_bodies pb
                         WHERE pb.body_code = meetings.body
@@ -180,7 +184,12 @@ def backfill_multi_jurisdiction_columns(engine):
         conn.execute(
             text("""
                 UPDATE agenda_items
-                SET jurisdiction_id = 1,
+                SET jurisdiction_id = (
+                        SELECT COALESCE(m.jurisdiction_id, 1) FROM meetings m
+                        WHERE m.meeting_id = agenda_items.meeting_id
+                          AND m.body = agenda_items.body
+                        LIMIT 1
+                    ),
                     public_body_id = (
                         SELECT m.public_body_id FROM meetings m
                         WHERE m.meeting_id = agenda_items.meeting_id
@@ -615,6 +624,195 @@ def seed_default_jurisdictions():
             existing = session.execute(
                 select(PublicBody).where(
                     PublicBody.jurisdiction_id == phoenix.id,
+                    PublicBody.slug == pb.slug,
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(pb)
+
+        # ── City of Mesa (jurisdiction_id=5) ──
+        mesa = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == "mesa")
+        ).scalar_one_or_none()
+        if mesa is None:
+            mesa = Jurisdiction(name="City of Mesa", slug="mesa", state="AZ")
+            session.add(mesa)
+            session.flush()
+
+        mesa_bodies = [
+            PublicBody(
+                jurisdiction_id=mesa.id,
+                name="Mesa City Council",
+                slug="mesa-city-council",
+                body_code="mesa-cc",
+                body_type="Council",
+                website_url="https://www.mesaaz.gov/Government/City-Council-Meetings",
+            ),
+            PublicBody(
+                jurisdiction_id=mesa.id,
+                name="Mesa Planning & Zoning Board",
+                slug="mesa-planning-zoning",
+                body_code="mesa-pz",
+                body_type="Board",
+            ),
+            PublicBody(
+                jurisdiction_id=mesa.id,
+                name="Mesa Design Review Board",
+                slug="mesa-design-review-board",
+                body_code="mesa-drb",
+                body_type="Board",
+            ),
+            PublicBody(
+                jurisdiction_id=mesa.id,
+                name="Mesa Board of Adjustment",
+                slug="mesa-board-of-adjustment",
+                body_code="mesa-boa",
+                body_type="Board",
+            ),
+            PublicBody(
+                jurisdiction_id=mesa.id,
+                name="Mesa Historic Preservation Board",
+                slug="mesa-historic-preservation-board",
+                body_code="mesa-hpb",
+                body_type="Board",
+            ),
+            PublicBody(
+                jurisdiction_id=mesa.id,
+                name="Mesa Cadence Community Facilities District Board",
+                slug="mesa-cadence-cfd",
+                body_code="mesa-cadence",
+                body_type="Board",
+            ),
+            PublicBody(
+                jurisdiction_id=mesa.id,
+                name="Mesa Eastmark Community Facilities District No. 1 Board",
+                slug="mesa-eastmark-cfd-1",
+                body_code="mesa-eastmark1",
+                body_type="Board",
+            ),
+            PublicBody(
+                jurisdiction_id=mesa.id,
+                name="Mesa Eastmark Community Facilities District No. 2 Board",
+                slug="mesa-eastmark-cfd-2",
+                body_code="mesa-eastmark2",
+                body_type="Board",
+            ),
+        ]
+        for pb in mesa_bodies:
+            existing = session.execute(
+                select(PublicBody).where(
+                    PublicBody.jurisdiction_id == mesa.id,
+                    PublicBody.slug == pb.slug,
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(pb)
+
+        # ── Town of Gilbert (jurisdiction_id=6) ──
+        gilbert = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == "gilbert")
+        ).scalar_one_or_none()
+        if gilbert is None:
+            gilbert = Jurisdiction(name="Town of Gilbert", slug="gilbert", state="AZ")
+            session.add(gilbert)
+            session.flush()
+
+        gilbert_bodies = [
+            PublicBody(
+                jurisdiction_id=gilbert.id,
+                name="Gilbert Town Council",
+                slug="gilbert-town-council",
+                body_code="gilbert-tc",
+                body_type="Council",
+                website_url="https://www.gilbertaz.gov/departments/town-hall/mayor-town-council",
+            ),
+        ]
+        for pb in gilbert_bodies:
+            existing = session.execute(
+                select(PublicBody).where(
+                    PublicBody.jurisdiction_id == gilbert.id,
+                    PublicBody.slug == pb.slug,
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(pb)
+
+        # ── City of Scottsdale (jurisdiction_id=7) ──
+        scottsdale = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == "scottsdale")
+        ).scalar_one_or_none()
+        if scottsdale is None:
+            scottsdale = Jurisdiction(name="City of Scottsdale", slug="scottsdale", state="AZ")
+            session.add(scottsdale)
+            session.flush()
+
+        scottsdale_bodies = [
+            PublicBody(
+                jurisdiction_id=scottsdale.id,
+                name="Scottsdale City Council",
+                slug="scottsdale-city-council",
+                body_code="scottsdale-cc",
+                body_type="Council",
+                website_url="https://www.scottsdaleaz.gov/council/meeting-information",
+            ),
+        ]
+        for pb in scottsdale_bodies:
+            existing = session.execute(
+                select(PublicBody).where(
+                    PublicBody.jurisdiction_id == scottsdale.id,
+                    PublicBody.slug == pb.slug,
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(pb)
+
+        # ── Scottsdale boards (housing/construction related) ──
+        scottsdale_boards = [
+            PublicBody(
+                jurisdiction_id=scottsdale.id,
+                name="Scottsdale Planning Commission",
+                slug="scottsdale-planning-commission",
+                body_code="scottsdale-pc",
+                body_type="Commission",
+                website_url="https://www.scottsdaleaz.gov/boards/planning-commission",
+            ),
+            PublicBody(
+                jurisdiction_id=scottsdale.id,
+                name="Scottsdale Board of Adjustment",
+                slug="scottsdale-board-of-adjustment",
+                body_code="scottsdale-boa",
+                body_type="Board",
+                website_url="https://www.scottsdaleaz.gov/boards/board-of-adjustment",
+            ),
+            PublicBody(
+                jurisdiction_id=scottsdale.id,
+                name="Scottsdale Development Review Board",
+                slug="scottsdale-development-review-board",
+                body_code="scottsdale-drb",
+                body_type="Board",
+                website_url="https://www.scottsdaleaz.gov/boards/development-review-board",
+            ),
+            PublicBody(
+                jurisdiction_id=scottsdale.id,
+                name="Scottsdale Historic Preservation Commission",
+                slug="scottsdale-historic-preservation-commission",
+                body_code="scottsdale-hpc",
+                body_type="Commission",
+                website_url="https://www.scottsdaleaz.gov/boards/historic-preservation-commission",
+            ),
+            PublicBody(
+                jurisdiction_id=scottsdale.id,
+                name="Scottsdale Building Advisory Board of Appeals",
+                slug="scottsdale-building-advisory-board-of-appeals",
+                body_code="scottsdale-baba",
+                body_type="Board",
+                website_url="https://www.scottsdaleaz.gov/boards/building-advisory-board-of-appeals",
+            ),
+        ]
+        for pb in scottsdale_boards:
+            existing = session.execute(
+                select(PublicBody).where(
+                    PublicBody.jurisdiction_id == scottsdale.id,
                     PublicBody.slug == pb.slug,
                 )
             ).scalar_one_or_none()

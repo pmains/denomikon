@@ -292,9 +292,30 @@ def normalize_tempe_meeting_title(raw_title: str) -> tuple[str, str]:
     body_code = extract_body_code_from_title(title)
     return title, body_code
 
+_TEMPE_MEETING_TYPE_ALIASES = {
+    # OnBase uses different labels for the same meeting type across versions/instances.
+    # These aliases are canonically normalized to the right-hand value.
+    "executive": "Executive Session",
+    "city council work study session meeting": "Work Study Session",
+    "work study session (virtual)": "Work Study Session",
+    "special budget meeting": "Special",
+    "city council calendaring meeting": "Calendaring",
+}
+
+
 def normalize_meeting_type(raw_type: str) -> str:
-    """Clean up a meeting type by stripping scheduling prefixes."""
-    return _strip_cancel_prefix(raw_type)
+    """Normalize a Tempe meeting type to a canonical form.
+
+    Handles:
+    - Stripping cancel/reschedule prefixes
+    - Consolidating duplicate names ("Executive" → "Executive Session")
+    - Normalizing verbose variants ("City Council Work Study Session Meeting" → "Work Study Session")
+    """
+    stripped = _strip_cancel_prefix(raw_type)
+    canonical = _TEMPE_MEETING_TYPE_ALIASES.get(stripped.lower())
+    if canonical:
+        return canonical
+    return stripped
 
 
 def download_tempe_documents(meeting_id: str, meeting_date: str,

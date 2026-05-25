@@ -18,10 +18,11 @@
 <div id="body-list" class="list-group shadow-sm">
   {% for jurisdiction, bodies in jurisdictions %}
     {% for b in bodies %}
-    <a href="/bodies/{{ b.slug }}" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+    <a href="/bodies/{{ b.slug }}" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center{% if b.slug in ('board-of-supervisors', 'phoenix-city-council', 'tempe-city-council', 'mesa-city-council', 'chandler-city-council', 'gilbert-town-council', 'scottsdale-city-council') %} list-group-item-secondary{% endif %}">
       <div>
         <strong>{{ b.name }}</strong>
         <small class="text-muted ms-2">{{ jurisdiction.name }}</small>
+        {% if b.slug in ('board-of-supervisors', 'phoenix-city-council', 'tempe-city-council', 'mesa-city-council', 'chandler-city-council', 'gilbert-town-council', 'scottsdale-city-council') %}<span class="badge bg-secondary ms-2">Primary</span>{% endif %}
       </div>
       <span class="text-muted small">{{ b.body_code }}</span>
     </a>

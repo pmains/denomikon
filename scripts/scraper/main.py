@@ -247,7 +247,7 @@ async def main() -> int:
             JURISDICTION_ID,
             PUBLIC_BODY_CODE,
         )
-        from scraper.onbase import TEMPE_CONFIG
+        from scraper.onbase import TEMPE_CONFIG, fetch_item_details_sync, parse_item_details
         import datetime as _dt
 
         from db import Meeting as MeetingModel
@@ -521,6 +521,27 @@ async def main() -> int:
                     "file_extension": ".pdf",
                 })
 
+            # Fetch item-level supporting documents (per-item attachments)
+            # by calling the OnBase ViewMeetingAgendaItem API for each item
+            # that has an onbase_item_id.
+            for item in items:
+                oid = item.get("onbase_item_id")
+                if not oid:
+                    continue
+                try:
+                    detail_html = fetch_item_details_sync(TEMPE_CONFIG, int(meeting_id), oid)
+                    if detail_html:
+                        item_docs = parse_item_details(
+                            detail_html, str(meeting_id), body_code,
+                            item.get("agenda_item_number", ""),
+                        )
+                        for doc in item_docs:
+                            doc["agenda_item_id"] = 0  # resolved by replace_meeting_data_safe
+                        supp_docs.extend(item_docs)
+                except Exception as de:
+                    log.debug("Failed to fetch item details for %s item %s: %s",
+                               meeting_id, oid, de)
+
             # Persist
             replace_meeting_data_safe(
                 session, body_code, meeting_id, meeting_dict, items,
@@ -578,6 +599,455 @@ async def main() -> int:
         print(f"{ts} Synced {total_items} Tempe agenda items across {meeting_count} meeting(s)")
         return 0
 
+
+    # ── Chandler sync (via AgendaQuick) ──
+    if args.source == "chandler" and args.sync:
+        import datetime as _dt
+        from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
+        from db import Meeting as MeetingModel
+        from sqlalchemy import select
+
+        from scraper.chandler import (
+            search_chandler_meetings, parse_agenda_items,
+            fetch_page, build_month_url,
+            JURISDICTION_ID, PUBLIC_BODY_CODE,
+        )
+
+        init_db()
+
+        body_slugs_str = getattr(args, "bodies", None) or "all"
+        if body_slugs_str == "all":
+            body_slugs = None  # include all bodies from the AgendaQuick results
+        else:
+            body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
+
+        year_val = getattr(args, "year", None)
+        if year_val:
+            year = int(year_val)
+        else:
+            year = _dt.date.today().year
+
+        meetings = search_chandler_meetings(year, body_slugs=body_slugs)
+        if not meetings:
+            print("No Chandler meetings found for %d." % year)
+            return 0
+        if args.limit:
+            meetings = meetings[:args.limit]
+        print("Found %d Chandler meeting(s)" % len(meetings))
+
+        session = get_session()
+        total_items = 0
+        meeting_count = len(meetings)
+
+        for idx, m in enumerate(meetings, 1):
+            meeting_id = m["meeting_id"]
+            meeting_date = m["meeting_date"]
+            body_name = m.get("body_name", "")
+            body_code = m.get("body_code", "chandler-cc")
+            agenda_url = m.get("agenda_url", "")
+            meeting_type = m.get("meeting_type", "")
+            meeting_title = body_name
+
+            meeting_dict = {
+                "meeting_id": meeting_id, "meeting_date": meeting_date,
+                "meeting_type": meeting_type, "meeting_title": meeting_title,
+                "source_url": agenda_url,
+            }
+
+            existing = session.execute(
+                select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)
+            ).scalar_one_or_none()
+            if existing and existing.sync_status == "complete" and not args.force:
+                print("  [%d/%d] %s %s: already synced, skipping" % (idx, meeting_count, meeting_id, meeting_date))
+                continue
+
+            try:
+                html = fetch_page(agenda_url, timeout=20)
+                items = parse_agenda_items(html, meeting_id)
+
+                if not items:
+                    print("  [%d/%d] %s %s: no items found" % (idx, meeting_count, meeting_id, meeting_date))
+                    replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
+                    continue
+
+                agenda_item_dicts = []
+                for it in items:
+                    an = it.get("agenda_item_number", "")
+                    agenda_item_dicts.append({
+                        "agenda_item_id": body_code + "-" + meeting_id + "_" + an,
+                        "meeting_id": meeting_id, "agenda_item_number": an,
+                        "agenda_item_title": it.get("agenda_item_title", ""),
+                        "agenda_item_text": it.get("agenda_item_text", ""),
+                        "agenda_item_url": "", "vote_or_action": "",
+                        "item_type": it.get("item_type", ""),
+                        "agenda_category": it.get("agenda_category", ""),
+                        "source_body": body_code, "source_url": agenda_url,
+                        "c_number": "", "c_number_base": "", "case_number": "",
+                        "sort_order": it.get("sort_order", 0),
+                    })
+
+                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_item_dicts)
+                total_items += len(items)
+
+                ts = _dt.datetime.now().strftime("%H:%M:%S")
+                print("%s [%d/%d] %s %s: %d item(s)" % (ts, idx, meeting_count, meeting_id, meeting_date, len(items)))
+
+                # -- Scottsdale minutes vote extraction --
+                minutes_url = m.get("minutes_url", "")
+                if minutes_url:
+                    try:
+                        from scraper.scottsdale import download_pdf, parse_minutes_votes
+                        from db import persist_votes
+                        pdf = download_pdf(minutes_url)
+                        if pdf:
+                            vote_data = parse_minutes_votes(pdf, meeting_id)
+                            if vote_data.get("votes"):
+                                persist_votes(
+                                    session, body_code, meeting_id,
+                                    vote_data["supervisors"],
+                                    vote_data["votes"],
+                                )
+                                print("        votes: %d recorded" % len(vote_data["votes"]))
+                    except Exception as ve:
+                        log.debug("Scottsdale minutes parse failed: %s", ve)
+
+                # ── Chandler Results PDF vote extraction ──
+                results_url = m.get("results_url", "")
+                if results_url:
+                    try:
+                        from scraper.chandler import fetch_results_pdf_bytes, extract_pdf_text, parse_results_votes
+                        from db import persist_votes
+                        pdf_bytes = fetch_results_pdf_bytes(results_url)
+                        if pdf_bytes:
+                            text = extract_pdf_text(pdf_bytes)
+                            if text:
+                                vote_data = parse_results_votes(text)
+                                if vote_data.get("votes"):
+                                    persist_votes(
+                                        session, body_code, meeting_id,
+                                        vote_data["supervisors"],
+                                        vote_data["votes"],
+                                    )
+                                    print("        votes: %d recorded" % len(vote_data["votes"]))
+                    except Exception as ve:
+                        log.debug("Chandler vote extraction failed: %s", ve)
+
+            except Exception as e:
+                log.error("Failed to sync Chandler meeting %s: %s", meeting_id, e)
+                try:
+                    update_sync_status(session, body_code, meeting_id, "failed", error=str(e))
+                except Exception:
+                    pass
+
+        session.close()
+        ts = _dt.datetime.now().strftime("%H:%M:%S")
+        print("%s Synced %d Chandler agenda items across %d meeting(s)" % (ts, total_items, meeting_count))
+        return 0
+
+    # ── Gilbert sync (via OnBase JSON) ──
+    if args.source == "gilbert" and args.sync:
+        import datetime as _dt
+        from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
+        from db import Meeting as MeetingModel
+        from sqlalchemy import select
+
+        init_db()
+        from scraper.gilbert import (
+            search_gilbert_meetings, fetch_agenda_html,
+            parse_gilbert_agenda, PUBLIC_BODY_CODE,
+        )
+
+        yr = int(getattr(args, "year", 0)) or _dt.date.today().year
+        pz_start = "01/01/%d" % yr
+        pz_end = _dt.date.today().strftime("%m/%d/%Y")
+
+        meetings = search_gilbert_meetings(pz_start, pz_end)
+        if not meetings:
+            print("No Gilbert meetings found for year %d." % yr)
+            return 0
+        if args.limit:
+            meetings = meetings[:args.limit]
+        print("Found %d Gilbert meeting(s)" % len(meetings))
+
+        session = get_session()
+        total_items = 0
+        meeting_count = len(meetings)
+
+        for idx, m in enumerate(meetings, 1):
+            meeting_id = m["meeting_id"]
+            meeting_date = m["meeting_date"]
+            body_code = PUBLIC_BODY_CODE
+            agenda_url = m["agenda_url"]
+            meeting_type = m.get("meeting_type", "")
+            meeting_title = m.get("meeting_title", "")
+
+            meeting_dict = {
+                "meeting_id": meeting_id, "meeting_date": meeting_date,
+                "meeting_type": meeting_type, "meeting_title": meeting_title,
+                "source_url": agenda_url,
+            }
+
+            existing = session.execute(
+                select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)
+            ).scalar_one_or_none()
+            if existing and existing.sync_status == "complete" and not args.force:
+                print("  [%d/%d] %s %s: already synced, skipping" % (idx, meeting_count, meeting_id, meeting_date))
+                continue
+
+            try:
+                html = fetch_agenda_html(int(meeting_id)) if meeting_id.isdigit() else ""
+                items = parse_gilbert_agenda(html, meeting_id) if html else []
+
+                if not items:
+                    replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
+                    print("  [%d/%d] %s %s: no items" % (idx, meeting_count, meeting_id, meeting_date))
+                    continue
+
+                agenda_dicts = []
+                for it in items:
+                    an = it.get("agenda_item_number", "")
+                    agenda_dicts.append({"agenda_item_id": body_code + "-" + meeting_id + "_" + an,
+                        "meeting_id": meeting_id, "agenda_item_number": an,
+                        "agenda_item_title": it.get("agenda_item_title", ""),
+                        "agenda_item_text": it.get("agenda_item_text", ""),
+                        "agenda_item_url": "", "vote_or_action": "",
+                        "item_type": it.get("item_type", ""),
+                        "agenda_category": "", "source_body": body_code,
+                        "source_url": agenda_url, "c_number": "",
+                        "c_number_base": "", "case_number": "",
+                        "sort_order": it.get("sort_order", 0)})
+
+                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_dicts)
+                total_items += len(items)
+
+                ts = _dt.datetime.now().strftime("%H:%M:%S")
+                print("%s [%d/%d] %s %s: %d item(s)" % (ts, idx, meeting_count, meeting_id, meeting_date, len(items)))
+
+                # -- Scottsdale minutes vote extraction --
+                minutes_url = m.get("minutes_url", "")
+                if minutes_url:
+                    try:
+                        from scraper.scottsdale import download_pdf, parse_minutes_votes
+                        from db import persist_votes
+                        pdf = download_pdf(minutes_url)
+                        if pdf:
+                            vote_data = parse_minutes_votes(pdf, meeting_id)
+                            if vote_data.get("votes"):
+                                persist_votes(
+                                    session, body_code, meeting_id,
+                                    vote_data["supervisors"],
+                                    vote_data["votes"],
+                                )
+                                print("        votes: %d recorded" % len(vote_data["votes"]))
+                    except Exception as ve:
+                        log.debug("Scottsdale minutes parse failed: %s", ve)
+
+                # ── Gilbert minutes vote extraction ──
+                try:
+                    minutes_html = fetch_agenda_html(int(meeting_id)) if meeting_id.isdigit() else ""
+                    if minutes_html:
+                        import re as _re
+                        clean = _re.sub("<[^>]+>", " ", minutes_html)
+                        clean = clean.replace("\\u00a0", " ").replace("&#xa0;", " ")
+                        clean = _re.sub("\\s+", " ", clean)
+                        motions = list(_re.finditer("(A MOTION was made by[^.]*\\.)", clean))
+                        if motions:
+                            print("        motions: %d found in minutes" % len(motions))
+                except Exception as ve:
+                    log.debug("Gilbert minutes parse failed: %s", ve)
+
+            except Exception as e:
+                log.error("Gilbert sync failed for %s: %s", meeting_id, e)
+                try:
+                    update_sync_status(session, body_code, meeting_id, "failed", error=str(e))
+                except Exception:
+                    pass
+
+        session.close()
+        ts = _dt.datetime.now().strftime("%H:%M:%S")
+        print("%s Synced %d Gilbert agenda items across %d meeting(s)" % (ts, total_items, meeting_count))
+        return 0
+
+    # ── Scottsdale sync (via PDF archive) ──
+    if args.source == "scottsdale" and args.sync:
+        import datetime as _dt
+        from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
+        from db import Meeting as MeetingModel
+        from sqlalchemy import select
+
+        from scraper.scottsdale import (
+            search_meetings, download_pdf, parse_agenda_items,
+            PUBLIC_BODY_CODE,
+        )
+
+        init_db()
+
+        yr = int(getattr(args, "year", 0)) or _dt.date.today().year
+
+        meetings = search_meetings(int(yr))
+        if not meetings:
+            print("No Scottsdale meetings found for year %d." % yr)
+            return 0
+        if args.limit:
+            meetings = meetings[:args.limit]
+        print("Found %d Scottsdale meeting(s)" % len(meetings))
+
+        session = get_session()
+        total_items = 0
+        meeting_count = len(meetings)
+
+        for idx, m in enumerate(meetings, 1):
+            meeting_id = m["meeting_id"]
+            meeting_date = m["meeting_date"]
+            body_code = PUBLIC_BODY_CODE
+            agenda_url = m.get("agenda_url", "")
+            meeting_type = m.get("meeting_type", "")
+            meeting_title = m.get("body_name", "")
+
+            meeting_dict = {
+                "meeting_id": meeting_id, "meeting_date": meeting_date,
+                "meeting_type": meeting_type, "meeting_title": meeting_title,
+                "source_url": agenda_url,
+            }
+
+            existing = session.execute(
+                select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)
+            ).scalar_one_or_none()
+            if existing and existing.sync_status == "complete" and not args.force:
+                print("  [%d/%d] %s %s: already synced, skipping" % (idx, meeting_count, meeting_id, meeting_date))
+                continue
+
+            try:
+                items = []
+                if agenda_url:
+                    pdf = download_pdf(agenda_url)
+                    if pdf:
+                        items = parse_agenda_items(pdf, meeting_id)
+
+                if not items:
+                    replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
+                    print("  [%d/%d] %s %s: no items" % (idx, meeting_count, meeting_id, meeting_date))
+                    continue
+
+                agenda_dicts = []
+                for it in items:
+                    an = it.get("agenda_item_number", "")
+                    agenda_dicts.append({"agenda_item_id": body_code + "-" + meeting_id + "_" + an,
+                        "meeting_id": meeting_id, "agenda_item_number": an,
+                        "agenda_item_title": it.get("agenda_item_title", ""),
+                        "agenda_item_text": it.get("agenda_item_text", ""),
+                        "agenda_item_url": "", "vote_or_action": it.get("vote_or_action", ""),
+                        "item_type": it.get("item_type", ""),
+                        "agenda_category": "", "source_body": body_code,
+                        "source_url": agenda_url, "c_number": "",
+                        "c_number_base": "", "case_number": "",
+                        "sort_order": it.get("sort_order", 0)})
+
+                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_dicts)
+                total_items += len(items)
+
+                ts = _dt.datetime.now().strftime("%H:%M:%S")
+                print("%s [%d/%d] %s %s: %d item(s)" % (ts, idx, meeting_count, meeting_id, meeting_date, len(items)))
+
+                # -- Scottsdale minutes vote extraction --
+                minutes_url = m.get("minutes_url", "")
+                if minutes_url:
+                    try:
+                        from scraper.scottsdale import download_pdf, parse_minutes_votes
+                        from db import persist_votes
+                        pdf = download_pdf(minutes_url)
+                        if pdf:
+                            vote_data = parse_minutes_votes(pdf, meeting_id)
+                            if vote_data.get("votes"):
+                                persist_votes(
+                                    session, body_code, meeting_id,
+                                    vote_data["supervisors"],
+                                    vote_data["votes"],
+                                )
+                                print("        votes: %d recorded" % len(vote_data["votes"]))
+                    except Exception as ve:
+                        log.debug("Scottsdale minutes parse failed: %s", ve)
+
+            except Exception as e:
+                log.error("Scottsdale sync failed for %s: %s", meeting_id, e)
+                try:
+                    update_sync_status(session, body_code, meeting_id, "failed", error=str(e))
+                except Exception:
+                    pass
+
+        session.close()
+        ts = _dt.datetime.now().strftime("%H:%M:%S")
+        print("%s Synced %d Scottsdale agenda items across %d meeting(s)" % (ts, total_items, meeting_count))
+        return 0
+
+    # ── Scottsdale Boards sync ──
+    if args.source == "scottsdale-boards" and args.sync:
+        import datetime as _dt
+        from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
+        from db import Meeting as MeetingModel
+        from sqlalchemy import select
+
+        from scraper.scottsdale_boards import search_board_meetings, BOARDS
+        from scraper.scottsdale import download_pdf, parse_agenda_items
+
+        init_db()
+
+        for slug, cfg in sorted(BOARDS.items()):
+            body_code = cfg["code"]
+            yr = getattr(args, "year", None)
+            if yr:
+                yr = int(yr)
+            meetings = search_board_meetings(slug, year=yr)
+            if not meetings:
+                print("  %s: no meetings found" % cfg["name"])
+                continue
+            if args.limit:
+                meetings = meetings[:args.limit]
+
+            session = get_session()
+            total_items = 0
+            for idx, m in enumerate(meetings, 1):
+                meeting_id = m["meeting_id"]
+                meeting_date = m["meeting_date"]
+                meeting_type = m["meeting_type"]
+                agenda_url = m["agenda_url"]
+                meeting_dict = {
+                    "meeting_id": meeting_id, "meeting_date": meeting_date,
+                    "meeting_type": meeting_type, "meeting_title": m["body_name"],
+                    "source_url": agenda_url,
+                }
+                existing = session.execute(
+                    select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)
+                ).scalar_one_or_none()
+                if existing and existing.sync_status == "complete" and not args.force:
+                    continue
+                try:
+                    pdf = download_pdf(agenda_url)
+                    items = parse_agenda_items(pdf, meeting_id) if pdf else []
+                    if not items:
+                        replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
+                        continue
+                    agenda_dicts = []
+                    for it in items:
+                        an = it.get("agenda_item_number", "")
+                        agenda_dicts.append({"agenda_item_id": body_code + "-" + meeting_id + "_" + an,
+                            "meeting_id": meeting_id, "agenda_item_number": an,
+                            "agenda_item_title": it.get("agenda_item_title", ""),
+                            "agenda_item_text": it.get("agenda_item_text", ""),
+                            "agenda_item_url": "", "vote_or_action": it.get("vote_or_action", ""),
+                            "item_type": "", "agenda_category": "", "source_body": body_code,
+                            "source_url": agenda_url, "c_number": "", "c_number_base": "", "case_number": "",
+                            "sort_order": it.get("sort_order", 0)})
+                    replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_dicts)
+                    total_items += len(items)
+                    ts = _dt.datetime.now().strftime("%H:%M:%S")
+                    print("  %s %s: %d items" % (meeting_date, meeting_id[:35], len(items)))
+                except Exception as e:
+                    log.debug("Failed %s: %s", meeting_id, e)
+            session.close()
+            print("  %s: %d items total" % (cfg["name"], total_items))
+
+        return 0
 
     if args.source in ("pz", "adj", "drain", "health", "tab", "ida") and args.sync:
         from db import get_session, init_db, replace_meeting_data_safe

@@ -1,0 +1,66 @@
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Snapshots (database backups)
+snapshots/
+
+# Data directory (downloaded agendas, database, metadata CSV outputs)
+data/
+
+# Logs
+logs/
+
+# Agent workspace config
+AGENTS.md
+HEARTBEAT.md
+SOUL.md
+IDENTITY.md
+USER.md
+TOOLS.md
+
+# OpenClaw agent config
+.openclaw/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+*.sqlite
+*.sqlite3
+
+# Sync script
+sync.sh
+
+# Flask cache
+.cache/
+
+# OpenClaw
+.clawhub/
+
+# Docs
+memory/
+docs/
+
+# Dev notes
+DEVELOPMENT_LOG.md
+NOTES.md
+REMEDIATION.md
+seqs.txt
+benchmark_housing_queries.py
+run_app.sh

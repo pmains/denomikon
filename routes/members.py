@@ -605,8 +605,9 @@ def member_votes_api(slug):
             start_date=start_date, end_date=end_date,
         )
     else:
+        body_code = request.args.get("body", "bos")
         all_records = get_supervisor_full_voting_record(
-            session, sup.id, body="bos",
+            session, sup.id, body=body_code,
             start_date=start_date, end_date=end_date,
         )
     session.close()
@@ -1006,28 +1007,28 @@ def member_detail(jurisdiction_slug, body_code, slug):
         )
     else:
         stats = get_supervisor_vote_stats(
-            session, sup.id, body="bos",
+            session, sup.id, body=body_code,
             start_date=start_date, end_date=end_date,
         )
         split_votes = get_supervisor_split_votes(
-            session, sup.id, body="bos",
+            session, sup.id, body=body_code,
             start_date=start_date, end_date=end_date,
         )
         dissents = [s for s in split_votes if s.get("with_or_against_majority") == "against_majority"]
         abstentions = get_supervisor_abstentions(
-            session, sup.id, body="bos",
+            session, sup.id, body=body_code,
             start_date=start_date, end_date=end_date,
         )
         absences = get_supervisor_absences(
-            session, sup.id, body="bos",
+            session, sup.id, body=body_code,
             start_date=start_date, end_date=end_date,
         )
         full_record = get_supervisor_full_voting_record(
-            session, sup.id, body="bos", limit=25,
+            session, sup.id, body=body_code, limit=25,
             start_date=start_date, end_date=end_date,
         )
         swing_votes = get_supervisor_swing_votes(
-            session, sup.id, body="bos",
+            session, sup.id, body=body_code,
             start_date=start_date, end_date=end_date,
         )
         count_q = (
@@ -1035,7 +1036,7 @@ def member_detail(jurisdiction_slug, body_code, slug):
             .select_from(SupervisorVote)
             .join(AgendaItemVote, AgendaItemVote.id == SupervisorVote.agenda_item_vote_id)
             .join(Meeting, Meeting.meeting_id == AgendaItemVote.meeting_id)
-            .where(SupervisorVote.supervisor_id == sup.id, AgendaItemVote.body == "bos")
+            .where(SupervisorVote.supervisor_id == sup.id, AgendaItemVote.body == body_code)
         )
         if start_date:
             count_q = count_q.where(Meeting.meeting_date >= start_date)
@@ -1058,6 +1059,11 @@ def member_detail(jurisdiction_slug, body_code, slug):
         f"/members/{jurisdiction_slug}/{body_code}/analytics"
     )
 
+    qs = _date_query_string(start_date, end_date, start_year, end_year)
+    body_param = f"body={body_code}"
+    sep = "&" if qs else "?"
+    full_record_api_url = f"/api/members/{slug_out}/votes{qs}{sep}{body_param}"
+
     return render_template(
         "member_detail.html",
         member=sup,
@@ -1073,7 +1079,7 @@ def member_detail(jurisdiction_slug, body_code, slug):
         full_record=full_record,
         full_record_count=full_record_count,
         swing_votes=swing_votes,
-        full_record_api_url=f"/api/members/{slug_out}/votes{_date_query_string(start_date, end_date, start_year, end_year)}",
+        full_record_api_url=full_record_api_url,
         vote_badges=VOTE_BADGE_CLASSES,
         majority_badges=MAJORITY_BADGE_CLASSES,
         member_url=f"/members/{jurisdiction_slug}/{body_code}/{slug_out}",

@@ -38,7 +38,7 @@ def get_distinct_meeting_types(body=None, jurisdiction=None):
         if jur:
             q = q.where(Meeting.jurisdiction_id == jur.id)
 
-    # Filter by body (now also handles tempe-* codes)
+    # Filter by body (now also handles tempe-* and mesa-* codes)
     if body and body.lower() != "all":
         b = body.lower()
         body_map = {
@@ -57,6 +57,30 @@ def get_distinct_meeting_types(body=None, jurisdiction=None):
             "tempe-rio": "tempe-rio", "rio salado": "tempe-rio",
             "tempe-rmt": "tempe-rmt", "risk management trust": "tempe-rmt",
             "tempe-jrc": "tempe-jrc", "joint review committee": "tempe-jrc",
+            # Mesa bodies (Legistar)
+            "mesa-cc": "mesa-cc", "mesa city council": "mesa-cc",
+            "mesa-pz": "mesa-pz", "mesa planning": "mesa-pz", "mesa planning zoning": "mesa-pz", "mesa-planning-zoning": "mesa-pz",
+            "mesa-drb": "mesa-drb", "mesa design review board": "mesa-drb", "mesa-design-review-board": "mesa-drb",
+            "mesa-boa": "mesa-boa", "mesa board of adjustment": "mesa-boa", "mesa-board-of-adjustment": "mesa-boa",
+            "mesa-hpb": "mesa-hpb", "mesa historic preservation board": "mesa-hpb", "mesa-historic-preservation-board": "mesa-hpb",
+            "mesa-cadence": "mesa-cadence", "mesa-cadence-cfd": "mesa-cadence",
+            "mesa-eastmark1": "mesa-eastmark1", "mesa-eastmark-cfd-1": "mesa-eastmark1",
+            "mesa-eastmark2": "mesa-eastmark2", "mesa-eastmark-cfd-2": "mesa-eastmark2",
+            # Chandler bodies (AgendaQuick)
+            "chandler-cc": "chandler-cc", "chandler city council": "chandler-cc",
+            "chandler-pz": "chandler-pz", "chandler planning": "chandler-pz",
+            "chandler-drc": "chandler-drc", "chandler development review": "chandler-drc",
+            "chandler-boa": "chandler-boa", "chandler board of adjustment": "chandler-boa",
+            "chandler-hpc": "chandler-hpc", "chandler historic preservation": "chandler-hpc",
+            # Gilbert bodies (OnBase)
+            "gilbert-tc": "gilbert-tc", "gilbert town council": "gilbert-tc",
+            # Scottsdale bodies
+            "scottsdale-cc": "scottsdale-cc", "scottsdale city council": "scottsdale-cc",
+            "scottsdale-pc": "scottsdale-pc", "scottsdale planning": "scottsdale-pc",
+            "scottsdale-boa": "scottsdale-boa", "scottsdale board of adjustment": "scottsdale-boa",
+            "scottsdale-drb": "scottsdale-drb", "scottsdale development review": "scottsdale-drb",
+            "scottsdale-hpc": "scottsdale-hpc", "scottsdale historic preservation": "scottsdale-hpc",
+            "scottsdale-baba": "scottsdale-baba", "scottsdale building appeals": "scottsdale-baba",
         }
         res = body_map.get(b)
         if res:
@@ -88,7 +112,7 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
         func.coalesce(Meeting.supporting_doc_count, 0).label("doc_count"),
     )
 
-    # Normalize body code (now also handles tempe-* codes)
+    # Normalize body code (now also handles tempe-* and mesa-* codes)
     if body and body.lower() != "all":
         b = body.lower()
         body_map = {
@@ -107,6 +131,30 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             "tempe-rio": "tempe-rio", "rio salado": "tempe-rio",
             "tempe-rmt": "tempe-rmt", "risk management trust": "tempe-rmt",
             "tempe-jrc": "tempe-jrc", "joint review committee": "tempe-jrc",
+            # Mesa bodies (Legistar)
+            "mesa-cc": "mesa-cc", "mesa city council": "mesa-cc",
+            "mesa-pz": "mesa-pz", "mesa planning": "mesa-pz", "mesa planning zoning": "mesa-pz", "mesa-planning-zoning": "mesa-pz",
+            "mesa-drb": "mesa-drb", "mesa design review board": "mesa-drb", "mesa-design-review-board": "mesa-drb",
+            "mesa-boa": "mesa-boa", "mesa board of adjustment": "mesa-boa", "mesa-board-of-adjustment": "mesa-boa",
+            "mesa-hpb": "mesa-hpb", "mesa historic preservation board": "mesa-hpb", "mesa-historic-preservation-board": "mesa-hpb",
+            "mesa-cadence": "mesa-cadence", "mesa-cadence-cfd": "mesa-cadence",
+            "mesa-eastmark1": "mesa-eastmark1", "mesa-eastmark-cfd-1": "mesa-eastmark1",
+            "mesa-eastmark2": "mesa-eastmark2", "mesa-eastmark-cfd-2": "mesa-eastmark2",
+            # Chandler bodies (AgendaQuick)
+            "chandler-cc": "chandler-cc", "chandler city council": "chandler-cc",
+            "chandler-pz": "chandler-pz", "chandler planning": "chandler-pz",
+            "chandler-drc": "chandler-drc", "chandler development review": "chandler-drc",
+            "chandler-boa": "chandler-boa", "chandler board of adjustment": "chandler-boa",
+            "chandler-hpc": "chandler-hpc", "chandler historic preservation": "chandler-hpc",
+            # Gilbert bodies (OnBase)
+            "gilbert-tc": "gilbert-tc", "gilbert town council": "gilbert-tc",
+            # Scottsdale bodies
+            "scottsdale-cc": "scottsdale-cc", "scottsdale city council": "scottsdale-cc",
+            "scottsdale-pc": "scottsdale-pc", "scottsdale planning": "scottsdale-pc",
+            "scottsdale-boa": "scottsdale-boa", "scottsdale board of adjustment": "scottsdale-boa",
+            "scottsdale-drb": "scottsdale-drb", "scottsdale development review": "scottsdale-drb",
+            "scottsdale-hpc": "scottsdale-hpc", "scottsdale historic preservation": "scottsdale-hpc",
+            "scottsdale-baba": "scottsdale-baba", "scottsdale building appeals": "scottsdale-baba",
         }
         res = body_map.get(b)
         if res:
@@ -162,6 +210,10 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
         is_tab = body_val == "tab"
         is_ida = body_val == "ida"
         is_tempe = body_val.startswith("tempe-")
+        is_mesa = body_val.startswith("mesa-")
+        is_chandler = body_val.startswith("chandler-")
+        is_gilbert = body_val.startswith("gilbert-")
+        is_scottsdale = body_val.startswith("scottsdale-")
         # Derive source label and badge from body value
         if is_tempe:
             source_labels = {
@@ -176,6 +228,66 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             }
             source = source_labels.get(body_val, "Tempe")
             source_badge = "info"
+        elif is_mesa:
+            source_labels = {
+                "mesa-cc": "City Council",
+                "mesa-pz": "Planning & Zoning",
+                "mesa-drb": "Design Review",
+                "mesa-boa": "Board of Adj",
+                "mesa-hpb": "Hist Preserv",
+                "mesa-cadence": "Cadence CFD",
+                "mesa-eastmark1": "Eastmark CFD 1",
+                "mesa-eastmark2": "Eastmark CFD 2",
+            }
+            source = source_labels.get(body_val, "Mesa")
+            source_badge = "warning"
+        elif is_chandler:
+            source_labels = {
+                "chandler-cc": "City Council",
+                "chandler-pz": "Planning & Zoning",
+                "chandler-drc": "Dev Review",
+                "chandler-boa": "Board of Adj",
+                "chandler-hpc": "Hist Preserv",
+                "chandler-ida": "Ind Dev Auth",
+                "chandler-prb": "Parks & Rec",
+                "chandler-lb": "Library Board",
+                "chandler-mf": "Museum Fndtn",
+                "chandler-cf": "Cultural Fndtn",
+                "chandler-arts": "Arts Comm",
+                "chandler-tc": "Transpo Comm",
+                "chandler-mvc": "Mil & Vet",
+                "chandler-hhsc": "Housing & HS",
+                "chandler-hrc": "Human Rel",
+                "chandler-dvc": "Dom Violence",
+                "chandler-pha": "Pub Housing",
+                "chandler-nac": "Neighbor Adv",
+                "chandler-yc": "Youth Comm",
+                "chandler-pdc": "Disabilities",
+                "chandler-eda": "Econ Dev",
+                "chandler-psprs-f": "PSPRS Fire",
+                "chandler-psprs-p": "PSPRS Police",
+                "chandler-hcc": "Housing Corp",
+                "chandler-cpr": "Citizens Rev",
+                "chandler-hct": "Health Trust",
+                "chandler-wct": "Workers Comp",
+                "chandler-air": "Airport Comm",
+            }
+            source = source_labels.get(body_val, "Chandler")
+            source_badge = "success"
+        elif is_gilbert:
+            source = "Town Council" if body_val == "gilbert-tc" else "Gilbert"
+            source_badge = "dark"
+        elif body_val.startswith("scottsdale-"):
+            scottsdale_labels = {
+                "scottsdale-cc": "City Council",
+                "scottsdale-pc": "Planning Comm",
+                "scottsdale-boa": "Board of Adj",
+                "scottsdale-drb": "Dev Review",
+                "scottsdale-hpc": "Hist Preserv",
+                "scottsdale-baba": "Bldg Appeals",
+            }
+            source = scottsdale_labels.get(body_val, "Scottsdale")
+            source_badge = "info"
         else:
             source = "IDA" if is_ida else ("TAB" if is_tab else ("BOH" if is_health else ("DRB" if is_drain else ("ADJ" if is_adj else ("PZ" if is_pz else "BOS")))))
             source_badge = "light" if is_ida else ("warning" if is_tab else ("success" if is_health else ("info" if is_drain else ("dark" if is_adj else ("secondary" if is_pz else "primary")))))
@@ -184,6 +296,18 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
         if jur_id == 2:
             jur_name = "Tempe"
             jur_slug = "tempe"
+        elif jur_id == 3:
+            jur_name = "Chandler"
+            jur_slug = "chandler"
+        elif jur_id == 5:
+            jur_name = "Mesa"
+            jur_slug = "mesa"
+        elif jur_id == 6:
+            jur_name = "Gilbert"
+            jur_slug = "gilbert"
+        elif jur_id == 7:
+            jur_name = "Scottsdale"
+            jur_slug = "scottsdale"
         else:
             jur_name = "Maricopa County"
             jur_slug = "maricopa-county"

@@ -500,6 +500,13 @@ def parse_agenda_html(html: str, meeting_id: str,
             item_number = num_match.group(1) if num_match else ""
             item_title = num_match.group(2).strip() if num_match else full_text
 
+            # Extract OnBase internal item ID from onclick="loadAgendaItem(NNN)"
+            onbase_item_id = None
+            onclick = a_tag.attrs.get("onclick", "") if a_tag else ""
+            id_match = re.search(r"loadAgendaItem\((\d+)", onclick)
+            if id_match:
+                onbase_item_id = int(id_match.group(1))
+
             # Determine which section this item belongs to
             section_title = ""
             if section_stack:
@@ -522,6 +529,7 @@ def parse_agenda_html(html: str, meeting_id: str,
                 "section_title": section_title,
                 "body": public_body_code,
                 "item_type": "item",
+                "onbase_item_id": onbase_item_id,
             })
 
     return items
@@ -712,6 +720,90 @@ def download_document(config: OnBaseConfig, meeting_id: int, name: str,
 
 
 # ──────────────────────────────────────────────
+
+def fetch_item_details_sync(config: OnBaseConfig, meeting_id: int, item_id: int) -> str:
+    """Fetch item detail HTML for a specific agenda item.
+
+    OnBase loads item details (including supporting documents) via an AJAX
+    endpoint when the user clicks on an agenda item.  This function fetches
+    that HTML directly without requiring Playwright.
+
+    Returns the item detail HTML, or empty string on failure.
+    """
+    import urllib.request
+
+    url = f"{config.base_url}/Meetings/ViewMeetingAgendaItem?meetingId={meeting_id}&itemId={item_id}&isSection=false&type=agenda"
+    log.info("Fetching item details: %s", url)
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            html = resp.read().decode("utf-8")
+        log.debug("Item detail HTML: %d bytes", len(html))
+        return html
+    except Exception as e:
+        log.warning("Failed to fetch item details for meeting %s item %s: %s",
+                     meeting_id, item_id, e)
+        return ""
+
+
+def parse_item_details(html: str, meeting_id: str, body: str, agenda_item_number: str) -> list[dict]:
+    """Parse item detail HTML for supporting document links.
+
+    Returns a list of dicts with keys:
+        body, meeting_id, agenda_item_number, document_title, document_url,
+        document_type
+    """
+    from scraper.html_utils import _parse_html, _find_all, _find_one, _clean_html_text, _node_text
+
+    documents = []
+    if not html:
+        return documents
+
+    root = _parse_html(html)
+
+    # Find all download links in the Supporting Documents section
+    for a_tag in _find_all(root, "a"):
+        href = a_tag.attrs.get("href", "")
+        title = a_tag.attrs.get("title", "")
+        text = _clean_html_text(_node_text(a_tag)).strip()
+
+        # Only process documents with DownloadFile in the URL
+        if "DownloadFile" not in href and "Downloadfile" not in href:
+            continue
+
+        doc_title = text or title
+        if not doc_title:
+            continue
+
+        # Build full URL (avoid duplicating path segments)
+        if href.startswith("/"):
+            from scraper.tempe import TEMPE_CONFIG
+            parsed_base = urllib.parse.urlparse(TEMPE_CONFIG.base_url)
+            base_path = parsed_base.path.rstrip("/")
+            # Case-insensitive check: href may have different casing than base_path
+            if href.lower().startswith(base_path.lower()):
+                href = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
+            else:
+                href = f"{TEMPE_CONFIG.base_url}{href}"
+
+        # Determine document type
+        doc_type = "Attachment"
+        if ".pdf" in doc_title.lower():
+            doc_type = "PDF"
+        elif ".doc" in doc_title.lower():
+            doc_type = "Document"
+
+        documents.append({
+            "body": body,
+            "meeting_id": meeting_id,
+            "agenda_item_number": agenda_item_number,
+            "document_title": doc_title,
+            "document_url": href,
+            "document_type": doc_type,
+        })
+
+    return documents
+
 
 def fetch_agenda_sync(config: OnBaseConfig, meeting_id: int) -> str:
     """Fetch agenda HTML for a meeting via direct HTTP GET.

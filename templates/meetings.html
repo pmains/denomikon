@@ -10,6 +10,10 @@
             <option value="" {% if not filter_jurisdiction %}selected{% endif %}>All</option>
             <option value="maricopa-county" {% if filter_jurisdiction == 'maricopa-county' %}selected{% endif %}>Maricopa County</option>
             <option value="tempe" {% if filter_jurisdiction == 'tempe' %}selected{% endif %}>City of Tempe</option>
+            <option value="mesa" {% if filter_jurisdiction == 'mesa' %}selected{% endif %}>City of Mesa</option>
+            <option value="chandler" {% if filter_jurisdiction == 'chandler' %}selected{% endif %}>City of Chandler</option>
+            <option value="gilbert" {% if filter_jurisdiction == 'gilbert' %}selected{% endif %}>Town of Gilbert</option>
+            <option value="scottsdale" {% if filter_jurisdiction == 'scottsdale' %}selected{% endif %}>City of Scottsdale</option>
         </select>
     </div>
     <div class="col-md-2">
@@ -34,6 +38,57 @@
             <option value="tempe-rio" {% if filter_body == 'tempe-rio' %}selected{% endif %}>Rio Salado CFD</option>
             <option value="tempe-rmt" {% if filter_body == 'tempe-rmt' %}selected{% endif %}>Risk Mgmt Trust</option>
             <option value="tempe-jrc" {% if filter_body == 'tempe-jrc' %}selected{% endif %}>Joint Review Comm</option>
+            </optgroup>
+            <optgroup label="City of Mesa">
+            <option value="mesa-cc" {% if filter_body == 'mesa-cc' %}selected{% endif %}>City Council</option>
+            <option value="mesa-pz" {% if filter_body == 'mesa-pz' %}selected{% endif %}>Planning &amp; Zoning</option>
+            <option value="mesa-drb" {% if filter_body == 'mesa-drb' %}selected{% endif %}>Design Review Board</option>
+            <option value="mesa-boa" {% if filter_body == 'mesa-boa' %}selected{% endif %}>Board of Adjustment</option>
+            <option value="mesa-hpb" {% if filter_body == 'mesa-hpb' %}selected{% endif %}>Historic Preservation</option>
+            <option value="mesa-cadence" {% if filter_body == 'mesa-cadence' %}selected{% endif %}>Cadence CFD</option>
+            <option value="mesa-eastmark1" {% if filter_body == 'mesa-eastmark1' %}selected{% endif %}>Eastmark CFD 1</option>
+            <option value="mesa-eastmark2" {% if filter_body == 'mesa-eastmark2' %}selected{% endif %}>Eastmark CFD 2</option>
+            </optgroup>
+            <optgroup label="City of Chandler">
+            <option value="chandler-cc" {% if filter_body == 'chandler-cc' %}selected{% endif %}>City Council</option>
+            <option value="chandler-pz" {% if filter_body == 'chandler-pz' %}selected{% endif %}>Planning &amp; Zoning</option>
+            <option value="chandler-drc" {% if filter_body == 'chandler-drc' %}selected{% endif %}>Dev Review Comm.</option>
+            <option value="chandler-boa" {% if filter_body == 'chandler-boa' %}selected{% endif %}>Board of Adjustment</option>
+            <option value="chandler-hpc" {% if filter_body == 'chandler-hpc' %}selected{% endif %}>Historic Preservation</option>
+            <option value="chandler-ida" {% if filter_body == 'chandler-ida' %}selected{% endif %}>Industrial Dev Auth</option>
+            <option value="chandler-prb" {% if filter_body == 'chandler-prb' %}selected{% endif %}>Parks &amp; Rec Board</option>
+            <option value="chandler-lb" {% if filter_body == 'chandler-lb' %}selected{% endif %}>Library Board</option>
+            <option value="chandler-mf" {% if filter_body == 'chandler-mf' %}selected{% endif %}>Museum Foundation</option>
+            <option value="chandler-cf" {% if filter_body == 'chandler-cf' %}selected{% endif %}>Cultural Foundation</option>
+            <option value="chandler-arts" {% if filter_body == 'chandler-arts' %}selected{% endif %}>Arts Commission</option>
+            <option value="chandler-tc" {% if filter_body == 'chandler-tc' %}selected{% endif %}>Transportation Comm.</option>
+            <option value="chandler-mvc" {% if filter_body == 'chandler-mvc' %}selected{% endif %}>Mil &amp; Vet Affairs</option>
+            <option value="chandler-hhsc" {% if filter_body == 'chandler-hhsc' %}selected{% endif %}>Housing &amp; Human Svcs</option>
+            <option value="chandler-hrc" {% if filter_body == 'chandler-hrc' %}selected{% endif %}>Human Relations</option>
+            <option value="chandler-dvc" {% if filter_body == 'chandler-dvc' %}selected{% endif %}>Domestic Violence</option>
+            <option value="chandler-pha" {% if filter_body == 'chandler-pha' %}selected{% endif %}>Public Housing Auth</option>
+            <option value="chandler-nac" {% if filter_body == 'chandler-nac' %}selected{% endif %}>Neighborhood Adv Comm</option>
+            <option value="chandler-yc" {% if filter_body == 'chandler-yc' %}selected{% endif %}>Mayor&#39;s Youth Comm</option>
+            <option value="chandler-pdc" {% if filter_body == 'chandler-pdc' %}selected{% endif %}>Disabilities Committee</option>
+            <option value="chandler-eda" {% if filter_body == 'chandler-eda' %}selected{% endif %}>Econ Dev Advisory</option>
+            <option value="chandler-psprs-f" {% if filter_body == 'chandler-psprs-f' %}selected{% endif %}>PSPRS Board Fire</option>
+            <option value="chandler-psprs-p" {% if filter_body == 'chandler-psprs-p' %}selected{% endif %}>PSPRS Board Police</option>
+            <option value="chandler-hcc" {% if filter_body == 'chandler-hcc' %}selected{% endif %}>Housing Corp</option>
+            <option value="chandler-cpr" {% if filter_body == 'chandler-cpr' %}selected{% endif %}>Citizens Panel Review</option>
+            <option value="chandler-hct" {% if filter_body == 'chandler-hct' %}selected{% endif %}>Health Care Trust</option>
+            <option value="chandler-wct" {% if filter_body == 'chandler-wct' %}selected{% endif %}>Workers Comp Trust</option>
+            <option value="chandler-air" {% if filter_body == 'chandler-air' %}selected{% endif %}>Airport Commission</option>
+            </optgroup>
+            <optgroup label="Town of Gilbert">
+            <option value="gilbert-tc" {% if filter_body == 'gilbert-tc' %}selected{% endif %}>Town Council</option>
+            </optgroup>
+            <optgroup label="City of Scottsdale">
+            <option value="scottsdale-cc" {% if filter_body == 'scottsdale-cc' %}selected{% endif %}>City Council</option>
+            <option value="scottsdale-pc" {% if filter_body == 'scottsdale-pc' %}selected{% endif %}>Planning Commission</option>
+            <option value="scottsdale-boa" {% if filter_body == 'scottsdale-boa' %}selected{% endif %}>Board of Adjustment</option>
+            <option value="scottsdale-drb" {% if filter_body == 'scottsdale-drb' %}selected{% endif %}>Dev Review Board</option>
+            <option value="scottsdale-hpc" {% if filter_body == 'scottsdale-hpc' %}selected{% endif %}>Historic Preservation</option>
+            <option value="scottsdale-baba" {% if filter_body == 'scottsdale-baba' %}selected{% endif %}>Bldg Appeals Board</option>
             </optgroup>
         </select>
     </div>
@@ -74,23 +129,37 @@
 </form>
 
 <script>
+/* ── Map jurisdiction slugs to body optgroup labels ── */
+var JUR_TO_LABEL = {
+    "maricopa-county": "Maricopa County",
+    "tempe": "City of Tempe",
+    "mesa": "City of Mesa",
+    "chandler": "City of Chandler",
+    "gilbert": "Town of Gilbert",
+    "scottsdale": "City of Scottsdale",
+};
+
 function filterSourceOptions() {
     var jur = document.getElementById('jurisdiction').value;
     var bodySelect = document.getElementById('body');
     var optgroups = bodySelect.querySelectorAll('optgroup');
     
+    // Disable body select when no jurisdiction is chosen
+    bodySelect.disabled = (jur === '');
+    
+    // Determine which label to show (or null for all)
+    var showLabel = jur ? (JUR_TO_LABEL[jur] || null) : null;
+    
     // Show/hide optgroups based on jurisdiction
     for (var i = 0; i < optgroups.length; i++) {
         var og = optgroups[i];
-        var label = og.label || '';
-        if (jur === 'tempe') {
-            og.style.display = (label === 'City of Tempe') ? '' : 'none';
-        } else if (jur === 'maricopa-county') {
-            og.style.display = (label === 'Maricopa County') ? '' : 'none';
-        } else {
-            // No jurisdiction filter — show all
-            og.style.display = '';
-        }
+        og.style.display = (showLabel === null || og.label === showLabel) ? '' : 'none';
+    }
+    
+    // If no jurisdiction, reset body to empty (All)
+    if (jur === '') {
+        bodySelect.value = '';
+        return;
     }
     
     // If current selection is hidden, reset to first visible option
@@ -99,16 +168,16 @@ function filterSourceOptions() {
     for (var j = 0; j < bodySelect.options.length; j++) {
         var opt = bodySelect.options[j];
         var parent = opt.parentElement;
-        if (parent && parent.tagName === 'OPTGROUP' && parent.style.display === 'none') {
-            opt.style.display = 'none';
-        } else {
-            opt.style.display = '';
-            if (!firstVisible && opt.value) firstVisible = opt.value;
+        var hidden = parent && parent.tagName === 'OPTGROUP' && parent.style.display === 'none';
+        opt.style.display = hidden ? 'none' : '';
+        if (!hidden && opt.value && !firstVisible) {
+            firstVisible = opt.value;
         }
     }
+    // If the currently selected option is now hidden, fall back to All
     if (selectedVal && bodySelect.querySelector('option[value="' + selectedVal + '"]') &&
         bodySelect.querySelector('option[value="' + selectedVal + '"]').style.display === 'none') {
-        bodySelect.value = firstVisible || '';
+        bodySelect.value = '';
     }
 }
 
