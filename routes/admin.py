@@ -55,7 +55,106 @@ def dashboard():
     )
 
 
-# ── AI Story Suggestions ──
+# ── Narrative angle templates for each topic ──
+_ANGLE_TEMPLATES = {
+    "housing": (
+        "Housing supply remains a flashpoint across the Valley. This agenda item could signal "
+        "new units coming online — or a fight over density, affordability, and neighborhood character."
+    ),
+    "zoning": (
+        "Zoning changes are where land-use battles are won and lost. This item involves "
+        "rewriting the rules for a specific piece of property — who benefits and who pushes back?"
+    ),
+    "data-centers": (
+        "Data centers are reshaping Maricopa County's industrial landscape, bringing "
+        "massive investment but also concerns about water use, power demand, and job quality."
+    ),
+    "enforcement": (
+        "Code enforcement actions reveal where cities are drawing lines — and who gets "
+        "cited. This item suggests regulatory friction worth watching."
+    ),
+    "health": (
+        "Public health decisions at the county level have downstream effects on every "
+        "resident. This item touches on health policy, access, or emerging risks."
+    ),
+    "environment": (
+        "Environmental policy in the desert is never neutral — water, solar, conservation, "
+        "and contamination battles all have high stakes. This item is worth a closer look."
+    ),
+    "development": (
+        "Development proposals tell you where a city is headed. This item involves "
+        "new construction or commercial plans that could change the character of an area."
+    ),
+    "transportation": (
+        "Transportation decisions shape commute times, safety, and economic access for "
+        "years. This agenda item has real implications for how people move through the county."
+    ),
+    "economy": (
+        "Economic development incentives are essentially bets with taxpayer money. This "
+        "item involves dollars, jobs, and the question of whether the promised returns materialize."
+    ),
+    "water": (
+        "In the arid Southwest, water is the underlying story beneath almost every "
+        "development decision. This item engages water rights, conservation, or infrastructure."
+    ),
+}
+
+
+def _generate_pitch(suggestion: dict) -> dict:
+    """Generate a narrative pitch for a suggested story."""
+    topic = suggestion["topic"]
+    title = suggestion["title"]
+    body = suggestion["body"]
+    text = suggestion["text"]
+    matched = suggestion["matched_keywords"]
+    meeting_date = suggestion["meeting_date"]
+
+    # Build the angle from the template + context
+    angle = _ANGLE_TEMPLATES.get(topic, "This agenda item could have significant local impact.")
+
+    # Identify the jurisdiction for location context
+    jurisdiction_map = {
+        "bos": "Maricopa County", "pz": "Maricopa County Planning & Zoning",
+        "adj": "Maricopa County Board of Adjustment",
+        "mesa-cc": "Mesa", "mesa-pz": "Mesa Planning & Zoning",
+        "chandler-cc": "Chandler", "chandler-pz": "Chandler Planning & Zoning",
+        "tempe-cc": "Tempe",
+        "scottsdale-cc": "Scottsdale",
+        "gilbert-tc": "Gilbert",
+    }
+    location = ""
+    for prefix, name in jurisdiction_map.items():
+        if body.startswith(prefix):
+            location = name
+            break
+    if not location:
+        location = body
+
+    # Build a headline-style pitch
+    headline = f"{topic.replace('-', ' ').title()}: "
+    if matched:
+        headline += matched[0].title() + " "
+    headline += f"Item at {location}"
+
+    # Write a brief narrative
+    narrative_parts = []
+    narrative_parts.append(f"**Why it matters:** {angle}")
+    if meeting_date:
+        narrative_parts.append(f"**When:** {meeting_date}")
+    narrative_parts.append(f"**Where:** {location}")
+    if matched:
+        kw_str = ", ".join(f"\"{kw}\"" for kw in matched[:4])
+        narrative_parts.append(f"**Keywords matched:** {kw_str}")
+    if title:
+        narrative_parts.append(f"**Item:** \"{title}\"")
+    narrative_parts.append(f"**Suggested headline:** {headline}")
+
+    suggestion["pitch"] = "\n\n".join(narrative_parts)
+    suggestion["headline"] = headline
+    suggestion["location"] = location
+    suggestion["angle"] = angle
+    return suggestion
+
 
 @admin_bp.route("/suggestions")
 @login_required
@@ -120,7 +219,7 @@ def suggestions():
             matched = [kw for kw in keywords
                        if kw in title.lower() or kw in text.lower()]
 
-            suggestions.append({
+            suggestion = {
                 "topic": topic_slug,
                 "agenda_item_id": item.id,
                 "body": body,
@@ -131,7 +230,8 @@ def suggestions():
                 "text": text,
                 "matched_keywords": matched[:5],
                 "source_url": item.source_url,
-            })
+            }
+            suggestions.append(_generate_pitch(suggestion))
 
     session.close()
 
@@ -142,8 +242,7 @@ def suggestions():
 
     tags = get_session().execute(select(Tag).order_by(Tag.name)).scalars().all()
     return render_template(
-        "admin/suggestions.html",
-        grouped=grouped, tags=tags,
+        "admin/suggestions.html", grouped=grouped, tags=tags,
     )
 
 

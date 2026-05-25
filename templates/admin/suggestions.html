@@ -2,7 +2,7 @@
 {% block title %}AI Story Suggestions — Poliscopic{% endblock %}
 {% block content %}
 <h1 class="mb-3">AI Story Suggestions</h1>
-<p class="text-muted">Agenda items matching newsworthy topics. Click "Write story" to create a draft article pre-populated with the source.</p>
+<p class="text-muted">Agenda items matching newsworthy topics, with narrative pitches. Click "Write story" to create a draft article pre-populated with the source.</p>
 
 {% for topic, items in grouped.items() %}
   {% if items %}
@@ -15,8 +15,8 @@
       {% for item in items %}
       <div class="list-group-item">
         <div class="d-flex justify-content-between align-items-start">
-          <div>
-            <strong>{{ item.title[:100] }}</strong>
+          <div style="flex:1">
+            <strong>{{ item.headline }}</strong>
             <br>
             <small class="text-muted">
               {{ item.body }} · {{ item.meeting_date }} · Item {{ item.agenda_item_number }}
@@ -27,9 +27,14 @@
               <span class="badge bg-info text-dark">{{ kw }}</span>
             {% endfor %}
             {% endif %}
-            <p class="mt-1 mb-0 small text-muted">{{ item.text[:200] }}</p>
+            {% if item.pitch %}
+            <div class="mt-2 p-2 bg-light rounded" style="white-space:pre-wrap;font-size:0.9em">{{ item.pitch }}</div>
+            {% endif %}
           </div>
-          <a href="/admin/articles/new?topic={{ topic }}&body={{ item.body }}&meeting_id={{ item.meeting_id }}&agenda_item_number={{ item.agenda_item_number }}&source_url={{ item.source_url | urlencode }}" class="btn btn-sm btn-outline-primary ms-2" style="white-space:nowrap">Write story</a>
+          <div class="d-flex flex-column gap-1 ms-2" style="min-width:100px">
+            <a href="/admin/articles/new?topic={{ topic }}&body={{ item.body }}&meeting_id={{ item.meeting_id }}&agenda_item_number={{ item.agenda_item_number }}&source_url={{ item.source_url | urlencode }}" class="btn btn-sm btn-outline-primary">Write story</a>
+            <a href="/meetings/{{ item.body }}/{{ item.meeting_id }}" class="btn btn-sm btn-outline-secondary" target="_blank">View meeting</a>
+          </div>
         </div>
       </div>
       {% endfor %}
