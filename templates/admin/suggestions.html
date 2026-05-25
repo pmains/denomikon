@@ -45,12 +45,24 @@
               {% for kw in item.matched_keywords %}<span class="badge bg-info text-dark me-1">{{ kw }}</span>{% endfor %}
             </div>
             {% endif %}
+            {% if item.editorial_notes %}
+            <div class="mt-1 small text-muted fst-italic">
+              {% for note in item.editorial_notes %}{{ note }}<br>{% endfor %}
+            </div>
+            {% endif %}
             {% if item.pitch %}
             <div class="mt-2 p-2 bg-light rounded" style="font-size:0.9em">{{ item.pitch|safe }}</div>
             {% endif %}
           </div>
           <div class="d-flex flex-column gap-1 ms-2" style="min-width:110px">
-            <a href="/admin/articles/new?topic={{ topic }}&body={{ item.body }}&meeting_id={{ item.meeting_id }}&agenda_item_number={{ item.agenda_item_number }}&source_url={{ item.source_url | urlencode }}" class="btn btn-sm btn-primary">Write story</a>
+            <form method="POST" action="/admin/suggestions/draft" class="d-inline">
+              <input type="hidden" name="body" value="{{ item.body }}">
+              <input type="hidden" name="meeting_id" value="{{ item.meeting_id }}">
+              <input type="hidden" name="agenda_item_number" value="{{ item.agenda_item_number }}">
+              <input type="hidden" name="topic" value="{{ topic }}">
+              <input type="hidden" name="source_url" value="{{ item.source_url }}">
+              <button class="btn btn-sm btn-primary w-100">Write story</button>
+            </form>
             <form method="POST" action="/admin/suggestions/dismiss" class="d-inline">
               <input type="hidden" name="body" value="{{ item.body }}">
               <input type="hidden" name="meeting_id" value="{{ item.meeting_id }}">

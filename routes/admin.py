@@ -101,76 +101,95 @@ _ANGLE_TEMPLATES = {
 
 
 def _generate_pitch(suggestion: dict) -> dict:
-    """Generate a narrative pitch, score by impact, and produce a full draft body."""
+    """Generate a narrative pitch, score by impact."""
     import urllib.parse
     import re as _re
 
     topic = suggestion["topic"]
-    title = suggestion["title"]
-    body = suggestion["body"]
-    text = suggestion["text"]
-    matched = suggestion["matched_keywords"]
-    meeting_date = suggestion["meeting_date"]
+    title = suggestion["title"] or ""
+    body = suggestion["body"] or ""
+    text = suggestion["text"] or ""
+    matched = suggestion["matched_keywords"] or []
+    meeting_date = suggestion["meeting_date"] or ""
 
-    # Build the angle from the template + context
+    # ── Impact scoring ──
+    score = 0
+    text_lower = (title + " " + text).lower()
+    dollar_matches = _re.findall(r'\$[\d,]+', text_lower)
+
+    for d in dollar_matches:
+        val = _re.sub(r'[\$,]', '', d)
+        try:
+            n = int(val)
+            if n >= 10000000: score += 50
+            elif n >= 1000000: score += 20
+            elif n >= 100000: score += 10
+            elif n >= 10000: score += 5
+        except ValueError: pass
+
+    signal_scores = {"bonds-finance": 40, "policy-planning": 35, "infrastructure": 25,
+                     "homelessness": 30, "development-pipeline": 15, "annexation": 20,
+                     "enforcement-signals": 10}
+    score += signal_scores.get(topic, 0)
+
+    if body == "bos": score += 10
+
+    bundle_kws = ["homeless", "shelter", "amendment", "iga with"]
+    for kw in bundle_kws:
+        if text_lower.count(kw) > 3:
+            score += 15
+            break
+
+    suggestion["score"] = score
+
+    # ── Context ──
     angle = _ANGLE_TEMPLATES.get(topic, "This agenda item could have significant local impact.")
 
-    # Identify the jurisdiction for location context
-    jurisdiction_map = {
-        "bos": "Maricopa County", "pz": "Maricopa County Planning & Zoning",
-        "adj": "Maricopa County Board of Adjustment",
-        "mesa-cc": "Mesa", "mesa-pz": "Mesa Planning & Zoning",
-        "chandler-cc": "Chandler", "chandler-pz": "Chandler Planning & Zoning",
-        "tempe-cc": "Tempe",
-        "scottsdale-cc": "Scottsdale",
-        "gilbert-tc": "Gilbert",
-    }
+    jurisdiction_map = {"bos": "Maricopa County", "pz": "Maricopa County PZ",
+        "adj": "Maricopa County ADJ", "mesa-cc": "Mesa", "mesa-pz": "Mesa PZ",
+        "chandler-cc": "Chandler", "chandler-pz": "Chandler PZ",
+        "tempe-cc": "Tempe", "scottsdale-cc": "Scottsdale", "gilbert-tc": "Gilbert"}
     location = ""
     for prefix, name in jurisdiction_map.items():
-        if body.startswith(prefix):
-            location = name
-            break
-    if not location:
-        location = body
+        if body.startswith(prefix): location = name; break
+    if not location: location = body
 
-    # Build a headline-style pitch
-    headline = f"{topic.replace('-', ' ').title()}: "
-    if matched:
-        headline += matched[0].title() + " "
-    headline += f"Item at {location}"
-
-    # Build news search URLs
     search_terms = f"{location} {topic.replace('-', ' ')} {matched[0] if matched else ''}"
     ddg_url = f"https://duckduckgo.com/?q={urllib.parse.quote(search_terms)}&ia=news"
     azcentral_url = f"https://www.azcentral.com/search/?q={urllib.parse.quote(search_terms)}"
     newslookup_url = f"https://newslookup.com/results?q={urllib.parse.quote(search_terms)}"
 
-    # Write a brief narrative as HTML (not markdown — templates render raw)
-    narrative_parts = []
-    narrative_parts.append(f'<strong>Why it matters:</strong> {angle}')
-    if meeting_date:
-        narrative_parts.append(f'<strong>When:</strong> {meeting_date}')
-    narrative_parts.append(f'<strong>Where:</strong> {location}')
-    if matched:
-        kw_str = ", ".join(f"&ldquo;{kw}&rdquo;" for kw in matched[:4])
-        narrative_parts.append(f'<strong>Keywords matched:</strong> {kw_str}')
-    if title:
-        narrative_parts.append(f'<strong>Item:</strong> &ldquo;{title}&rdquo;')
-    narrative_parts.append(f'<strong>Suggested headline:</strong> {headline}')
-    narrative_parts.append(
-        f'<strong>Check outside coverage:</strong> '
-        f'<a href="{ddg_url}" target="_blank">DuckDuckGo News</a> | '
-        f'<a href="{newslookup_url}" target="_blank">NewsLookup</a> | '
-        f'<a href="{azcentral_url}" target="_blank">AZ Central</a>'
-    )
+    headline = f"{topic.replace('-', ' ').title()}: {matched[0].title() if matched else ''} at {location}"
 
-    suggestion["pitch"] = "<br>".join(narrative_parts)
+    # ── Narrative pitch HTML ──
+    parts = [f'<span class="badge bg-{"danger" if score >= 30 else "warning" if score >= 15 else "secondary"}">Impact {score}</span>']
+    for kw in matched[:3]:
+        parts.append(f'<span class="badge bg-info text-dark me-1">{kw}</span>')
+    parts.append('<br>')
+    parts.append(f'<strong>Why it matters:</strong> {angle}')
+    if meeting_date: parts.append(f'<strong>When:</strong> {meeting_date}')
+    parts.append(f'<strong>Where:</strong> {location}')
+    if title: parts.append(f'<strong>Item:</strong> &ldquo;{title}&rdquo;')
+    parts.append(f'<strong>Suggested headline:</strong> {headline}')
+    parts.append(f'<a href="{ddg_url}" target="_blank">DuckDuckGo News</a> | <a href="{newslookup_url}" target="_blank">NewsLookup</a> | <a href="{azcentral_url}" target="_blank">AZ Central</a>')
+
+    suggestion["pitch"] = "<br>".join(parts)
     suggestion["headline"] = headline
     suggestion["location"] = location
     suggestion["angle"] = angle
     suggestion["ddg_url"] = ddg_url
     suggestion["azcentral_url"] = azcentral_url
     suggestion["newslookup_url"] = newslookup_url
+
+    editorial_notes = []
+    if score >= 30:
+        editorial_notes.append("High-impact item — consider front-page feature.")
+    if topic in ("bonds-finance", "policy-planning"):
+        editorial_notes.append("Policy/finance story — may benefit from context about past actions.")
+    if dollar_matches:
+        editorial_notes.append(f"Dollar figures: {', '.join(dollar_matches[:3])}. Verify against meeting docs.")
+    suggestion["editorial_notes"] = editorial_notes
+
     return suggestion
 
 
@@ -639,6 +658,69 @@ def dismiss_suggestion():
     session.close()
     flash("Suggestion dismissed.", "success")
     return redirect(url_for("admin.suggestions"))
+
+
+@admin_bp.route("/suggestions/draft", methods=["POST"])
+@login_required
+def draft_from_suggestion():
+    """Generate a full draft article from a suggestion and redirect to edit."""
+    session = get_session()
+    body_code = request.form.get("body", "")
+    meeting_id = request.form.get("meeting_id", "")
+    item_number = request.form.get("agenda_item_number", "")
+    topic = request.form.get("topic", "")
+    source_url = request.form.get("source_url", "")
+
+    # Look up the agenda item for full text
+    from db.models import AgendaItem, Meeting
+    from sqlalchemy import and_
+    item = session.execute(
+        select(AgendaItem)
+        .join(Meeting, and_(Meeting.meeting_id == AgendaItem.meeting_id,
+                           Meeting.body == AgendaItem.body))
+        .where(AgendaItem.body == body_code)
+        .where(AgendaItem.meeting_id == meeting_id)
+        .where(AgendaItem.agenda_item_number == item_number)
+        .limit(1)
+    ).scalar_one_or_none()
+
+    title = (item.agenda_item_title or "Untitled")[:120] if item else "Untitled"
+    item_text = (item.agenda_item_text or "")[:2000] if item else ""
+
+    # Generate draft body from the agenda item text
+    from datetime import date
+    draft_body = f"**Background**\n\nThe {body_code} considered this item recently.\n\n**Details**\n\n{item_text}\n\n**What's Next**\n\nThis item was on the agenda. Check the meeting page for the outcome."
+    draft_summary = title[:200]
+
+    # Create the draft article
+    article = Article(
+        title=title,
+        slug=_slugify(title),
+        summary=draft_summary,
+        body=draft_body,
+        status="draft",
+        author_id=current_user.id,
+    )
+    session.add(article)
+    session.flush()
+
+    # Attach source
+    if source_url:
+        src = ArticleSource(
+            article_id=article.id,
+            body=body_code,
+            meeting_id=meeting_id,
+            agenda_item_number=item_number,
+            source_url=source_url,
+        )
+        session.add(src)
+
+    session.commit()
+    sync_article_fts(article.id)
+    session.close()
+
+    flash("Draft created from suggestion. Edit, add sources, and publish.", "success")
+    return redirect(url_for("admin.article_edit", article_id=article.id))
 
 
 @admin_bp.route("/suggestions/split", methods=["POST"])

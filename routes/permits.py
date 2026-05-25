@@ -8,7 +8,30 @@ from flask import Blueprint, render_template, request, jsonify, redirect
 from sqlalchemy import cast, Float, func, select, text, text as _sa_text
 
 from db import get_session, Jurisdiction, PublicBody, Permit, PermitReport
-from routes import _cache
+# Separate permit cache — in-memory dict, not shared with Flask-Caching
+_PERMIT_PAGE_CACHE: dict[str, tuple[str, float]] = {}
+import time as _time
+
+# Permit-specific cache decorator (no filesystem I/O, separate from main app cache)
+def _permits_cache(fn):
+    """In-memory cache for permit pages. 7-day TTL. Separated from the main
+    Flask-Caching filesystem so clearing one doesn't affect the other."""
+    from functools import wraps
+    @wraps(fn)
+    def _wrapper(*args, **kwargs):
+        from flask import request
+        key = request.full_path or request.path
+        now = _time.time()
+        if key in _PERMIT_PAGE_CACHE:
+            html, expires = _PERMIT_PAGE_CACHE[key]
+            if now < expires:
+                return html
+        result = fn(*args, **kwargs)
+        # Only cache successful responses
+        if isinstance(result, str) or (hasattr(result, 'status_code') and result.status_code == 200):
+            _PERMIT_PAGE_CACHE[key] = (result, now + 604800)  # 7 days
+        return result
+    return _wrapper
 
 log = logging.getLogger(__name__)
 
@@ -58,7 +81,7 @@ def _get_cached_jurisdictions(session):
 
 permits_bp = Blueprint("permits", __name__, url_prefix="")
 @permits_bp.route("/permits")
-@_cache(timeout=604800, query_string=True)  # 7 days — invalidated on sync
+@_permits_cache
 def permits_index():
     """Permit overview — aggregate summaries by default, raw list on request."""
     session = get_session()
