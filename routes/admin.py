@@ -101,8 +101,9 @@ _ANGLE_TEMPLATES = {
 
 
 def _generate_pitch(suggestion: dict) -> dict:
-    """Generate a narrative pitch for a suggested story."""
+    """Generate a narrative pitch, score by impact, and produce a full draft body."""
     import urllib.parse
+    import re as _re
 
     topic = suggestion["topic"]
     title = suggestion["title"]
@@ -140,8 +141,9 @@ def _generate_pitch(suggestion: dict) -> dict:
 
     # Build news search URLs
     search_terms = f"{location} {topic.replace('-', ' ')} {matched[0] if matched else ''}"
-    news_url = f"https://news.google.com/search?q={urllib.parse.quote(search_terms)}&hl=en-US&gl=US&ceid=US:en"
+    ddg_url = f"https://duckduckgo.com/?q={urllib.parse.quote(search_terms)}&ia=news"
     azcentral_url = f"https://www.azcentral.com/search/?q={urllib.parse.quote(search_terms)}"
+    newslookup_url = f"https://newslookup.com/results?q={urllib.parse.quote(search_terms)}"
 
     # Write a brief narrative as HTML (not markdown — templates render raw)
     narrative_parts = []
@@ -157,7 +159,8 @@ def _generate_pitch(suggestion: dict) -> dict:
     narrative_parts.append(f'<strong>Suggested headline:</strong> {headline}')
     narrative_parts.append(
         f'<strong>Check outside coverage:</strong> '
-        f'<a href="{news_url}" target="_blank">Google News</a> | '
+        f'<a href="{ddg_url}" target="_blank">DuckDuckGo News</a> | '
+        f'<a href="{newslookup_url}" target="_blank">NewsLookup</a> | '
         f'<a href="{azcentral_url}" target="_blank">AZ Central</a>'
     )
 
@@ -165,8 +168,9 @@ def _generate_pitch(suggestion: dict) -> dict:
     suggestion["headline"] = headline
     suggestion["location"] = location
     suggestion["angle"] = angle
-    suggestion["news_search_url"] = news_url
+    suggestion["ddg_url"] = ddg_url
     suggestion["azcentral_url"] = azcentral_url
+    suggestion["newslookup_url"] = newslookup_url
     return suggestion
 
 
@@ -175,6 +179,27 @@ def _generate_pitch(suggestion: dict) -> dict:
 def suggestions():
     """Scan agenda items for newsworthy topics and return AI-generated pitch suggestions."""
     session = get_db_session()
+
+    jurisdiction_filter = request.args.get("jurisdiction", "")
+
+    # Exclude dismissed suggestions
+    from db.newsroom import DismissedSuggestion
+    dismissed = set()
+    dismissed_rows = session.execute(
+        select(DismissedSuggestion)
+    ).scalars().all()
+    for ds in dismissed_rows:
+        dismissed.add((ds.body, ds.meeting_id, ds.agenda_item_number))
+
+    # Build jurisdiction map for filtering
+    _JUR_BODY_PREFIXES = {
+        "maricopa-county": "bos",
+        "tempe": "tempe",
+        "mesa": "mesa",
+        "chandler": "chandler",
+        "gilbert": "gilbert",
+        "scottsdale": "scottsdale",
+    }
 
     # Define interesting topics with keyword patterns
     topics = [
@@ -203,6 +228,8 @@ def suggestions():
     suggestions = []
     seen_combos = set()
 
+    _JUR_PREFIX = _JUR_BODY_PREFIXES.get(jurisdiction_filter, "")
+
     for topic_slug, keywords in topics:
         like_clauses = [AgendaItem.agenda_item_title.ilike(f"%{kw}%")
                         for kw in keywords]
@@ -223,32 +250,31 @@ def suggestions():
                    "-" + func.substr(Meeting.meeting_date, 4, 2),
         )
 
+        # Build filters: keywords OR'd + optional jurisdiction AND
+        _filters = [or_(*like_clauses)]
+        if _JUR_PREFIX:
+            _filters.append(Meeting.body.like(f"{_JUR_PREFIX}%"))
+
         items = session.execute(
             select(AgendaItem, Meeting.meeting_date, Meeting.body)
             .join(Meeting, and_(
                 Meeting.meeting_id == AgendaItem.meeting_id,
                 Meeting.body == AgendaItem.body,
             ))
-            .where(or_(*like_clauses))
+            .where(and_(*_filters))
             .where(Meeting.sync_status == "complete")
             .order_by(desc(_date_expr))
             .limit(30)
         ).all()
 
-        # Spread across jurisdictions — at most 2 per jurisdiction per topic
-        jur_count = {}
         for (item, meeting_date, body), _ in [(r, 0) for r in items]:
-            # Map body code to jurisdiction slug
-            jur = body.split("-")[0] if "-" in body else body
-            jc = jur_count.get(jur, 0)
-            if jc >= 2:
-                continue
-            jur_count[jur] = jc + 1
 
             title = (item.agenda_item_title or "")[:120]
             text = (item.agenda_item_text or "")[:300]
             key = (item.meeting_id, item.agenda_item_number)
             if key in seen_combos:
+                continue
+            if key in dismissed:
                 continue
             seen_combos.add(key)
 
@@ -270,27 +296,141 @@ def suggestions():
             }
             suggestions.append(_generate_pitch(suggestion))
 
+    # ── High-significance signal search ──
+    # Prioritize items the keyword approach misses: bonds, comp plans, large-dollar,
+    # irrigation districts, homelessness service bundles, and policy frameworks.
+    _SIGNAL_PATTERNS = {
+        "bonds-finance": ["bond", "revenue", "financing", "appropriation",
+                          "not to exceed $", "allocation", "budget",
+                          "multifamily housing revenue"],
+        "policy-planning": ["comprehensive plan", "framework 2040", "framework",
+                            "general plan", "annual action plan",
+                            "master plan", "area plan"],
+        "infrastructure": ["irrigation water delivery", "water delivery district",
+                           "road abandonment", "road file",
+                           "hearing for the proposed", "setting of hearing"],
+        "homelessness": ["homeless", "shelter", "rapid rehousing",
+                         "emergency shelter", "homelessness outreach"],
+        "development-pipeline": ["preliminary development plan", "preliminary plat",
+                                 "subdivision", "planned area development",
+                                 "development plan review"],
+        "annexation": ["annex", "pre-annexation", "county island"],
+        "enforcement-signals": ["litigation", "violation", "code", "citation",
+                                "penalty", "cease", "desist"],
+    }
+
+    for signal_slug, signal_kws in _SIGNAL_PATTERNS.items():
+        signal_likes = [AgendaItem.agenda_item_title.ilike(f"%{kw}%") for kw in signal_kws]
+        signal_likes += [AgendaItem.agenda_item_text.ilike(f"%{kw}%") for kw in signal_kws]
+
+        _signal_filter = [or_(*signal_likes)]
+        if _JUR_PREFIX:
+            _signal_filter.append(Meeting.body.like(f"{_JUR_PREFIX}%"))
+
+        signal_items = session.execute(
+            select(AgendaItem, Meeting.meeting_date, Meeting.body)
+            .join(Meeting, and_(
+                Meeting.meeting_id == AgendaItem.meeting_id,
+                Meeting.body == AgendaItem.body,
+            ))
+            .where(and_(*_signal_filter))
+            .where(Meeting.sync_status == "complete")
+            .order_by(desc(_date_expr))
+            .limit(20)
+        ).all()
+
+        session_count = {}
+        for (item, meeting_date, body), _ in [(r, 0) for r in signal_items]:
+            key = (item.meeting_id, item.agenda_item_number)
+            if key in seen_combos:
+                continue
+            if key in dismissed:
+                continue
+            seen_combos.add(key)
+
+            title = (item.agenda_item_title or "")[:120]
+            # Give signal items a higher weight by matching their keywords
+            matched = [kw for kw in signal_kws if kw in title.lower() or
+                       (item.agenda_item_text or "").lower().count(kw) > 0]
+
+            sug = {
+                "topic": signal_slug,
+                "agenda_item_id": item.id,
+                "body": body,
+                "meeting_id": item.meeting_id,
+                "meeting_date": meeting_date,
+                "agenda_item_number": item.agenda_item_number,
+                "title": title,
+                "text": (item.agenda_item_text or "")[:300],
+                "matched_keywords": matched[:5],
+                "source_url": item.source_url,
+            }
+            suggestions.append(_generate_pitch(sug))
+
+    # ── Explicit high-value items that signal patterns may miss ──
+    _HIGH_VALUE_SEARCHES = [
+        ("bonds-finance", ["bond", "multifamily housing revenue", "not to exceed"]),
+        ("policy-planning", ["comprehensive plan", "framework 2040", "annual action plan"]),
+        ("infrastructure", ["irrigation water delivery", "hearing for the proposed",
+                           "road file", "palomino acres"]),
+    ]
+    for hv_topic, hv_kws in _HIGH_VALUE_SEARCHES:
+        hv_likes = [AgendaItem.agenda_item_title.ilike(f"%{kw}%") for kw in hv_kws]
+        hv_filter = [or_(*hv_likes)]
+        if _JUR_PREFIX:
+            hv_filter.append(Meeting.body.like(f"{_JUR_PREFIX}%"))
+
+        try:
+            hv_items = session.execute(
+                select(AgendaItem, Meeting.meeting_date, Meeting.body)
+                .join(Meeting, and_(
+                    Meeting.meeting_id == AgendaItem.meeting_id,
+                    Meeting.body == AgendaItem.body,
+                ))
+                .where(and_(*hv_filter))
+                .where(Meeting.sync_status == "complete")
+                .order_by(desc(Meeting.meeting_date))
+                .limit(10)
+            ).all()
+            for (item, meeting_date, body), _ in [(r, 0) for r in hv_items]:
+                key = (item.meeting_id, item.agenda_item_number)
+                if key in seen_combos:
+                    continue
+                seen_combos.add(key)
+                title = (item.agenda_item_title or "")[:120]
+                matched = [kw for kw in hv_kws if kw in title.lower() or
+                           (item.agenda_item_text or "").lower().count(kw) > 0]
+                sug = {
+                    "topic": hv_topic, "agenda_item_id": item.id,
+                    "body": body, "meeting_id": item.meeting_id,
+                    "meeting_date": meeting_date,
+                    "agenda_item_number": item.agenda_item_number,
+                    "title": title, "text": (item.agenda_item_text or "")[:300],
+                    "matched_keywords": matched[:5],
+                    "source_url": item.source_url,
+                }
+                suggestions.append(_generate_pitch(sug))
+        except Exception as e:
+            log.warning("High-value search failed for %s: %s", hv_topic, e)
+
     session.close()
 
-    # Ensure jurisdiction diversity — cap at 5 suggestions per jurisdiction
-    jur_slot_count = {}
-    balanced = []
-    for s in suggestions:
-        jur = s["body"].split("-")[0] if "-" in s["body"] else s["body"]
-        jc = jur_slot_count.get(jur, 0)
-        if jc >= 5:
-            continue
-        jur_slot_count[jur] = jc + 1
-        balanced.append(s)
+    # Sort: signal topics first, then keyword-matched, by date
+    def _sort_key(s):
+        priority = 0 if s["topic"] in _SIGNAL_PATTERNS else 1
+        return (priority, s.get("meeting_date", "") or "")
+    suggestions.sort(key=_sort_key, reverse=True)
 
-    # Group by topic for display
+    # Group by topic for display (no jurisdiction cap — let a thousand flowers bloom)
     grouped = {}
-    for s in balanced:
+    for s in suggestions:
         grouped.setdefault(s["topic"], []).append(s)
 
+    # Remove jurisdiction fairness cap — let a thousand flowers bloom
     tags = get_session().execute(select(Tag).order_by(Tag.name)).scalars().all()
     return render_template(
         "admin/suggestions.html", grouped=grouped, tags=tags,
+        filter_jurisdiction=jurisdiction_filter,
     )
 
 
@@ -477,6 +617,58 @@ def article_archive(article_id):
         session.commit()
     session.close()
     return redirect(url_for("admin.dashboard"))
+
+
+# ── Suggestion Dismissal ──
+
+@admin_bp.route("/suggestions/dismiss", methods=["POST"])
+@login_required
+def dismiss_suggestion():
+    """Dismiss a story suggestion so it doesn't reappear."""
+    from db.newsroom import DismissedSuggestion
+    session = get_session()
+    ds = DismissedSuggestion(
+        body=request.form.get("body", ""),
+        meeting_id=request.form.get("meeting_id", ""),
+        agenda_item_number=request.form.get("agenda_item_number", ""),
+        reason=request.form.get("reason", "dismissed"),
+        dismissed_by=current_user.id,
+    )
+    session.add(ds)
+    session.commit()
+    session.close()
+    flash("Suggestion dismissed.", "success")
+    return redirect(url_for("admin.suggestions"))
+
+
+@admin_bp.route("/suggestions/split", methods=["POST"])
+@login_required
+def split_suggestion():
+    """Create a parent article placeholder for a multi-part story."""
+    from db.newsroom import DismissedSuggestion
+    session = get_session()
+    parent = Article(
+        title=request.form.get("title", "Multi-part story").strip(),
+        slug=_slugify(request.form.get("title", "multi-part-story")),
+        summary="A series of related stories on this topic.",
+        status="draft",
+        author_id=current_user.id,
+    )
+    session.add(parent)
+    session.commit()
+    # Mark the original suggestion as dismissed with a split reason
+    ds = DismissedSuggestion(
+        body=request.form.get("body", ""),
+        meeting_id=request.form.get("meeting_id", ""),
+        agenda_item_number=request.form.get("agenda_item_number", ""),
+        reason="split",
+        dismissed_by=current_user.id,
+    )
+    session.add(ds)
+    session.commit()
+    session.close()
+    flash(f"Parent article created. Sub-articles can be added.", "success")
+    return redirect(url_for("admin.article_edit", article_id=parent.id))
 
 
 # ── Tag Management ──

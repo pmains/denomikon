@@ -2,38 +2,69 @@
 {% block title %}AI Story Suggestions — Poliscopic{% endblock %}
 {% block content %}
 <h1 class="mb-3">AI Story Suggestions</h1>
-<p class="text-muted">Agenda items matching newsworthy topics, with narrative pitches. Click "Write story" to create a draft article pre-populated with the source.</p>
+<div class="d-flex justify-content-between align-items-start mb-3">
+  <p class="text-muted mb-0">Ranked by impact. Click "Write story" to draft, "Dismiss" to hide, or "Split" to create a multi-part series.</p>
+  <form method="GET" class="d-flex gap-2">
+    <select name="jurisdiction" class="form-select form-select-sm" style="max-width:200px" onchange="this.form.submit()">
+      <option value="">All jurisdictions</option>
+      <option value="maricopa-county" {% if filter_jurisdiction == 'maricopa-county' %}selected{% endif %}>Maricopa County</option>
+      <option value="tempe" {% if filter_jurisdiction == 'tempe' %}selected{% endif %}>Tempe</option>
+      <option value="mesa" {% if filter_jurisdiction == 'mesa' %}selected{% endif %}>Mesa</option>
+      <option value="chandler" {% if filter_jurisdiction == 'chandler' %}selected{% endif %}>Chandler</option>
+      <option value="gilbert" {% if filter_jurisdiction == 'gilbert' %}selected{% endif %}>Gilbert</option>
+      <option value="scottsdale" {% if filter_jurisdiction == 'scottsdale' %}selected{% endif %}>Scottsdale</option>
+    </select>
+    <noscript><button class="btn btn-sm btn-outline-primary">Filter</button></noscript>
+  </form>
+</div>
+
+{% set signal_topics = ['bonds-finance','policy-planning','infrastructure','homelessness','development-pipeline','annexation','enforcement-signals'] %}
 
 {% for topic, items in grouped.items() %}
   {% if items %}
   <div class="card mb-3">
     <div class="card-header d-flex justify-content-between align-items-center">
-      <strong>{{ topic|replace('-', ' ')|title }}</strong>
-      <span class="badge bg-secondary">{{ items|length }}</span>
+      {% set label = {'bonds-finance':'Bonds & Finance','policy-planning':'Policy & Planning','infrastructure':'Infrastructure Signals','homelessness':'Homelessness','development-pipeline':'Dev Pipeline','annexation':'Annexation','enforcement-signals':'Enforcement Signals'}.get(topic, topic|replace('-',' ')|title) %}
+      <strong>{{ label }}</strong>
+      {% if topic in signal_topics %}<span class="badge bg-danger ms-1">Signal</span>{% endif %}
+      <span class="badge bg-secondary ms-auto">{{ items|length }}</span>
     </div>
     <div class="list-group list-group-flush">
       {% for item in items %}
+      {% set score = item.score|default(0)|int %}
       <div class="list-group-item">
         <div class="d-flex justify-content-between align-items-start">
           <div style="flex:1">
-            <strong>{{ item.headline }}</strong>
-            <br>
-            <small class="text-muted">
-              {{ item.body }} · {{ item.meeting_date }} · Item {{ item.agenda_item_number }}
-            </small>
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <span class="badge bg-{% if score >= 30 %}danger{% elif score >= 15 %}warning{% else %}secondary{% endif %}">Impact {{ score }}</span>
+              <small class="text-muted">{{ item.body }} · {{ item.meeting_date }} · Item {{ item.agenda_item_number }}</small>
+            </div>
+            <div><strong>{{ item.headline }}</strong></div>
             {% if item.matched_keywords %}
-            <br>
-            {% for kw in item.matched_keywords %}
-              <span class="badge bg-info text-dark">{{ kw }}</span>
-            {% endfor %}
+            <div>
+              {% for kw in item.matched_keywords %}<span class="badge bg-info text-dark me-1">{{ kw }}</span>{% endfor %}
+            </div>
             {% endif %}
             {% if item.pitch %}
             <div class="mt-2 p-2 bg-light rounded" style="font-size:0.9em">{{ item.pitch|safe }}</div>
             {% endif %}
           </div>
-          <div class="d-flex flex-column gap-1 ms-2" style="min-width:100px">
-            <a href="/admin/articles/new?topic={{ topic }}&body={{ item.body }}&meeting_id={{ item.meeting_id }}&agenda_item_number={{ item.agenda_item_number }}&source_url={{ item.source_url | urlencode }}" class="btn btn-sm btn-outline-primary">Write story</a>
-            <a href="/meetings/{{ item.body }}/{{ item.meeting_id }}" class="btn btn-sm btn-outline-secondary" target="_blank">View meeting</a>
+          <div class="d-flex flex-column gap-1 ms-2" style="min-width:110px">
+            <a href="/admin/articles/new?topic={{ topic }}&body={{ item.body }}&meeting_id={{ item.meeting_id }}&agenda_item_number={{ item.agenda_item_number }}&source_url={{ item.source_url | urlencode }}" class="btn btn-sm btn-primary">Write story</a>
+            <form method="POST" action="/admin/suggestions/dismiss" class="d-inline">
+              <input type="hidden" name="body" value="{{ item.body }}">
+              <input type="hidden" name="meeting_id" value="{{ item.meeting_id }}">
+              <input type="hidden" name="agenda_item_number" value="{{ item.agenda_item_number }}">
+              <button class="btn btn-sm btn-outline-secondary w-100" onclick="return confirm('Dismiss this suggestion?')">Dismiss</button>
+            </form>
+            <form method="POST" action="/admin/suggestions/split" class="d-inline">
+              <input type="hidden" name="body" value="{{ item.body }}">
+              <input type="hidden" name="meeting_id" value="{{ item.meeting_id }}">
+              <input type="hidden" name="agenda_item_number" value="{{ item.agenda_item_number }}">
+              <input type="hidden" name="title" value="{{ item.headline[:100] }}">
+              <button class="btn btn-sm btn-outline-info w-100" onclick="return confirm('Create a multi-part series from this?')">Split</button>
+            </form>
+            <a href="/meetings/{{ item.body }}/{{ item.meeting_id }}" class="btn btn-sm btn-outline-secondary" target="_blank">Meeting</a>
           </div>
         </div>
       </div>

@@ -97,6 +97,21 @@ class ArticleSource(Base):
     source_type = Column(String(32), nullable=False, default="agenda")
 
 
+# ── Dismissed Suggestions ──
+
+class DismissedSuggestion(Base):
+    __tablename__ = "dismissed_suggestions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    body = Column(String(16), nullable=False, default="")
+    meeting_id = Column(String(32), nullable=False, default="")
+    agenda_item_number = Column(String(32), nullable=False, default="")
+    reason = Column(String(32), nullable=False, default="dismissed")
+    dismissed_by = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    dismissed_at = Column(DateTime(timezone=True), nullable=False,
+                          default=lambda: datetime.now(timezone.utc))
+
+
 # ── FTS Setup ──
 
 FTS_TABLES = {}
@@ -107,22 +122,18 @@ def init_fts():
     engine = get_engine()
     conn = engine.raw_connection()
 
-    # Articles FTS
+    # Articles FTS (standalone — no content-sync, tags are in association table)
     conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS articles_fts USING fts5(
             title, summary, body, tags,
-            content='articles',
-            content_rowid='id',
             tokenize='porter unicode61'
         )
     """)
 
-    # Agenda items FTS
+    # Agenda items FTS (standalone)
     conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS agenda_items_fts USING fts5(
             agenda_item_title, agenda_item_text,
-            content='agenda_items',
-            content_rowid='id',
             tokenize='porter unicode61'
         )
     """)
@@ -168,7 +179,7 @@ def search_agenda_items(query: str, limit: int = 50) -> list[dict]:
     conn = engine.raw_connection()
     try:
         rows = conn.execute(
-            """SELECT a.id, a.body, a.meeting_id, a.agenda_item_number,
+            """SELECT f.rowid, a.body, a.meeting_id, a.agenda_item_number,
                       a.agenda_item_title, a.agenda_item_text,
                       a.source_url,
                       rank
@@ -225,7 +236,7 @@ def init_newsroom_db():
     """Create all newsroom tables."""
     Base.metadata.create_all(get_engine(), tables=[
         AdminUser.__table__, Tag.__table__, Article.__table__,
-        ArticleSource.__table__, article_tags,
+        ArticleSource.__table__, article_tags, DismissedSuggestion.__table__,
     ])
     init_fts()
 
