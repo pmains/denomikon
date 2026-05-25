@@ -102,6 +102,8 @@ _ANGLE_TEMPLATES = {
 
 def _generate_pitch(suggestion: dict) -> dict:
     """Generate a narrative pitch for a suggested story."""
+    import urllib.parse
+
     topic = suggestion["topic"]
     title = suggestion["title"]
     body = suggestion["body"]
@@ -136,6 +138,11 @@ def _generate_pitch(suggestion: dict) -> dict:
         headline += matched[0].title() + " "
     headline += f"Item at {location}"
 
+    # Build news search URLs
+    search_terms = f"{location} {topic.replace('-', ' ')} {matched[0] if matched else ''}"
+    news_url = f"https://news.google.com/search?q={urllib.parse.quote(search_terms)}&hl=en-US&gl=US&ceid=US:en"
+    azcentral_url = f"https://www.azcentral.com/search/?q={urllib.parse.quote(search_terms)}"
+
     # Write a brief narrative
     narrative_parts = []
     narrative_parts.append(f"**Why it matters:** {angle}")
@@ -148,11 +155,14 @@ def _generate_pitch(suggestion: dict) -> dict:
     if title:
         narrative_parts.append(f"**Item:** \"{title}\"")
     narrative_parts.append(f"**Suggested headline:** {headline}")
+    narrative_parts.append(f"**Check outside coverage:** [Google News]({news_url}) | [AZ Central]({azcentral_url})")
 
     suggestion["pitch"] = "\n\n".join(narrative_parts)
     suggestion["headline"] = headline
     suggestion["location"] = location
     suggestion["angle"] = angle
+    suggestion["news_search_url"] = news_url
+    suggestion["azcentral_url"] = azcentral_url
     return suggestion
 
 
@@ -195,6 +205,20 @@ def suggestions():
         like_clauses += [AgendaItem.agenda_item_text.ilike(f"%{kw}%")
                          for kw in keywords]
 
+        # Use a date-sortable expression: convert all date formats to ISO
+        # Chandler uses "September 17, 2025" which sorts above ISO dates lexicographically.
+        from sqlalchemy import case as sa_case, literal_column as _L
+        _date_expr = sa_case(
+            (Meeting.meeting_date.like("____-__-__"), Meeting.meeting_date),
+            (Meeting.meeting_date.like("%/%"),
+             func.substr(Meeting.meeting_date, -4) + "-" +
+             func.substr(Meeting.meeting_date, 1, 2) + "-" +
+             func.substr(Meeting.meeting_date, 4, 2)),
+            else_=func.substr(Meeting.meeting_date, -4) + 
+                   "-" + func.substr(Meeting.meeting_date, 1, 2) +
+                   "-" + func.substr(Meeting.meeting_date, 4, 2),
+        )
+
         items = session.execute(
             select(AgendaItem, Meeting.meeting_date, Meeting.body)
             .join(Meeting, and_(
@@ -203,11 +227,20 @@ def suggestions():
             ))
             .where(or_(*like_clauses))
             .where(Meeting.sync_status == "complete")
-            .order_by(desc(Meeting.meeting_date))
-            .limit(5)
+            .order_by(desc(_date_expr))
+            .limit(30)
         ).all()
 
+        # Spread across jurisdictions — at most 2 per jurisdiction per topic
+        jur_count = {}
         for (item, meeting_date, body), _ in [(r, 0) for r in items]:
+            # Map body code to jurisdiction slug
+            jur = body.split("-")[0] if "-" in body else body
+            jc = jur_count.get(jur, 0)
+            if jc >= 2:
+                continue
+            jur_count[jur] = jc + 1
+
             title = (item.agenda_item_title or "")[:120]
             text = (item.agenda_item_text or "")[:300]
             key = (item.meeting_id, item.agenda_item_number)
@@ -235,9 +268,20 @@ def suggestions():
 
     session.close()
 
+    # Ensure jurisdiction diversity — cap at 5 suggestions per jurisdiction
+    jur_slot_count = {}
+    balanced = []
+    for s in suggestions:
+        jur = s["body"].split("-")[0] if "-" in s["body"] else s["body"]
+        jc = jur_slot_count.get(jur, 0)
+        if jc >= 5:
+            continue
+        jur_slot_count[jur] = jc + 1
+        balanced.append(s)
+
     # Group by topic for display
     grouped = {}
-    for s in suggestions:
+    for s in balanced:
         grouped.setdefault(s["topic"], []).append(s)
 
     tags = get_session().execute(select(Tag).order_by(Tag.name)).scalars().all()
