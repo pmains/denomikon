@@ -22,14 +22,29 @@
             <div class="collapse navbar-collapse">
                 <ul class="navbar-nav ms-auto">
                     <li class="nav-item">
+                        <a class="nav-link" href="/">News</a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link" href="/meetings">Meetings</a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" href="/bodies">Members</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/permits">Permits</a>
+                        <a class="nav-link" href="/search">Search</a>
                     </li>
+                    {% if current_user.is_authenticated %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="/admin">Admin</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/logout">Logout</a>
+                    </li>
+                    {% else %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="/login">Login</a>
+                    </li>
+                    {% endif %}
                 </ul>
             </div>
         </div>

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}{{ article.title }} — Poliscopic{% endblock %}
+{% block content %}
+<div class="mb-3">
+  <a href="/" class="text-decoration-none text-muted">&larr; Back to front page</a>
+</div>
+
+<article>
+  <h1>{{ article.title }}</h1>
+  <p class="text-muted">
+    {% if article.published_at %}
+      Published {{ article.published_at.strftime('%B %d, %Y') }}
+    {% endif %}
+    {% if article.author %}
+      · by {{ article.author.display_name }}
+    {% endif %}
+  </p>
+
+  {% if article.tags %}
+  <div class="mb-3">
+    {% for t in article.tags %}
+    <a href="/articles/tag/{{ t.slug }}" class="badge bg-primary text-decoration-none">{{ t.name }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if article.summary %}
+  <div class="lead mb-4">{{ article.summary }}</div>
+  {% endif %}
+
+  <div class="article-body">
+    {{ article.body|markdown }}
+  </div>
+
+  {% if article.sources %}
+  <div class="mt-4 p-3 bg-light rounded">
+    <h6>Sources</h6>
+    <ul class="mb-0">
+      {% for src in article.sources %}
+      <li>
+        <a href="{{ src.source_url }}" target="_blank" rel="noopener">
+          {% if src.body %}{{ src.body }} · {% endif %}Meeting {{ src.meeting_id }}
+          {% if src.agenda_item_number %}· Item {{ src.agenda_item_number }}{% endif %}
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</article>
+{% endblock %}

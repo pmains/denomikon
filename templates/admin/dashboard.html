@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Admin Dashboard — Poliscopic{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-start mb-3">
+  <h1>Admin Dashboard</h1>
+  <div>
+    <a href="/admin/suggestions" class="btn btn-outline-primary btn-sm">AI Suggestions</a>
+    <a href="/admin/articles/new" class="btn btn-primary btn-sm">New Article</a>
+    <a href="/admin/tags" class="btn btn-outline-secondary btn-sm">Manage Tags</a>
+  </div>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    {% for category, message in messages %}
+      <div class="alert alert-{{ 'danger' if category == 'error' else 'success' }}">{{ message }}</div>
+    {% endfor %}
+  {% endif %}
+{% endwith %}
+
+<ul class="nav nav-tabs mb-3" id="adminTabs" role="tablist">
+  <li class="nav-item" role="presentation">
+    <button class="nav-link active" id="drafts-tab" data-bs-toggle="tab" data-bs-target="#drafts" type="button" role="tab">Drafts ({{ drafts|length }})</button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" id="published-tab" data-bs-toggle="tab" data-bs-target="#published" type="button" role="tab">Published ({{ published|length }})</button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" id="archived-tab" data-bs-toggle="tab" data-bs-target="#archived" type="button" role="tab">Archived ({{ archived|length }})</button>
+  </li>
+</ul>
+
+<div class="tab-content">
+  <div class="tab-pane fade show active" id="drafts" role="tabpanel">
+    {% if drafts %}
+      {% for article in drafts %}
+        <div class="card mb-2">
+          <div class="card-body py-2 d-flex justify-content-between align-items-center">
+            <div>
+              <a href="/admin/articles/{{ article.id }}/edit" class="fw-bold text-decoration-none">{{ article.title }}</a>
+              <small class="text-muted ms-2">{{ article.created_at.strftime('%b %d, %Y') }}</small>
+              {% if article.tags %}
+                {% for t in article.tags %}<span class="badge bg-light text-dark ms-1">{{ t.name }}</span>{% endfor %}
+              {% endif %}
+            </div>
+            <div class="d-flex gap-1">
+              <form method="POST" action="/admin/articles/{{ article.id }}/promote" style="display:inline">
+                <button class="btn btn-sm btn-success">Publish</button>
+              </form>
+              <form method="POST" action="/admin/articles/{{ article.id }}/delete" style="display:inline" onsubmit="return confirm('Delete this article?')">
+                <button class="btn btn-sm btn-outline-danger">Delete</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <p class="text-muted">No drafts yet. <a href="/admin/suggestions">Check AI suggestions</a> to get started.</p>
+    {% endif %}
+  </div>
+
+  <div class="tab-pane fade" id="published" role="tabpanel">
+    {% if published %}
+      {% for article in published %}
+        <div class="card mb-2">
+          <div class="card-body py-2 d-flex justify-content-between align-items-center">
+            <div>
+              <a href="/articles/{{ article.slug }}" class="fw-bold text-decoration-none">{{ article.title }}</a>
+              <small class="text-muted ms-2">{{ article.published_at.strftime('%b %d, %Y') if article.published_at }}</small>
+              {% for t in article.tags %}<span class="badge bg-light text-dark ms-1">{{ t.name }}</span>{% endfor %}
+            </div>
+            <form method="POST" action="/admin/articles/{{ article.id }}/archive" style="display:inline">
+              <button class="btn btn-sm btn-outline-secondary">Archive</button>
+            </form>
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <p class="text-muted">No published articles.</p>
+    {% endif %}
+  </div>
+
+  <div class="tab-pane fade" id="archived" role="tabpanel">
+    {% if archived %}
+      {% for article in archived %}
+        <div class="card mb-2">
+          <div class="card-body py-2 d-flex justify-content-between align-items-center">
+            <div>
+              <a href="/articles/{{ article.slug }}" class="fw-bold text-decoration-none">{{ article.title }}</a>
+              <small class="text-muted ms-2">{{ article.archived_at.strftime('%b %d, %Y') if article.archived_at }}</small>
+              {% for t in article.tags %}<span class="badge bg-light text-dark ms-1">{{ t.name }}</span>{% endfor %}
+            </div>
+            <form method="POST" action="/admin/articles/{{ article.id }}/promote" style="display:inline">
+              <button class="btn btn-sm btn-primary">Re-publish</button>
+            </form>
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <p class="text-muted">No archived articles.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

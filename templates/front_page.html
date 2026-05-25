@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Poliscopic — Government Intelligence{% endblock %}
+{% block content %}
+<div class="row mb-4">
+  <div class="col">
+    <h1 class="mb-0">Poliscopic</h1>
+    <p class="text-muted">Government intelligence for Maricopa County</p>
+  </div>
+</div>
+
+{% if featured %}
+<div class="row mb-4">
+  {% for article in featured %}
+  <div class="col-md-4">
+    <div class="card h-100 border-primary">
+      <div class="card-body">
+        <h5 class="card-title"><a href="/articles/{{ article.slug }}" class="text-decoration-none">{{ article.title }}</a></h5>
+        <p class="card-text small">{{ article.summary[:150] }}{% if article.summary|length > 150 %}…{% endif %}</p>
+        <div>
+          {% for t in article.tags %}
+          <a href="/articles/tag/{{ t.slug }}" class="badge bg-primary text-decoration-none">{{ t.name }}</a>
+          {% endfor %}
+        </div>
+        <small class="text-muted">{{ article.published_at.strftime('%b %d, %Y') if article.published_at }}</small>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if articles %}
+  {% for article in articles %}
+  <div class="card mb-2">
+    <div class="card-body py-2">
+      <div class="d-flex justify-content-between align-items-start">
+        <div>
+          <h5 class="mb-1"><a href="/articles/{{ article.slug }}" class="text-decoration-none">{{ article.title }}</a></h5>
+          <p class="mb-1 small text-muted">{{ article.summary[:200] }}</p>
+          <div class="small">
+            {% for t in article.tags %}
+            <a href="/articles/tag/{{ t.slug }}" class="badge bg-light text-dark text-decoration-none me-1">{{ t.name }}</a>
+            {% endfor %}
+            <span class="text-muted ms-2">{{ article.published_at.strftime('%b %d, %Y') if article.published_at }}</span>
+          </div>
+        </div>
+        {% if article.sources %}
+        <a href="{{ article.sources[0].source_url }}" target="_blank" class="btn btn-sm btn-outline-secondary ms-2" style="white-space:nowrap">Source</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+{% else %}
+  <div class="text-center py-5">
+    <h3 class="text-muted">No stories yet</h3>
+    <p class="text-muted">Check back soon for the latest government intelligence.</p>
+  </div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}{{ tag.name }} — Poliscopic{% endblock %}
+{% block content %}
+<h1 class="mb-3">{{ tag.name }}</h1>
+{% if tag.description %}<p class="text-muted">{{ tag.description }}</p>{% endif %}
+
+{% if articles %}
+  {% for article in articles %}
+  <div class="card mb-2">
+    <div class="card-body py-2">
+      <h5 class="mb-1"><a href="/articles/{{ article.slug }}" class="text-decoration-none">{{ article.title }}</a></h5>
+      <div class="small text-muted">
+        {% for t in article.tags %}
+        <span class="badge bg-light text-dark me-1">{{ t.name }}</span>
+        {% endfor %}
+        {% if article.published_at %}{{ article.published_at.strftime('%b %d, %Y') }}{% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+{% else %}
+  <p class="text-muted">No articles with this tag.</p>
+{% endif %}
+{% endblock %}

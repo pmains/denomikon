@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Manage Tags — Poliscopic{% endblock %}
+{% block content %}
+<h1 class="mb-3">Manage Tags</h1>
+
+<div class="row">
+  <div class="col-md-6">
+    <h5>Existing Tags</h5>
+    <table class="table table-sm">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Articles</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for tag in tags %}
+        <tr>
+          <td>
+            <form method="POST" class="d-flex gap-1" style="display:inline-flex">
+              <input type="hidden" name="action" value="rename">
+              <input type="hidden" name="tag_id" value="{{ tag.id }}">
+              <input type="text" name="name" value="{{ tag.name }}" class="form-control form-control-sm" style="width:140px">
+              <button class="btn btn-sm btn-outline-primary">Rename</button>
+            </form>
+          </td>
+          <td><span class="badge bg-secondary">{{ tag_counts.get(tag.id, 0) }}</span></td>
+          <td>
+            <form method="POST" style="display:inline" onsubmit="return confirm('Delete tag {{ tag.name }}?')">
+              <input type="hidden" name="action" value="delete">
+              <input type="hidden" name="tag_id" value="{{ tag.id }}">
+              <button class="btn btn-sm btn-outline-danger">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="col-md-4 offset-md-1">
+    <h5>Add Tag</h5>
+    <form method="POST">
+      <input type="hidden" name="action" value="add">
+      <div class="mb-2">
+        <input type="text" class="form-control" name="name" placeholder="Tag name" required>
+      </div>
+      <div class="mb-2">
+        <input type="text" class="form-control" name="description" placeholder="Description (optional)">
+      </div>
+      <button class="btn btn-primary btn-sm">Add Tag</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

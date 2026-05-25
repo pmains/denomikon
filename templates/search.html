@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Search — Poliscopic{% endblock %}
+{% block content %}
+<h1 class="mb-3">Search</h1>
+
+<form method="GET" action="/search" class="mb-4">
+  <div class="input-group">
+    <input type="text" class="form-control" name="q" value="{{ q }}" placeholder="Search agendas and articles…" autofocus>
+    <select name="scope" class="form-select" style="max-width:150px">
+      <option value="all" {% if scope == 'all' %}selected{% endif %}>All</option>
+      <option value="articles" {% if scope == 'articles' %}selected{% endif %}>Articles</option>
+      <option value="agendas" {% if scope == 'agendas' %}selected{% endif %}>Agendas</option>
+    </select>
+    <button class="btn btn-primary" type="submit">Search</button>
+  </div>
+</form>
+
+{% if q %}
+  <h5 class="mb-3">Results for "{{ q }}"</h5>
+
+  {% if articles %}
+  <h6>Articles ({{ articles|length }})</h6>
+  {% for article in articles %}
+  <div class="card mb-2">
+    <div class="card-body py-2">
+      <h6 class="mb-1"><a href="/articles/{{ article.slug }}" class="text-decoration-none">{{ article.title }}</a></h6>
+      <p class="mb-0 small text-muted">{{ article.summary[:200] }}</p>
+    </div>
+  </div>
+  {% endfor %}
+  {% endif %}
+
+  {% if agenda_items %}
+  <h6 class="mt-3">Agenda Items ({{ agenda_items|length }})</h6>
+  {% for item in agenda_items %}
+  <div class="card mb-2">
+    <div class="card-body py-2">
+      <div class="d-flex justify-content-between">
+        <div>
+          <h6 class="mb-1"><a href="/meetings/{{ item.body }}/{{ item.meeting_id }}" class="text-decoration-none">{{ item.title }}</a></h6>
+          <p class="mb-0 small text-muted">{{ item.text }}</p>
+          <small class="text-muted">{{ item.body }} · Meeting {{ item.meeting_id }} · Item {{ item.agenda_item_number }}</small>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  {% endif %}
+
+  {% if not articles and not agenda_items %}
+  <p class="text-muted">No results found.</p>
+  {% endif %}
+{% endif %}
+{% endblock %}

@@ -1049,6 +1049,101 @@ async def main() -> int:
 
         return 0
 
+    # ── Mesa sync (via Legistar) ──
+    if args.source == "mesa" and args.sync:
+        import datetime as _dt
+        from db import get_session, init_db, replace_meeting_data_safe
+
+        from scraper.mesa import (
+            search_mesa_meetings,
+            fetch_agenda_items_async,
+            JURISDICTION_ID,
+            PUBLIC_BODY_CODE,
+        )
+
+        init_db()
+
+        body_slugs_str = getattr(args, "bodies", None) or "mesa-city-council"
+        body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
+
+        year_val = getattr(args, "year", None)
+        year = int(year_val) if year_val else _dt.date.today().year
+
+        meetings = search_mesa_meetings(body_slugs=body_slugs, year=year)
+        if not meetings:
+            print("No Mesa meetings found for %d." % year)
+            return 0
+        if args.limit:
+            meetings = meetings[:args.limit]
+        print("Found %d Mesa meeting(s)" % len(meetings))
+
+        from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
+
+        session = get_session()
+        total_items = 0
+        meeting_count = len(meetings)
+
+        for idx, m in enumerate(meetings, 1):
+            meeting_id = m["meeting_id"]
+            meeting_date = m["meeting_date"]
+            body_slug = m.get("body_slug", "mesa-city-council")
+            body_code = "mesa-" + body_slug.replace("mesa-", "")
+            detail_url = m.get("meeting_detail_url", "")
+            # Fall back to agenda_url if no detail URL
+            if not detail_url:
+                detail_url = m.get("agenda_url", "")
+            meeting_type = m.get("meeting_type", "")
+            meeting_title = m.get("body_name", "")
+
+            meeting_dict = {
+                "meeting_id": meeting_id, "meeting_date": meeting_date,
+                "meeting_type": meeting_type, "meeting_title": meeting_title,
+                "source_url": detail_url,
+            }
+
+            try:
+                items = await fetch_agenda_items_async(detail_url, meeting_id, body_code)
+
+                if not items:
+                    print("  [%d/%d] %s %s: no items found" % (idx, meeting_count, meeting_id, meeting_date))
+                    replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
+                    continue
+
+                agenda_item_dicts = []
+                for it in items:
+                    an = it.get("agenda_item_number", "")
+                    agenda_item_dicts.append({
+                        "agenda_item_id": body_code + "-" + meeting_id + "_" + an,
+                        "meeting_id": meeting_id, "agenda_item_number": an,
+                        "agenda_item_title": it.get("agenda_item_title", ""),
+                        "agenda_item_text": it.get("agenda_item_text", ""),
+                        "agenda_item_url": it.get("agenda_item_url", ""),
+                        "vote_or_action": it.get("vote_or_action", ""),
+                        "item_type": it.get("item_type", ""),
+                        "agenda_category": it.get("agenda_category", ""),
+                        "source_body": body_code, "source_url": detail_url,
+                        "c_number": "", "c_number_base": "", "case_number": "",
+                        "sort_order": it.get("sort_order", 0),
+                    })
+
+                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_item_dicts)
+                total_items += len(items)
+
+                ts = _dt.datetime.now().strftime("%H:%M:%S")
+                print("%s [%d/%d] %s %s: %d item(s)" % (ts, idx, meeting_count, meeting_id, meeting_date, len(items)))
+
+            except Exception as e:
+                log.error("Failed to sync Mesa meeting %s: %s", meeting_id, e)
+                try:
+                    update_sync_status(session, body_code, meeting_id, "failed", error=str(e))
+                except Exception:
+                    pass
+
+        session.close()
+        ts = _dt.datetime.now().strftime("%H:%M:%S")
+        print("%s Synced %d Mesa agenda items across %d meeting(s)" % (ts, total_items, meeting_count))
+        return 0
+
     if args.source in ("pz", "adj", "drain", "health", "tab", "ida") and args.sync:
         from db import get_session, init_db, replace_meeting_data_safe
 

@@ -19,9 +19,7 @@ log = logging.getLogger(__name__)
 
 meetings_bp = Blueprint("meetings", __name__, url_prefix="")
 
-@meetings_bp.route("/")
-def index():
-    return render_template("home.html")
+
 
 
 def get_distinct_meeting_types(body=None, jurisdiction=None):

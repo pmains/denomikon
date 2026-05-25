@@ -123,17 +123,60 @@ def create_app():
             log.warning("%s %.1fs", request.path, elapsed)
         return response
 
+    # ── Login manager ────────────────────────────────────────────────────
+    from flask_login import LoginManager
+    from db.newsroom import AdminUser
+
+    login_manager = LoginManager()
+    login_manager.init_app(app)
+    login_manager.login_view = "auth.login"
+
+    @login_manager.user_loader
+    def _load_user(user_id):
+        from db.core import get_session
+        from sqlalchemy import select
+        session = get_session()
+        user = session.get(AdminUser, int(user_id))
+        session.close()
+        return user
+
+    app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key-change-in-production")
+
+    # ── Markdown filter ──────────────────────────────────────────────────
+    import markdown as _md
+
+    @app.template_filter("markdown")
+    def _render_markdown(text):
+        if not text:
+            return ""
+        return _md.markdown(
+            text,
+            extensions=["fenced_code", "tables", "sane_lists"],
+        )
+
+    # ── Initialize newsroom tables ───────────────────────────────────────
+    from db.newsroom import init_newsroom_db, seed_default_tags, seed_default_users
+    init_newsroom_db()
+    seed_default_tags()
+    seed_default_users()
+
     # ── Register blueprints ──────────────────────────────────────────────
     from routes.meetings import meetings_bp
     from routes.bodies import bodies_bp
     from routes.permits import permits_bp
     from routes.members import members_bp
     from routes.codes import codes_bp
+    from routes.auth import auth_bp
+    from routes.admin import admin_bp
+    from routes.articles import articles_bp
 
     app.register_blueprint(meetings_bp)
     app.register_blueprint(bodies_bp)
     app.register_blueprint(permits_bp)
     app.register_blueprint(members_bp)
     app.register_blueprint(codes_bp)
+    app.register_blueprint(auth_bp)
+    app.register_blueprint(admin_bp)
+    app.register_blueprint(articles_bp)
 
     return app

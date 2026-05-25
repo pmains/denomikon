@@ -434,6 +434,7 @@ def _parse_mesa_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--retry-count", type=int, default=3, help="Max retry attempts")
     p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
     p.add_argument("--download", action="store_true", help="Download agenda PDF files")
+    p.add_argument("--persist", action="store_true", default=False, help=argparse.SUPPRESS)
     p.add_argument("--bodies", help="Body slugs to sync (comma-separated), e.g. mesa-city-council,mesa-planning-zoning (default: mesa-city-council)")
     args = p.parse_args(rest)
     if args.date:

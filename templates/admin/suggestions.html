@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}AI Story Suggestions — Poliscopic{% endblock %}
+{% block content %}
+<h1 class="mb-3">AI Story Suggestions</h1>
+<p class="text-muted">Agenda items matching newsworthy topics. Click "Write story" to create a draft article pre-populated with the source.</p>
+
+{% for topic, items in grouped.items() %}
+  {% if items %}
+  <div class="card mb-3">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <strong>{{ topic|replace('-', ' ')|title }}</strong>
+      <span class="badge bg-secondary">{{ items|length }}</span>
+    </div>
+    <div class="list-group list-group-flush">
+      {% for item in items %}
+      <div class="list-group-item">
+        <div class="d-flex justify-content-between align-items-start">
+          <div>
+            <strong>{{ item.title[:100] }}</strong>
+            <br>
+            <small class="text-muted">
+              {{ item.body }} · {{ item.meeting_date }} · Item {{ item.agenda_item_number }}
+            </small>
+            {% if item.matched_keywords %}
+            <br>
+            {% for kw in item.matched_keywords %}
+              <span class="badge bg-info text-dark">{{ kw }}</span>
+            {% endfor %}
+            {% endif %}
+            <p class="mt-1 mb-0 small text-muted">{{ item.text[:200] }}</p>
+          </div>
+          <a href="/admin/articles/new?topic={{ topic }}&body={{ item.body }}&meeting_id={{ item.meeting_id }}&agenda_item_number={{ item.agenda_item_number }}&source_url={{ item.source_url | urlencode }}" class="btn btn-sm btn-outline-primary ms-2" style="white-space:nowrap">Write story</a>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+{% endfor %}
+
+{% if not grouped %}
+<p class="text-muted">No matching agenda items found. Sync more meetings first.</p>
+{% endif %}
+{% endblock %}
