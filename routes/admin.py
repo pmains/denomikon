@@ -143,21 +143,25 @@ def _generate_pitch(suggestion: dict) -> dict:
     news_url = f"https://news.google.com/search?q={urllib.parse.quote(search_terms)}&hl=en-US&gl=US&ceid=US:en"
     azcentral_url = f"https://www.azcentral.com/search/?q={urllib.parse.quote(search_terms)}"
 
-    # Write a brief narrative
+    # Write a brief narrative as HTML (not markdown — templates render raw)
     narrative_parts = []
-    narrative_parts.append(f"**Why it matters:** {angle}")
+    narrative_parts.append(f'<strong>Why it matters:</strong> {angle}')
     if meeting_date:
-        narrative_parts.append(f"**When:** {meeting_date}")
-    narrative_parts.append(f"**Where:** {location}")
+        narrative_parts.append(f'<strong>When:</strong> {meeting_date}')
+    narrative_parts.append(f'<strong>Where:</strong> {location}')
     if matched:
-        kw_str = ", ".join(f"\"{kw}\"" for kw in matched[:4])
-        narrative_parts.append(f"**Keywords matched:** {kw_str}")
+        kw_str = ", ".join(f"&ldquo;{kw}&rdquo;" for kw in matched[:4])
+        narrative_parts.append(f'<strong>Keywords matched:</strong> {kw_str}')
     if title:
-        narrative_parts.append(f"**Item:** \"{title}\"")
-    narrative_parts.append(f"**Suggested headline:** {headline}")
-    narrative_parts.append(f"**Check outside coverage:** [Google News]({news_url}) | [AZ Central]({azcentral_url})")
+        narrative_parts.append(f'<strong>Item:</strong> &ldquo;{title}&rdquo;')
+    narrative_parts.append(f'<strong>Suggested headline:</strong> {headline}')
+    narrative_parts.append(
+        f'<strong>Check outside coverage:</strong> '
+        f'<a href="{news_url}" target="_blank">Google News</a> | '
+        f'<a href="{azcentral_url}" target="_blank">AZ Central</a>'
+    )
 
-    suggestion["pitch"] = "\n\n".join(narrative_parts)
+    suggestion["pitch"] = "<br>".join(narrative_parts)
     suggestion["headline"] = headline
     suggestion["location"] = location
     suggestion["angle"] = angle

@@ -28,7 +28,7 @@
             {% endfor %}
             {% endif %}
             {% if item.pitch %}
-            <div class="mt-2 p-2 bg-light rounded" style="white-space:pre-wrap;font-size:0.9em">{{ item.pitch }}</div>
+            <div class="mt-2 p-2 bg-light rounded" style="font-size:0.9em">{{ item.pitch|safe }}</div>
             {% endif %}
           </div>
           <div class="d-flex flex-column gap-1 ms-2" style="min-width:100px">
