@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Notifications — Poliscopic{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1>Notifications</h1>
+  <form method="POST" action="/admin/notifications/mark-read" style="display:inline">
+    <button type="submit" class="btn btn-outline-secondary btn-sm">Mark all as read</button>
+  </form>
+</div>
+
+{% if notifications %}
+<ul class="list-group">
+  {% for n in notifications %}
+  <li class="list-group-item d-flex justify-content-between align-items-start {% if not n.is_read %}list-group-item-info{% endif %}">
+    <div class="ms-2 me-auto">
+      <div class="fw-bold">
+        {% if n.article_id %}
+          <a href="/admin/articles/{{ n.article_id }}/edit">{{ n.message }}</a>
+        {% elif n.url %}
+          <a href="{{ n.url }}">{{ n.message }}</a>
+        {% else %}
+          {{ n.message }}
+        {% endif %}
+      </div>
+      <small class="text-muted">{{ n.created_at.strftime('%B %d, %Y at %I:%M %p %Z') }}</small>
+      {% if not n.is_read %}<span class="badge bg-primary ms-2">New</span>{% endif %}
+    </div>
+    <form method="POST" action="/admin/notifications/{{ n.id }}/delete" style="display:inline">
+      <button type="submit" class="btn-close" aria-label="Dismiss"></button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="text-muted">No notifications yet.</p>
+{% endif %}
+{% endblock %}

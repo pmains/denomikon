@@ -71,6 +71,19 @@ def get_distinct_meeting_types(body=None, jurisdiction=None):
             "chandler-boa": "chandler-boa", "chandler board of adjustment": "chandler-boa",
             "chandler-hpc": "chandler-hpc", "chandler historic preservation": "chandler-hpc",
             # Gilbert bodies (OnBase)
+            # Peoria bodies (NovusAgenda)
+            # Glendale bodies (AgendaQuick)
+            "glendale-cc": "glendale-cc", "glendale city council": "glendale-cc",
+            "glendale-pc": "glendale-pc", "glendale planning commission": "glendale-pc",
+            "glendale-boa": "glendale-boa", "glendale board of adjustment": "glendale-boa",
+            # Surprise bodies (CivicClerk)
+            "surprise-cc": "surprise-cc", "surprise city council": "surprise-cc",
+            "surprise-pz": "surprise-pz", "surprise planning and zoning": "surprise-pz",
+            "peoria-cc": "peoria-cc", "peoria city council": "peoria-cc",
+            "peoria-pz": "peoria-pz", "peoria planning": "peoria-pz", "peoria-planning-and-zoning-commission": "peoria-pz",
+            "peoria-boa": "peoria-boa", "peoria board of adjustment": "peoria-boa", "peoria-board-of-adjustment": "peoria-boa",
+            "peoria-sub": "peoria-sub", "peoria subcommittee": "peoria-sub", "peoria-subcommittee-meeting": "peoria-sub",
+
             "gilbert-tc": "gilbert-tc", "gilbert town council": "gilbert-tc",
             # Scottsdale bodies
             "scottsdale-cc": "scottsdale-cc", "scottsdale city council": "scottsdale-cc",
@@ -145,6 +158,19 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             "chandler-boa": "chandler-boa", "chandler board of adjustment": "chandler-boa",
             "chandler-hpc": "chandler-hpc", "chandler historic preservation": "chandler-hpc",
             # Gilbert bodies (OnBase)
+            # Peoria bodies (NovusAgenda)
+            # Glendale bodies (AgendaQuick)
+            "glendale-cc": "glendale-cc", "glendale city council": "glendale-cc",
+            "glendale-pc": "glendale-pc", "glendale planning commission": "glendale-pc",
+            "glendale-boa": "glendale-boa", "glendale board of adjustment": "glendale-boa",
+            # Surprise bodies (CivicClerk)
+            "surprise-cc": "surprise-cc", "surprise city council": "surprise-cc",
+            "surprise-pz": "surprise-pz", "surprise planning and zoning": "surprise-pz",
+            "peoria-cc": "peoria-cc", "peoria city council": "peoria-cc",
+            "peoria-pz": "peoria-pz", "peoria planning": "peoria-pz", "peoria-planning-and-zoning-commission": "peoria-pz",
+            "peoria-boa": "peoria-boa", "peoria board of adjustment": "peoria-boa", "peoria-board-of-adjustment": "peoria-boa",
+            "peoria-sub": "peoria-sub", "peoria subcommittee": "peoria-sub", "peoria-subcommittee-meeting": "peoria-sub",
+
             "gilbert-tc": "gilbert-tc", "gilbert town council": "gilbert-tc",
             # Scottsdale bodies
             "scottsdale-cc": "scottsdale-cc", "scottsdale city council": "scottsdale-cc",
@@ -212,6 +238,7 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
         is_chandler = body_val.startswith("chandler-")
         is_gilbert = body_val.startswith("gilbert-")
         is_scottsdale = body_val.startswith("scottsdale-")
+        is_peoria = body_val.startswith("peoria-")
         # Derive source label and badge from body value
         if is_tempe:
             source_labels = {
@@ -275,6 +302,28 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
         elif is_gilbert:
             source = "Town Council" if body_val == "gilbert-tc" else "Gilbert"
             source_badge = "dark"
+        elif body_val.startswith("glendale-"):
+            glendale_labels = {
+                "glendale-cc": "City Council",
+                "glendale-pc": "Planning Comm",
+                "glendale-boa": "Board of Adj",
+            }
+            source = glendale_labels.get(body_val, "Glendale")
+            source_badge = "info"
+        elif body_val.startswith("surprise-"):
+            source = "City Council" if body_val == "surprise-cc" else "Surprise"
+            source_badge = "dark"
+
+        elif is_peoria:
+            peoria_labels = {
+                "peoria-cc": "City Council",
+                "peoria-pz": "Planning & Zoning",
+                "peoria-boa": "Board of Adj",
+                "peoria-sub": "Subcommittee",
+            }
+            source = peoria_labels.get(body_val, "Peoria")
+            source_badge = "warning"
+
         elif body_val.startswith("scottsdale-"):
             scottsdale_labels = {
                 "scottsdale-cc": "City Council",
@@ -306,6 +355,15 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
         elif jur_id == 7:
             jur_name = "Scottsdale"
             jur_slug = "scottsdale"
+        elif jur_id == 10:
+            jur_name = "Peoria"
+            jur_slug = "peoria"
+        elif jur_id == 11:
+            jur_name = "Glendale"
+            jur_slug = "glendale"
+        elif jur_id == 12:
+            jur_name = "Surprise"
+            jur_slug = "surprise"
         else:
             jur_name = "Maricopa County"
             jur_slug = "maricopa-county"

@@ -124,6 +124,8 @@ def create_app():
         return response
 
     # ── Login manager ────────────────────────────────────────────────────
+    _disable_admin = os.environ.get("POLISCOPIC_DISABLE_ADMIN", "").lower() in ("true", "1", "yes")
+
     from flask_login import LoginManager
     from db.newsroom import AdminUser
 
@@ -175,8 +177,20 @@ def create_app():
     app.register_blueprint(permits_bp)
     app.register_blueprint(members_bp)
     app.register_blueprint(codes_bp)
-    app.register_blueprint(auth_bp)
-    app.register_blueprint(admin_bp)
     app.register_blueprint(articles_bp)
+
+    # Admin and auth are only registered when admin is enabled
+    if not _disable_admin:
+        app.register_blueprint(auth_bp)
+        app.register_blueprint(admin_bp)
+
+    if _disable_admin:
+        @app.route("/admin")
+        @app.route("/admin/")
+        @app.route("/admin/<path:_path>")
+        @app.route("/login")
+        def _admin_disabled(_path=None):
+            from flask import abort
+            abort(404)
 
     return app

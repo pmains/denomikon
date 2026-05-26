@@ -17,8 +17,15 @@
       </div>
 
       <div class="mb-3">
-        <label for="body" class="form-label">Body (Markdown)</label>
+        <div class="d-flex justify-content-between align-items-center mb-1">
+          <label for="body" class="form-label mb-0">Body (Markdown)</label>
+          <div class="btn-group btn-group-sm" role="group">
+            <button type="button" class="btn btn-outline-secondary active" id="edit-tab" onclick="switchBodyMode('edit')">Edit</button>
+            <button type="button" class="btn btn-outline-secondary" id="preview-tab" onclick="switchBodyMode('preview')">Preview</button>
+          </div>
+        </div>
         <textarea class="form-control" id="body" name="body" rows="15">{{ article.body if article else '' }}</textarea>
+        <div id="body-preview" class="border rounded p-3 bg-light" style="display:none;min-height:300px"></div>
       </div>
     </div>
 
@@ -49,37 +56,115 @@
           </div>
 
           <div class="mb-3">
-            <label class="form-label">Sources</label>
+            <label class="form-label">Sources <small class="text-muted">(only URL + link text needed)</small></label>
             <div id="source-list">
+              {% if existing_sources %}
+                {% for src in existing_sources %}
+                <div class="source-entry mb-2 p-2 border rounded">
+                  <input type="text" class="form-control form-control-sm mb-1" name="source_url[]" placeholder="Source URL (absolute or relative)" value="{{ src.source_url }}">
+                  <input type="text" class="form-control form-control-sm mb-1" name="source_title[]" placeholder="Link text (displayed on article)" value="{{ src.item_title }}">
+                  <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeSource(this)">&times; Remove</button>
+                </div>
+                {% endfor %}
+              {% else %}
               <div class="source-entry mb-2 p-2 border rounded">
-                <input type="text" class="form-control form-control-sm mb-1" name="source_body[]" placeholder="Body code (e.g. bos)" value="{{ source_body or '' }}">
-                <input type="text" class="form-control form-control-sm mb-1" name="source_meeting_id[]" placeholder="Meeting ID" value="{{ source_meeting or '' }}">
-                <input type="text" class="form-control form-control-sm mb-1" name="source_item_number[]" placeholder="Item number" value="{{ source_item or '' }}">
-                <input type="url" class="form-control form-control-sm" name="source_url[]" placeholder="Source URL" value="{{ source_url or '' }}">
+                <input type="text" class="form-control form-control-sm mb-1" name="source_url[]" placeholder="Source URL (absolute or relative)" value="{{ source_url or '' }}">
+                <input type="text" class="form-control form-control-sm mb-1" name="source_title[]" placeholder="Link text (displayed on article)" value="{{ source_title or '' }}">
+                <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeSource(this)">&times; Remove</button>
               </div>
+              {% endif %}
             </div>
-            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addSource()">+ Add source</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary mt-1" onclick="addSource()">+ Add source</button>
           </div>
 
-          <button type="submit" class="btn btn-primary w-100">{% if article %}Update{% else %}Create{% endif %}</button>
+          <div class="mb-3">
+            <button type="button" class="btn btn-outline-info w-100" onclick="previewSources()">Preview Sources</button>
+          </div>
+
+          <div id="article-preview" class="card mb-3" style="display:none">
+            <div class="card-header d-flex justify-content-between align-items-center">
+              <span>Source Preview</span>
+              <button type="button" class="btn-close" onclick="document.getElementById('article-preview').style.display='none'"></button>
+            </div>
+            <div class="card-body article-preview-content"></div>
+          </div>
+
+          <div class="d-grid gap-2">
+            {% if article %}
+            <button type="submit" name="action" value="save" class="btn btn-primary">Update</button>
+            <button type="submit" name="action" value="publish" class="btn btn-success">Publish</button>
+            {% else %}
+            <button type="submit" name="action" value="save" class="btn btn-primary">Create Draft</button>
+            <button type="submit" name="action" value="publish" class="btn btn-success">Create &amp; Publish</button>
+            {% endif %}
+            <a href="/admin" class="btn btn-outline-secondary btn-sm mt-2">&larr; Back to drafts</a>
+          </div>
         </div>
       </div>
     </div>
   </div>
 </form>
 
+<script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
 <script>
 function addSource() {
   var list = document.getElementById('source-list');
   var entry = document.createElement('div');
   entry.className = 'source-entry mb-2 p-2 border rounded';
   entry.innerHTML = `
-    <input type="text" class="form-control form-control-sm mb-1" name="source_body[]" placeholder="Body code (e.g. bos)">
-    <input type="text" class="form-control form-control-sm mb-1" name="source_meeting_id[]" placeholder="Meeting ID">
-    <input type="text" class="form-control form-control-sm mb-1" name="source_item_number[]" placeholder="Item number">
-    <input type="url" class="form-control form-control-sm" name="source_url[]" placeholder="Source URL">
+    <input type="text" class="form-control form-control-sm mb-1" name="source_url[]" placeholder="Source URL (absolute or relative)">
+    <input type="text" class="form-control form-control-sm mb-1" name="source_title[]" placeholder="Link text (displayed on article)">
+    <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeSource(this)">&times; Remove</button>
   `;
   list.appendChild(entry);
+}
+
+function removeSource(btn) {
+  btn.closest('.source-entry').remove();
+}
+
+function previewSources() {
+  var sourceEntries = document.querySelectorAll('#source-list .source-entry');
+  var sourcesHtml = '';
+  sourceEntries.forEach(function(entry) {
+    var url = entry.querySelector('[name^="source_url"]').value;
+    var text = entry.querySelector('[name^="source_title"]').value || url;
+    if (url) {
+      sourcesHtml += '<li><a href="' + url.replace(/&/g,'&amp;').replace(/"/g,'&quot;') + '" target="_blank" rel="noopener">' + text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</a></li>';
+    }
+  });
+
+  var preview = '';
+  if (sourcesHtml) {
+    preview += '<div class="p-3 bg-light rounded"><h6>Sources</h6><ul class="mb-0">' + sourcesHtml + '</ul></div>';
+  } else {
+    preview += '<div class="p-3 bg-light rounded text-muted"><h6>Sources</h6><p class="mb-0">No source URLs added yet.</p></div>';
+  }
+
+  var container = document.getElementById('article-preview');
+  container.querySelector('.article-preview-content').innerHTML = preview;
+  container.style.display = 'block';
+  container.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+function switchBodyMode(mode) {
+  var textarea = document.getElementById('body');
+  var preview = document.getElementById('body-preview');
+  var editTab = document.getElementById('edit-tab');
+  var previewTab = document.getElementById('preview-tab');
+  if (mode === 'preview') {
+    var html = marked.parse(textarea.value);
+    preview.innerHTML = html;
+    textarea.style.display = 'none';
+    preview.style.display = 'block';
+    editTab.classList.remove('active');
+    previewTab.classList.add('active');
+  } else {
+    textarea.style.display = 'block';
+    preview.style.display = 'none';
+    previewTab.classList.remove('active');
+    editTab.classList.add('active');
+  }
 }
 </script>
 {% endblock %}

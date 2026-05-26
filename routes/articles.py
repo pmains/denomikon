@@ -1,7 +1,8 @@
 """Public article routes: front page, article detail, archive."""
 import re
-from datetime import datetime, timezone
-from sqlalchemy import select, desc
+from datetime import datetime, timezone, date as date_cls, timedelta
+from sqlalchemy import select, desc, and_
+from sqlalchemy.orm import joinedload
 
 from flask import Blueprint, render_template, request, abort
 from db.core import get_session
@@ -27,17 +28,107 @@ def front_page():
     ).scalars().all()
 
     tags = session.execute(select(Tag).order_by(Tag.name)).scalars().all()
+
+    # Upcoming meetings this week
+    from db.models import Meeting
+    today = date_cls.today()
+    end_date = today + timedelta(days=7)
+    today_str = today.isoformat()
+    end_str = end_date.isoformat()
+
+    upcoming = session.execute(
+        select(Meeting)
+        .where(
+            and_(
+                Meeting.meeting_date >= today_str,
+                Meeting.meeting_date <= end_str,
+                Meeting.sync_status.in_(["complete", "pending"]),
+            )
+        )
+        .order_by(Meeting.meeting_date, Meeting.body)
+        .limit(15)
+    ).scalars().all()
+
+    # Body code to human-readable name lookup
+    _body_names = {
+        # Maricopa County
+        "bos": "Maricopa County Board of Supervisors",
+        "pz": "Maricopa County Planning & Zoning",
+        "adj": "Maricopa County Board of Adjustment",
+        "drain": "Maricopa County Drainage Review",
+        "health": "Maricopa County Board of Health",
+        "tab": "Maricopa County Transportation Board",
+        "ida": "Maricopa County IDA",
+        # Tempe
+        "tempe-cc": "Tempe City Council",
+        "tempe-drc": "Tempe Development Review Commission",
+        "tempe-pz": "Tempe Planning & Zoning Commission",
+        # Mesa
+        "mesa-cc": "Mesa City Council",
+        "mesa-pz": "Mesa Planning & Zoning Board",
+        "mesa-city-council": "Mesa City Council",
+        "mesa-design-review-board": "Mesa Design Review Board",
+        "mesa-board-of-adjustment": "Mesa Board of Adjustment",
+        "mesa-historic-preservation-board": "Mesa Historic Preservation Board",
+        # Chandler (from BODY_MAP)
+        "chandler-cc": "Chandler City Council",
+        "chandler-pz": "Chandler Planning & Zoning Commission",
+        "chandler-drc": "Chandler Development Review Commission",
+        "chandler-boa": "Chandler Board of Adjustment",
+        "chandler-hpc": "Chandler Historic Preservation Commission",
+        "chandler-ida": "Chandler Industrial Development Authority",
+        "chandler-prb": "Chandler Parks and Recreation Board",
+        "chandler-lb": "Chandler Library Board",
+        "chandler-mf": "Chandler Museum Foundation",
+        "chandler-cf": "Chandler Cultural Foundation",
+        "chandler-arts": "Chandler Arts Commission",
+        "chandler-tc": "Chandler Transportation Commission",
+        "chandler-mvc": "Chandler Military and Veterans Affairs Commission",
+        "chandler-hhsc": "Chandler Housing and Human Services Commission",
+        "chandler-hrc": "Chandler Human Relations Commission",
+        "chandler-dvc": "Chandler Domestic Violence Commission",
+        "chandler-pha": "Chandler Public Housing Authority",
+        "chandler-nac": "Chandler Neighborhood Advisory Committee",
+        "chandler-yc": "Chandler Mayor's Youth Commission",
+        "chandler-pdc": "Chandler Mayor's Committee for People with Disabilities",
+        "chandler-eda": "Chandler Economic Development Advisory Board",
+        "chandler-psprs-f": "Chandler PSPRS Board Fire",
+        "chandler-psprs-p": "Chandler PSPRS Board Police",
+        "chandler-hcc": "Chandler Housing and Community Services Corporation",
+        "chandler-cpr": "Chandler Citizens' Panel Review",
+        "chandler-hct": "Chandler Health Care Benefits Trust Board",
+        "chandler-wct": "Chandler Workers' Compensation Trust Board",
+        "chandler-air": "Chandler Airport Commission",
+        # Scottsdale
+        "scottsdale-cc": "Scottsdale City Council",
+        # Gilbert
+        "gilbert-tc": "Gilbert Town Council",
+    }
+    upcoming_display = []
+    for m in upcoming:
+        display = _body_names.get(m.body, m.body)
+        upcoming_display.append({
+            "body": m.body,
+            "display_name": display,
+            "meeting_id": m.meeting_id,
+            "meeting_date": m.meeting_date,
+            "meeting_type": m.meeting_type,
+        })
+
     session.close()
     return render_template("front_page.html", articles=articles,
-                           featured=featured, tags=tags)
+                           featured=featured, tags=tags,
+                           upcoming_meetings=upcoming_display)
 
 
 @articles_bp.route("/articles/<slug>")
 def article_detail(slug):
     session = get_session()
     article = session.execute(
-        select(Article).where(Article.slug == slug)
-    ).scalar_one_or_none()
+        select(Article)
+        .options(joinedload(Article.author), joinedload(Article.tags))
+        .where(Article.slug == slug)
+    ).unique().scalar_one_or_none()
     if not article or article.status not in ("published", "archived"):
         session.close()
         abort(404)

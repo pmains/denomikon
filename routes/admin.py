@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Admin routes: dashboard, article CRUD, tag management, AI suggestions."""
 import re, json, time
 from datetime import datetime, timezone
@@ -11,9 +13,18 @@ from sqlalchemy.orm import joinedload
 
 from db.core import get_session
 from db.newsroom import (
-    Article, ArticleSource, Tag, article_tags, AdminUser,
+    Article, ArticleSource, Tag, article_tags, AdminUser, Notification,
     sync_article_fts, search_agenda_items,
 )
+
+
+def create_notification(message: str, url: str = "", article_id: int | None = None):
+    """Create an in-app admin notification."""
+    session = get_session()
+    notif = Notification(message=message, url=url, article_id=article_id)
+    session.add(notif)
+    session.commit()
+    session.close()
 from db.models import AgendaItem, Meeting
 from db import get_session as get_db_session
 
@@ -26,6 +37,39 @@ def _slugify(text: str) -> str:
     s = re.sub(r"[\s_]+", "-", s)
     s = re.sub(r"-+", "-", s)
     return s[:200]
+
+
+def _unique_slug(text: str, exclude_id: int | None = None, date_prefix: str | None = None) -> str:
+    """Generate a unique slug by prepending the date and appending -2, -3, etc. when conflicts exist.
+
+    Args:
+        text: Source text to slugify.
+        exclude_id: Optional article ID to exclude from uniqueness check.
+        date_prefix: Optional YYYY-MM-DD date to prepend. Defaults to today.
+    """
+    from db.newsroom import Article
+    from datetime import date as _date
+    base = _slugify(text)
+    if not base:
+        base = "untitled"
+    prefix = date_prefix or str(_date.today())
+    base = f"{prefix}-{base}"
+    slug = base
+    n = 2
+    session = get_session()
+    try:
+        while True:
+            row = session.execute(
+                select(Article).where(Article.slug == slug)
+            ).first()
+            if row is None:
+                return slug
+            if exclude_id is not None and row[0].id == exclude_id:
+                return slug
+            slug = f"{base}-{n}"
+            n += 1
+    finally:
+        session.close()
 
 
 # ── Dashboard / Editorial Queue ──
@@ -142,6 +186,32 @@ def _generate_pitch(suggestion: dict) -> dict:
 
     suggestion["score"] = score
 
+    # ── Land-use signal scoring ──
+    # Detect specific development details: lot counts, parking spaces, square footage,
+    # named districts, addresses, specific dollar figures (non-$-prefixed numbers).
+    land_use_signals = _re.findall(r'(\d+)\s*(spaces?|parking|units?|lots?|acres?|sf|sq\s*ft|stories?)', text_lower)
+    for num, unit in land_use_signals:
+        n = int(num)
+        if unit.startswith(('unit', 'lot', 'space')) and n >= 5:
+            score += 8
+        elif unit.startswith(('parking')) and n >= 20:
+            score += 10
+        elif unit.startswith(('acre')) and n >= 2:
+            score += 12
+        elif unit.startswith(('stor')) and n >= 3:
+            score += 8
+    # City center / downtown / specific district references
+    district_refs = _re.findall(r'(city center|downtown|historic|overlay|specific plan)', text_lower)
+    score += len(district_refs) * 5
+    # Specific addresses or parcel numbers
+    if _re.search(r'\d+\s+[A-Z][a-z]*(?:\s+[A-Z][a-z]*)*\s+(?:Street|Avenue|Drive|Lane|Road|Way|Boulevard|Circle|Court)\b', text):
+        score += 8
+    # Multiple intersections / area descriptions suggesting larger project
+    if text_lower.count(' and ') >= 3 and any(w in text_lower for w in ['street', 'avenue', 'road', 'between', 'north of', 'south of']):
+        score += 10
+
+    suggestion["score"] = score
+
     # ── Context ──
     angle = _ANGLE_TEMPLATES.get(topic, "This agenda item could have significant local impact.")
 
@@ -154,19 +224,44 @@ def _generate_pitch(suggestion: dict) -> dict:
         if body.startswith(prefix): location = name; break
     if not location: location = body
 
-    search_terms = f"{location} {topic.replace('-', ' ')} {matched[0] if matched else ''}"
+    topic_label = topic.replace('-', ' ').title()
+    first_kw = matched[0] if matched else ''
+
+    # Build search terms: use item title for better results when keywords are too generic
+    if first_kw and (first_kw.lower() == topic.replace('-', ' ').lower() or len(title) < 25):
+        # Generic keyword — search with the actual item title
+        search_query = title[:80] if title else f"{location} {topic_label} {first_kw}"
+    else:
+        search_query = f"{location} {topic_label} {first_kw}"
+    search_terms = f"{location} {search_query}"
     ddg_url = f"https://duckduckgo.com/?q={urllib.parse.quote(search_terms)}&ia=news"
     azcentral_url = f"https://www.azcentral.com/search/?q={urllib.parse.quote(search_terms)}"
     newslookup_url = f"https://newslookup.com/results?q={urllib.parse.quote(search_terms)}"
 
-    headline = f"{topic.replace('-', ' ').title()}: {matched[0].title() if matched else ''} at {location}"
+    # Build headline: avoid "Zoning: Zoning at tempe-drc" redundancy
+    if first_kw.lower() == topic.replace('-', ' ').lower():
+        # Keyword is same as topic — use the actual item title
+        headline = title[:80] if title else f"{topic_label} Item at {location}"
+    elif title and len(title) < 80 and first_kw.lower() in title.lower():
+        # Keyword is contained in title — use title, it's more descriptive
+        headline = title[:80]
+    else:
+        headline = f"{topic_label}: {first_kw.title() if first_kw else 'Item'} at {location}"
 
     # ── Narrative pitch HTML ──
     parts = [f'<span class="badge bg-{"danger" if score >= 30 else "warning" if score >= 15 else "secondary"}">Impact {score}</span>']
     for kw in matched[:3]:
         parts.append(f'<span class="badge bg-info text-dark me-1">{kw}</span>')
     parts.append('<br>')
-    parts.append(f'<strong>Why it matters:</strong> {angle}')
+    # Enrich the angle with item specifics when available
+    _specifics = []
+    if title and len(title) > 20:
+        _specifics.append(title[:120])
+    strip_sigs = _re.findall(r'(\d+)\s*(spaces?|parking|units?|acres?|dwelling)', text_lower)
+    for num, unit in strip_sigs[:2]:
+        _specifics.append(f'{num} {unit}')
+    angle_extra = ' — ' + '; '.join(_specifics[:2]) if _specifics else ''
+    parts.append(f'<strong>Why it matters:</strong> {angle}{angle_extra}')
     if meeting_date: parts.append(f'<strong>When:</strong> {meeting_date}')
     parts.append(f'<strong>Where:</strong> {location}')
     if title: parts.append(f'<strong>Item:</strong> &ldquo;{title}&rdquo;')
@@ -200,6 +295,8 @@ def suggestions():
     session = get_db_session()
 
     jurisdiction_filter = request.args.get("jurisdiction", "")
+    start_date = request.args.get("start_date", "")
+    end_date = request.args.get("end_date", "")
 
     # Exclude dismissed suggestions
     from db.newsroom import DismissedSuggestion
@@ -255,24 +352,16 @@ def suggestions():
         like_clauses += [AgendaItem.agenda_item_text.ilike(f"%{kw}%")
                          for kw in keywords]
 
-        # Use a date-sortable expression: convert all date formats to ISO
-        # Chandler uses "September 17, 2025" which sorts above ISO dates lexicographically.
-        from sqlalchemy import case as sa_case, literal_column as _L
-        _date_expr = sa_case(
-            (Meeting.meeting_date.like("____-__-__"), Meeting.meeting_date),
-            (Meeting.meeting_date.like("%/%"),
-             func.substr(Meeting.meeting_date, -4) + "-" +
-             func.substr(Meeting.meeting_date, 1, 2) + "-" +
-             func.substr(Meeting.meeting_date, 4, 2)),
-            else_=func.substr(Meeting.meeting_date, -4) + 
-                   "-" + func.substr(Meeting.meeting_date, 1, 2) +
-                   "-" + func.substr(Meeting.meeting_date, 4, 2),
-        )
-
         # Build filters: keywords OR'd + optional jurisdiction AND
         _filters = [or_(*like_clauses)]
         if _JUR_PREFIX:
             _filters.append(Meeting.body.like(f"{_JUR_PREFIX}%"))
+
+        # Date range filter (all dates now normalized to YYYY-MM-DD)
+        if start_date:
+            _filters.append(Meeting.meeting_date >= start_date)
+        if end_date:
+            _filters.append(Meeting.meeting_date <= end_date)
 
         items = session.execute(
             select(AgendaItem, Meeting.meeting_date, Meeting.body)
@@ -282,7 +371,7 @@ def suggestions():
             ))
             .where(and_(*_filters))
             .where(Meeting.sync_status == "complete")
-            .order_by(desc(_date_expr))
+            .order_by(desc(Meeting.meeting_date))
             .limit(30)
         ).all()
 
@@ -345,6 +434,10 @@ def suggestions():
         _signal_filter = [or_(*signal_likes)]
         if _JUR_PREFIX:
             _signal_filter.append(Meeting.body.like(f"{_JUR_PREFIX}%"))
+        if start_date:
+            _signal_filter.append(Meeting.meeting_date >= start_date)
+        if end_date:
+            _signal_filter.append(Meeting.meeting_date <= end_date)
 
         signal_items = session.execute(
             select(AgendaItem, Meeting.meeting_date, Meeting.body)
@@ -354,7 +447,7 @@ def suggestions():
             ))
             .where(and_(*_signal_filter))
             .where(Meeting.sync_status == "complete")
-            .order_by(desc(_date_expr))
+            .order_by(desc(Meeting.meeting_date))
             .limit(20)
         ).all()
 
@@ -398,6 +491,10 @@ def suggestions():
         hv_filter = [or_(*hv_likes)]
         if _JUR_PREFIX:
             hv_filter.append(Meeting.body.like(f"{_JUR_PREFIX}%"))
+        if start_date:
+            hv_filter.append(Meeting.meeting_date >= start_date)
+        if end_date:
+            hv_filter.append(Meeting.meeting_date <= end_date)
 
         try:
             hv_items = session.execute(
@@ -450,6 +547,8 @@ def suggestions():
     return render_template(
         "admin/suggestions.html", grouped=grouped, tags=tags,
         filter_jurisdiction=jurisdiction_filter,
+        filter_start_date=start_date,
+        filter_end_date=end_date,
     )
 
 
@@ -469,16 +568,16 @@ def article_new():
 
         article = Article(
             title=title,
-            slug=_slugify(title),
-            summary=request.form.get("summary", "").strip(),
+            slug=_unique_slug(title),
             body=request.form.get("body", "").strip(),
             status=request.form.get("status", "draft"),
             author_id=current_user.id,
         )
 
-        # Set timestamps based on status
+        # Publish action overrides status dropdown
         now = datetime.now(timezone.utc)
-        if article.status == "published":
+        if request.form.get("action") == "publish":
+            article.status = "published"
             article.published_at = now
         if article.status == "archived":
             article.archived_at = now
@@ -493,19 +592,16 @@ def article_new():
             if tag:
                 article.tags.append(tag)
 
-        # Attach sources
-        source_bodies = request.form.getlist("source_body[]")
-        source_meetings = request.form.getlist("source_meeting_id[]")
-        source_items = request.form.getlist("source_item_number[]")
+        # Attach sources — only URL + title (text) needed
         source_urls = request.form.getlist("source_url[]")
-        for i in range(len(source_bodies)):
-            if source_bodies[i] and source_meetings[i]:
+        source_titles = request.form.getlist("source_title[]")
+        for i in range(len(source_urls)):
+            url = source_urls[i].strip()
+            if url:
                 src = ArticleSource(
                     article_id=article.id,
-                    body=source_bodies[i],
-                    meeting_id=source_meetings[i],
-                    agenda_item_number=source_items[i] if i < len(source_items) else "",
-                    source_url=source_urls[i] if i < len(source_urls) else "",
+                    source_url=url,
+                    item_title=source_titles[i].strip() if i < len(source_titles) else "",
                 )
                 session.add(src)
 
@@ -513,7 +609,7 @@ def article_new():
         sync_article_fts(article.id)
         session.close()
         flash("Article created.", "success")
-        return redirect(url_for("admin.dashboard"))
+        return redirect(url_for("admin.article_edit", article_id=article.id))
 
     # GET — pre-fill from suggestion query params
     tags = session.execute(select(Tag).order_by(Tag.name)).scalars().all()
@@ -529,10 +625,8 @@ def article_new():
     return render_template(
         "admin/article_form.html",
         article=None, tags=tags, preselected_tags=preselected_tags,
-        source_body=request.args.get("body", ""),
-        source_meeting=request.args.get("meeting_id", ""),
-        source_item=request.args.get("agenda_item_number", ""),
         source_url=request.args.get("source_url", ""),
+        source_title=request.args.get("source_title", ""),
     )
 
 
@@ -548,7 +642,7 @@ def article_edit(article_id):
 
     if request.method == "POST":
         article.title = request.form.get("title", article.title).strip()
-        article.slug = _slugify(article.title)
+        article.slug = _unique_slug(article.title, exclude_id=article.id)
         article.summary = request.form.get("summary", "").strip()
         article.body = request.form.get("body", "").strip()
         article.status = request.form.get("status", article.status)
@@ -567,34 +661,42 @@ def article_edit(article_id):
             if session.get(Tag, tid)
         ]
 
-        # Update sources — replace all
+        # Update sources — replace all (only URL + title)
         session.query(ArticleSource).filter_by(article_id=article.id).delete()
-        source_bodies = request.form.getlist("source_body[]")
-        source_meetings = request.form.getlist("source_meeting_id[]")
-        source_items = request.form.getlist("source_item_number[]")
         source_urls = request.form.getlist("source_url[]")
-        for i in range(len(source_bodies)):
-            if source_bodies[i] and source_meetings[i]:
-                session.add(ArticleSource(
+        source_titles = request.form.getlist("source_title[]")
+        for i in range(len(source_urls)):
+            url = source_urls[i].strip()
+            if url:
+                src = ArticleSource(
                     article_id=article.id,
-                    body=source_bodies[i],
-                    meeting_id=source_meetings[i],
-                    agenda_item_number=source_items[i] if i < len(source_items) else "",
-                    source_url=source_urls[i] if i < len(source_urls) else "",
-                ))
+                    source_url=url,
+                    item_title=source_titles[i].strip() if i < len(source_titles) else "",
+                )
+                session.add(src)
+
+        # Publish action overrides status dropdown
+        if request.form.get("action") == "publish":
+            article.status = "published"
+            if not article.published_at:
+                article.published_at = datetime.now(timezone.utc)
 
         session.commit()
         sync_article_fts(article.id)
         session.close()
         flash("Article updated.", "success")
-        return redirect(url_for("admin.dashboard"))
+        return redirect(url_for("admin.article_edit", article_id=article.id))
 
     tags = session.execute(select(Tag).order_by(Tag.name)).scalars().all()
+    existing_sources = session.execute(
+        select(ArticleSource).where(ArticleSource.article_id == article.id)
+    ).scalars().all()
     session.close()
     return render_template(
         "admin/article_form.html",
         article=article, tags=tags,
         preselected_tags=[str(t.id) for t in article.tags],
+        existing_sources=existing_sources,
     )
 
 
@@ -687,6 +789,16 @@ def draft_from_suggestion():
     title = (item.agenda_item_title or "Untitled")[:120] if item else "Untitled"
     item_text = (item.agenda_item_text or "")[:2000] if item else ""
 
+    # Look up meeting date for slug prefix
+    meeting_date_prefix = ""
+    if item:
+        m = session.execute(
+            select(Meeting.meeting_date)
+            .where(Meeting.body == body_code, Meeting.meeting_id == meeting_id)
+        ).scalar_one_or_none()
+        if m:
+            meeting_date_prefix = m
+
     # Generate draft body from the agenda item text
     from datetime import date
     draft_body = f"**Background**\n\nThe {body_code} considered this item recently.\n\n**Details**\n\n{item_text}\n\n**What's Next**\n\nThis item was on the agenda. Check the meeting page for the outcome."
@@ -695,7 +807,7 @@ def draft_from_suggestion():
     # Create the draft article
     article = Article(
         title=title,
-        slug=_slugify(title),
+        slug=_unique_slug(title, date_prefix=meeting_date_prefix or None),
         summary=draft_summary,
         body=draft_body,
         status="draft",
@@ -712,6 +824,7 @@ def draft_from_suggestion():
             meeting_id=meeting_id,
             agenda_item_number=item_number,
             source_url=source_url,
+            item_title=title,
         )
         session.add(src)
 
@@ -731,7 +844,7 @@ def split_suggestion():
     session = get_session()
     parent = Article(
         title=request.form.get("title", "Multi-part story").strip(),
-        slug=_slugify(request.form.get("title", "multi-part-story")),
+        slug=_unique_slug(request.form.get("title", "multi-part-story")),
         summary="A series of related stories on this topic.",
         status="draft",
         author_id=current_user.id,
@@ -805,3 +918,54 @@ def manage_tags():
         counts[tag_id] = cnt
     session.close()
     return render_template("admin/tags.html", tags=tags, tag_counts=counts)
+
+
+@admin_bp.route("/notifications")
+@login_required
+def notifications():
+    """List all admin notifications."""
+    session = get_session()
+    notifs = session.execute(
+        select(Notification).order_by(desc(Notification.created_at)).limit(100)
+    ).scalars().all()
+    session.close()
+    return render_template("admin/notifications.html", notifications=notifs)
+
+
+@admin_bp.route("/notifications/count")
+@login_required
+def notifications_count():
+    """Return unread notification count as JSON."""
+    session = get_session()
+    count = session.execute(
+        select(func.count(Notification.id)).where(Notification.is_read == False)
+    ).scalar()
+    session.close()
+    from flask import jsonify
+    return jsonify({"count": count})
+
+
+@admin_bp.route("/notifications/mark-read", methods=["POST"])
+@login_required
+def notifications_mark_read():
+    """Mark all notifications as read."""
+    session = get_session()
+    session.execute(
+        Notification.__table__.update().values(is_read=True)
+    )
+    session.commit()
+    session.close()
+    return redirect(url_for("admin.notifications"))
+
+
+@admin_bp.route("/notifications/<int:notif_id>/delete", methods=["POST"])
+@login_required
+def notification_delete(notif_id):
+    """Delete a single notification."""
+    session = get_session()
+    notif = session.get(Notification, notif_id)
+    if notif:
+        session.delete(notif)
+        session.commit()
+    session.close()
+    return redirect(url_for("admin.notifications"))

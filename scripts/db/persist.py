@@ -45,6 +45,7 @@ _KNOWN_LAST_NAMES = frozenset({
     "williamson", "woods", "arredondo", "garlid", "navarro", "shah",
     "ballesteros", "gage", "starr", "evans", "cegar", "johnson",
     "jones", "valenzuela", "lesko", "galvin", "stewart", "lake",
+    "beck", "crawford", "finn", "stokes", "dunn", "edwards", "bullock",
     "meggesto", "thompson", "cook", "santos", "brophy", "rodriguez",
     "baker", "curley", "landolt", "lindblom", "swart", "arnett",
     "danzeisen", "montoya", "leighton", "toma", "milhaven", "finter",

@@ -10,6 +10,8 @@ import re
 import urllib.parse
 from typing import Optional
 
+from scraper.io_utils import _normalize_text_date
+
 log = logging.getLogger(__name__)
 
 JURISDICTION_ID = 3
@@ -156,7 +158,7 @@ def parse_meetings(html: str) -> list[dict]:
                     video_url = urllib.parse.urljoin(BASE_URL, vm2.group(1))
         slug, code = _resolve_body(body_name)
         meetings.append({
-            "meeting_date": date,
+            "meeting_date": _normalize_text_date(date) or date,
             "body_name": body_name,
             "body_slug": slug,
             "body_code": code,

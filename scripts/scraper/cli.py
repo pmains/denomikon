@@ -26,6 +26,10 @@ def _print_top_level_help() -> None:
     print("  gilbert   Town of Gilbert (Council via OnBase)")
     print("  scottsdale City of Scottsdale (Council via PDF archive)")
     print("  scottsdale-boards Scottsdale P&Z, BOA, DRB, HPC, Bldg Appeals")
+    print("  glendale  City of Glendale (Council via Legistar)")
+    print("  glendale-new  City of Glendale (Council, PC, BOA via AgendaQuick)")
+    print("  peoria    City of Peoria (Council, P&Z, BOA, DRB, HPC via NovusAgenda)")
+    print("  surprise  City of Surprise (Council, P&Z, boards via CivicClerk)")
     print("  all       Sync all Maricopa County boards: BOS, PZ, ADJ, Drain, Health, TAB, IDA")
     print()
     print("Common options (varies per subcommand; use <subcommand> --help for details):")
@@ -102,7 +106,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "all"):
+    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "all"):
         source = rest.pop(0)
 
     if source == "bos":
@@ -128,6 +132,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     elif source == "scottsdale":
         args = _parse_mesa_args(rest)
     elif source == "scottsdale-boards":
+        args = _parse_mesa_args(rest)
+    elif source == "glendale":
+        args = _parse_mesa_args(rest)
+    elif source == "glendale-new":
+        args = _parse_glendale_new_args(rest)
+    elif source == "surprise":
+        args = _parse_surprise_args(rest)
+    elif source == "peoria":
         args = _parse_mesa_args(rest)
     elif source == "all":
         args = _parse_bos_args(rest)
@@ -446,6 +458,41 @@ def _parse_mesa_args(rest: list[str]) -> argparse.Namespace:
     return args
 
 
+def _parse_surprise_args(rest: list[str]) -> argparse.Namespace:
+    """Parse Surprise City Council / body arguments."""
+    p = argparse.ArgumentParser(
+        description="Scrape City of Surprise public meeting materials (via CivicClerk)",
+        prog="surprise",
+    )
+    p.add_argument("--start-date", help="Start date in YYYY-MM-DD")
+    p.add_argument("--end-date", help="End date in YYYY-MM-DD")
+    p.add_argument("--year", help="Sync an entire year (e.g. --year=2026)")
+    p.add_argument("--month", help="Sync an entire month (e.g. --month=2026-04)")
+    p.add_argument("--date", help="Single date in YYYY-MM-DD (shorthand for --start-date=DATE --end-date=DATE)")
+    p.add_argument("--sync", action="store_true", help="Search online, extract agenda items, and persist to database")
+    p.add_argument("--headed", action="store_true", help="Run Playwright headed")
+    p.add_argument("--limit", type=int, default=None, help="Optional meeting limit")
+    p.add_argument("--meeting-id", help="Single meeting ID to sync (bypasses date search)")
+    p.add_argument("--init-db", action="store_true", help="Create database tables")
+    p.add_argument("--status", action="store_true", help="Print summary counts of meetings by sync_status")
+    p.add_argument("--failed", action="store_true", help="List failed/partial meetings with errors")
+    p.add_argument("--retry-failed", action="store_true", help="Sync only meetings with status failed, partial, or pending")
+    p.add_argument("--force", action="store_true", help="Re-sync meetings even if sync_status = complete")
+    p.add_argument("--skip-complete", action="store_true", help="Skip meetings with sync_status=complete when using --meeting-id")
+    p.add_argument("--retry-count", type=int, default=3, help="Max retry attempts")
+    p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
+    p.add_argument("--download", action="store_true", help="Download agenda PDF files")
+    p.add_argument("--bodies", help="Body slugs to sync (comma-separated), e.g. surprise-city-council,surprise-planning-zoning (default: surprise-city-council)")
+    args = p.parse_args(rest)
+    if args.date:
+        if args.start_date or args.end_date:
+            p.error("--date cannot be combined with --start-date or --end-date")
+        args.start_date = args.date
+        args.end_date = args.date
+    _normalize_year_month(args, p)
+    return args
+
+
 def _parse_ida_args(rest: list[str]) -> argparse.Namespace:
     """Parse IDA (Industrial Development Authority) arguments."""
     p = argparse.ArgumentParser(
@@ -473,6 +520,41 @@ def _parse_ida_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--download", action="store_true", help="Download agenda PDF and packet PDF")
     p.add_argument("--bodies", help="Body group to sync: council, drc, boa, hpc, all (default: all)")
     p.add_argument("--skip-complete", action="store_true", help="Skip meetings with sync_status=complete when using --meeting-id")
+    args = p.parse_args(rest)
+    if args.date:
+        if args.start_date or args.end_date:
+            p.error("--date cannot be combined with --start-date or --end-date")
+        args.start_date = args.date
+        args.end_date = args.date
+    _normalize_year_month(args, p)
+    return args
+
+
+def _parse_glendale_new_args(rest: list[str]) -> argparse.Namespace:
+    """Parse Glendale-new (AgendaQuick) arguments."""
+    p = argparse.ArgumentParser(
+        description="Scrape City of Glendale public meeting materials (via AgendaQuick)",
+        prog="glendale-new",
+    )
+    p.add_argument("--start-date", help="Start date in YYYY-MM-DD")
+    p.add_argument("--end-date", help="End date in YYYY-MM-DD")
+    p.add_argument("--year", help="Sync an entire year (e.g. --year=2026)")
+    p.add_argument("--month", help="Sync an entire month (e.g. --month=2026-04)")
+    p.add_argument("--date", help="Single date in YYYY-MM-DD (shorthand for --start-date=DATE --end-date=DATE)")
+    p.add_argument("--sync", action="store_true", help="Search online, extract agenda items, and persist to database")
+    p.add_argument("--headed", action="store_true", help="Run Playwright headed")
+    p.add_argument("--limit", type=int, default=None, help="Optional meeting limit")
+    p.add_argument("--meeting-id", help="Single meeting seq to sync (bypasses date search)")
+    p.add_argument("--init-db", action="store_true", help="Create database tables")
+    p.add_argument("--status", action="store_true", help="Print sync status summary")
+    p.add_argument("--failed", action="store_true", help="List failed/partial meetings with errors")
+    p.add_argument("--retry-failed", action="store_true", help="Sync only meetings with status failed, partial, or pending")
+    p.add_argument("--force", action="store_true", help="Re-sync meetings even if sync_status = complete")
+    p.add_argument("--skip-complete", action="store_true", help="Skip meetings with sync_status=complete when using --meeting-id")
+    p.add_argument("--retry-count", type=int, default=3, help="Max retry attempts")
+    p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
+    p.add_argument("--download", action="store_true", help="Download agenda PDF files")
+    p.add_argument("--bodies", help="Body slugs to sync (comma-separated), e.g. glendale-city-council,glendale-planning-commission (default: glendale-city-council)")
     args = p.parse_args(rest)
     if args.date:
         if args.start_date or args.end_date:

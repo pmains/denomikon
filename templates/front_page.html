@@ -7,53 +7,110 @@
   </div>
 </div>
 
-{% if featured %}
-<div class="row mb-4">
-  {% for article in featured %}
-  <div class="col-md-4">
-    <div class="card h-100 border-primary">
-      <div class="card-body">
-        <h5 class="card-title"><a href="/articles/{{ article.slug }}" class="text-decoration-none">{{ article.title }}</a></h5>
-        <p class="card-text small">{{ article.summary[:150] }}{% if article.summary|length > 150 %}…{% endif %}</p>
-        <div>
-          {% for t in article.tags %}
-          <a href="/articles/tag/{{ t.slug }}" class="badge bg-primary text-decoration-none">{{ t.name }}</a>
-          {% endfor %}
-        </div>
-        <small class="text-muted">{{ article.published_at.strftime('%b %d, %Y') if article.published_at }}</small>
-      </div>
-    </div>
-  </div>
-  {% endfor %}
-</div>
-{% endif %}
-
-{% if articles %}
-  {% for article in articles %}
-  <div class="card mb-2">
-    <div class="card-body py-2">
-      <div class="d-flex justify-content-between align-items-start">
-        <div>
-          <h5 class="mb-1"><a href="/articles/{{ article.slug }}" class="text-decoration-none">{{ article.title }}</a></h5>
-          <p class="mb-1 small text-muted">{{ article.summary[:200] }}</p>
-          <div class="small">
-            {% for t in article.tags %}
-            <a href="/articles/tag/{{ t.slug }}" class="badge bg-light text-dark text-decoration-none me-1">{{ t.name }}</a>
-            {% endfor %}
-            <span class="text-muted ms-2">{{ article.published_at.strftime('%b %d, %Y') if article.published_at }}</span>
+<div class="row">
+  <div class="col-lg-8">
+    {% if featured %}
+    <div class="row mb-4">
+      {% for article in featured %}
+      <div class="col-md-4">
+        <div class="card h-100 border-primary">
+          <div class="card-body">
+            <h5 class="card-title"><a href="/articles/{{ article.slug }}" class="text-decoration-none">{{ article.title }}</a></h5>
+            <p class="card-text small">{{ article.summary[:150] }}{% if article.summary|length > 150 %}…{% endif %}</p>
+            <div>
+              {% for t in article.tags %}
+              <a href="/articles/tag/{{ t.slug }}" class="badge bg-primary text-decoration-none">{{ t.name }}</a>
+              {% endfor %}
+            </div>
+            <small class="text-muted">{{ article.published_at.strftime('%b %d, %Y') if article.published_at }}</small>
           </div>
         </div>
-        {% if article.sources %}
-        <a href="{{ article.sources[0].source_url }}" target="_blank" class="btn btn-sm btn-outline-secondary ms-2" style="white-space:nowrap">Source</a>
-        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if articles %}
+      {% for article in articles %}
+      <div class="card mb-2">
+        <div class="card-body py-2">
+          <div class="d-flex justify-content-between align-items-start">
+            <div>
+              <h5 class="mb-1"><a href="/articles/{{ article.slug }}" class="text-decoration-none">{{ article.title }}</a></h5>
+              <p class="mb-1 small text-muted">{{ article.summary[:200] }}</p>
+              <div class="small">
+                {% for t in article.tags %}
+                <a href="/articles/tag/{{ t.slug }}" class="badge bg-light text-dark text-decoration-none me-1">{{ t.name }}</a>
+                {% endfor %}
+                <span class="text-muted ms-2">{{ article.published_at.strftime('%b %d, %Y') if article.published_at }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="text-center py-5">
+        <h3 class="text-muted">No stories yet</h3>
+        <p class="text-muted">Check back soon for the latest government intelligence.</p>
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="col-lg-4">
+    <!-- Explore box -->
+    <div class="card mb-3">
+      <div class="card-header">
+        <strong>Explore</strong>
+      </div>
+      <div class="list-group list-group-flush">
+        <a href="/meetings" class="list-group-item list-group-item-action d-flex align-items-center gap-2">
+          <i class="bi bi-calendar-event"></i> Public Meetings
+        </a>
+        <a href="/bodies" class="list-group-item list-group-item-action d-flex align-items-center gap-2">
+          <i class="bi bi-people"></i> Boards &amp; Commissions
+        </a>
+        <a href="/permits" class="list-group-item list-group-item-action d-flex align-items-center gap-2">
+          <i class="bi bi-file-earmark-text"></i> Development Permits
+        </a>
+        <a href="/search" class="list-group-item list-group-item-action d-flex align-items-center gap-2">
+          <i class="bi bi-search"></i> Search
+        </a>
+      </div>
+    </div>
+
+    <!-- Upcoming Events -->
+    {% if upcoming_meetings %}
+    <div class="card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <strong>Upcoming Events</strong>
+        <span class="badge bg-secondary">{{ upcoming_meetings|length }}</span>
+      </div>
+      <div class="list-group list-group-flush">
+        {% for m in upcoming_meetings %}
+        <a href="/meetings/{{ m.body }}/{{ m.meeting_id }}" class="list-group-item list-group-item-action">
+          <div class="d-flex w-100 justify-content-between">
+            <small class="fw-bold">{{ m.display_name }}</small>
+            <small class="text-muted">{{ m.meeting_date }}</small>
+          </div>
+          {% if m.meeting_type %}
+          <small class="text-muted">{{ m.meeting_type }}</small>
+          {% endif %}
+        </a>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Future: Trending / Top Stories placeholder -->
+    <div class="card mb-3 text-muted">
+      <div class="card-header">
+        <strong>Trending</strong>
+      </div>
+      <div class="card-body small">
+        <p class="mb-0">Coming soon — article views and trending topics will appear here once traffic tracking is in place.</p>
       </div>
     </div>
   </div>
-  {% endfor %}
-{% else %}
-  <div class="text-center py-5">
-    <h3 class="text-muted">No stories yet</h3>
-    <p class="text-muted">Check back soon for the latest government intelligence.</p>
-  </div>
-{% endif %}
+</div>
 {% endblock %}

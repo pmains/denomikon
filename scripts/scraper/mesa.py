@@ -28,6 +28,7 @@ import urllib.parse
 from typing import Optional
 
 from scraper.html_utils import _parse_html, _find_all, _clean_html_text, _node_text
+from scraper.io_utils import normalize_meeting_date
 from scraper.models import _HtmlNode
 
 log = logging.getLogger(__name__)
@@ -235,7 +236,7 @@ def parse_meetings_from_html(html: str) -> list[dict]:
             "body_code": body_code,
             "body_dept_id": body_dept_id,
             "body_dept_guid": body_dept_guid,
-            "meeting_date": meeting_date,
+            "meeting_date": normalize_meeting_date(meeting_date) or meeting_date,
             "meeting_time": meeting_time,
             "meeting_location": meeting_location,
             "meeting_id": meeting_id,

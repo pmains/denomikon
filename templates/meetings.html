@@ -14,6 +14,9 @@
             <option value="chandler" {% if filter_jurisdiction == 'chandler' %}selected{% endif %}>City of Chandler</option>
             <option value="gilbert" {% if filter_jurisdiction == 'gilbert' %}selected{% endif %}>Town of Gilbert</option>
             <option value="scottsdale" {% if filter_jurisdiction == 'scottsdale' %}selected{% endif %}>City of Scottsdale</option>
+            <option value="peoria" {% if filter_jurisdiction == 'peoria' %}selected{% endif %}>City of Peoria</option>
+            <option value="glendale" {% if filter_jurisdiction == 'glendale' %}selected{% endif %}>City of Glendale</option>
+            <option value="surprise" {% if filter_jurisdiction == 'surprise' %}selected{% endif %}>City of Surprise</option>
         </select>
     </div>
     <div class="col-md-2">
@@ -89,6 +92,20 @@
             <option value="scottsdale-drb" {% if filter_body == 'scottsdale-drb' %}selected{% endif %}>Dev Review Board</option>
             <option value="scottsdale-hpc" {% if filter_body == 'scottsdale-hpc' %}selected{% endif %}>Historic Preservation</option>
             <option value="scottsdale-baba" {% if filter_body == 'scottsdale-baba' %}selected{% endif %}>Bldg Appeals Board</option>
+            <optgroup label="City of Peoria">
+            <option value="peoria-cc" {% if filter_body == 'peoria-cc' %}selected{% endif %}>City Council</option>
+            <option value="peoria-pz" {% if filter_body == 'peoria-pz' %}selected{% endif %}>Planning &amp; Zoning</option>
+            <option value="peoria-boa" {% if filter_body == 'peoria-boa' %}selected{% endif %}>Board of Adjustment</option>
+            <option value="peoria-sub" {% if filter_body == 'peoria-sub' %}selected{% endif %}>Subcommittee</option>
+            </optgroup>
+            <optgroup label="City of Glendale">
+            <option value="glendale-cc" {% if filter_body == 'glendale-cc' %}selected{% endif %}>City Council</option>
+            <option value="glendale-pc" {% if filter_body == 'glendale-pc' %}selected{% endif %}>Planning Commission</option>
+            <option value="glendale-boa" {% if filter_body == 'glendale-boa' %}selected{% endif %}>Board of Adjustment</option>
+            </optgroup>
+            <optgroup label="City of Surprise">
+            <option value="surprise-cc" {% if filter_body == 'surprise-cc' %}selected{% endif %}>City Council</option>
+            </optgroup>
             </optgroup>
         </select>
     </div>
@@ -137,6 +154,9 @@ var JUR_TO_LABEL = {
     "chandler": "City of Chandler",
     "gilbert": "Town of Gilbert",
     "scottsdale": "City of Scottsdale",
+    "peoria": "City of Peoria",
+    "glendale": "City of Glendale",
+    "surprise": "City of Surprise",
 };
 
 function filterSourceOptions() {

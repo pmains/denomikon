@@ -44,6 +44,12 @@
                     <li class="nav-item">
                         <a class="nav-link" href="/admin">Admin</a>
                     </li>
+                    <li class="nav-item position-relative">
+                        <a class="nav-link" href="/admin/notifications" id="notif-bell">
+                            <i class="bi bi-bell"></i>
+                            <span id="notif-count" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" style="font-size:0.6rem;display:none">0</span>
+                        </a>
+                    </li>
                     <li class="nav-item">
                         <a class="nav-link" href="/logout">Logout</a>
                     </li>
@@ -63,6 +69,28 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/static/table-controls.js"></script>
+    <script>
+    // Poll for unread notification count
+    (function() {
+        var badge = document.getElementById('notif-count');
+        if (!badge) return;
+        function poll() {
+            fetch('/admin/notifications/count')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.count > 0) {
+                        badge.textContent = data.count > 99 ? '99+' : data.count;
+                        badge.style.display = 'inline';
+                    } else {
+                        badge.style.display = 'none';
+                    }
+                })
+                .catch(function() {});
+        }
+        poll();
+        setInterval(poll, 30000);
+    })();
+    </script>
 {% block extra_js %}{% endblock %}
 </body>
 </html>

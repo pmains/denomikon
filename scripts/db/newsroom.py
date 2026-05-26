@@ -95,9 +95,23 @@ class ArticleSource(Base):
     agenda_item_number = Column(String(32), nullable=False, default="")
     source_url = Column(String(512), nullable=False, default="")
     source_type = Column(String(32), nullable=False, default="agenda")
+    item_title = Column(String(512), nullable=False, default="")
 
 
 # ── Dismissed Suggestions ──
+
+class Notification(Base):
+    """In-app admin notification."""
+    __tablename__ = "admin_notifications"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    message = Column(Text, nullable=False)
+    url = Column(String(512), nullable=False, default="")
+    article_id = Column(Integer, ForeignKey("articles.id", ondelete="SET NULL"), nullable=True)
+    is_read = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), nullable=False,
+                        default=lambda: datetime.now(timezone.utc))
+
 
 class DismissedSuggestion(Base):
     __tablename__ = "dismissed_suggestions"

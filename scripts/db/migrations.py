@@ -30,6 +30,12 @@ def init_db():
     _migrate_table("case_events")
     _migrate_table("pz_item_details")
 
+    # One-time backfill: normalize legacy non-ISO meeting dates
+    _normalize_existing_meeting_dates(engine)
+
+    # Add item_title column to article_sources if missing
+    _migrate_col(engine, "article_sources", "item_title", "VARCHAR(512) NOT NULL DEFAULT ''")
+
     _migrate_col(engine, "agenda_items", "case_number", "VARCHAR(32) NOT NULL DEFAULT ''")
 
     _migrate_table("persons")
@@ -1033,4 +1039,56 @@ def _migrate_membership_model():
         raise
     finally:
         session.close()
+
+
+def _normalize_existing_meeting_dates(engine=None):
+    """Backfill: normalize Chandler and Mesa legacy dates to YYYY-MM-DD.
+
+    Chandler stores "September 9, 2025" (month-name format).
+    Mesa stores "9/9/2025" (M/D/YYYY format).
+    Fix both to ISO 8601.
+    """
+    from scraper.io_utils import _normalize_text_date, normalize_meeting_date
+    if engine is None:
+        engine = get_engine()
+    session = Session(engine)
+    try:
+        # Fix Chandler: month-name dates
+        rows = session.execute(
+            text("SELECT id, meeting_date FROM meetings WHERE meeting_date LIKE '% %'")
+        ).fetchall()
+        fixed = 0
+        for row_id, raw in rows:
+            normalized = _normalize_text_date(raw)
+            if normalized:
+                session.execute(
+                    text("UPDATE meetings SET meeting_date = :norm WHERE id = :rid"),
+                    {"norm": normalized, "rid": row_id}
+                )
+                fixed += 1
+        if fixed:
+            session.commit()
+            log.info("Normalized %d Chandler-style meeting dates", fixed)
+
+        # Fix Mesa: M/D/YYYY dates
+        rows2 = session.execute(
+            text("SELECT id, meeting_date FROM meetings WHERE meeting_date LIKE '%/%'")
+        ).fetchall()
+        fixed2 = 0
+        for row_id, raw in rows2:
+            normalized = normalize_meeting_date(raw)
+            if normalized:
+                session.execute(
+                    text("UPDATE meetings SET meeting_date = :norm WHERE id = :rid"),
+                    {"norm": normalized, "rid": row_id}
+                )
+                fixed2 += 1
+        if fixed2:
+            session.commit()
+            log.info("Normalized %d Mesa-style meeting dates", fixed2)
+
+        return fixed + fixed2
+    finally:
+        session.close()
+
 

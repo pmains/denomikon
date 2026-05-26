@@ -1,20 +1,16 @@
 """Database engine, session, and connection management."""
 
 import os
-import tempfile
 from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-# Default to a TEMP file that is NEVER the production database.
-# The production app explicitly sets DATABASE_URL in os.environ before
-# importing this module (see routes/__init__.py).  If you're reading
-# this because tests deleted production data, you found the bug.
-_DEFAULT_DB = os.environ.get(
-    "POLISCOPIC_DEFAULT_DB",
-    f"sqlite:///{tempfile.gettempdir()}/poliscopic_dev.sqlite",
-)
-DATABASE_URL = os.environ.get("DATABASE_URL", _DEFAULT_DB)
+# Database URL resolution (see db/config.py for the three-tier system):
+#   1. DATABASE_URL env var (explicit override)
+#   2. POLISCOPIC_DB_TIER=test → tempfile (pytest)
+#   3. Default → data/maricopa.sqlite (development, shared with Flask)
+from db.config import DATABASE_URL as _RESOLVED_DB
+DATABASE_URL = _RESOLVED_DB
 
 _engine = None
 _SessionLocal = None

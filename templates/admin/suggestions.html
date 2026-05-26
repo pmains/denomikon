@@ -4,7 +4,7 @@
 <h1 class="mb-3">AI Story Suggestions</h1>
 <div class="d-flex justify-content-between align-items-start mb-3">
   <p class="text-muted mb-0">Ranked by impact. Click "Write story" to draft, "Dismiss" to hide, or "Split" to create a multi-part series.</p>
-  <form method="GET" class="d-flex gap-2">
+  <form method="GET" class="d-flex gap-2 flex-wrap align-items-center">
     <select name="jurisdiction" class="form-select form-select-sm" style="max-width:200px" onchange="this.form.submit()">
       <option value="">All jurisdictions</option>
       <option value="maricopa-county" {% if filter_jurisdiction == 'maricopa-county' %}selected{% endif %}>Maricopa County</option>
@@ -14,7 +14,11 @@
       <option value="gilbert" {% if filter_jurisdiction == 'gilbert' %}selected{% endif %}>Gilbert</option>
       <option value="scottsdale" {% if filter_jurisdiction == 'scottsdale' %}selected{% endif %}>Scottsdale</option>
     </select>
-    <noscript><button class="btn btn-sm btn-outline-primary">Filter</button></noscript>
+    <input type="date" name="start_date" class="form-control form-control-sm" style="max-width:160px"
+           value="{{ filter_start_date }}" placeholder="Start date">
+    <input type="date" name="end_date" class="form-control form-control-sm" style="max-width:160px"
+           value="{{ filter_end_date }}" placeholder="End date">
+    <button class="btn btn-sm btn-outline-primary" type="submit">Filter</button>
   </form>
 </div>
 

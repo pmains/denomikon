@@ -29,18 +29,38 @@
   {% endif %}
 
   <div class="article-body">
-    {{ article.body|markdown }}
+    {{ article.body|markdown|safe }}
   </div>
 
   {% if article.sources %}
   <div class="mt-4 p-3 bg-light rounded">
     <h6>Sources</h6>
     <ul class="mb-0">
+      {% set body_names = {
+        'chandler-cc': 'Chandler City Council',
+        'chandler-pz': 'Chandler Planning & Zoning Commission',
+        'bos': 'Maricopa County Board of Supervisors',
+        'pz': 'Maricopa County Planning & Zoning',
+        'adj': 'Maricopa County Board of Adjustment',
+        'tempe-cc': 'Tempe City Council',
+        'tempe-drc': 'Tempe Development Review Commission',
+        'mesa-cc': 'Mesa City Council',
+        'mesa-pz': 'Mesa Planning & Zoning Board',
+        'scottsdale-cc': 'Scottsdale City Council',
+        'gilbert-tc': 'Gilbert Town Council',
+      } %}
       {% for src in article.sources %}
       <li>
         <a href="{{ src.source_url }}" target="_blank" rel="noopener">
-          {% if src.body %}{{ src.body }} · {% endif %}Meeting {{ src.meeting_id }}
-          {% if src.agenda_item_number %}· Item {{ src.agenda_item_number }}{% endif %}
+          {%- if src.item_title -%}
+            {{ src.item_title }}
+          {%- elif src.source_type == 'web' -%}
+            External source
+          {%- elif src.body -%}
+            {{ body_names.get(src.body, src.body) }} — Agenda item {{ src.agenda_item_number }}
+          {%- else -%}
+            {{ src.source_url }}
+          {%- endif -%}
         </a>
       </li>
       {% endfor %}
