@@ -112,6 +112,76 @@ def _name_looks_like_a_person(name: str) -> bool:
     return True
 
 
+def _find_or_create_person(
+    session: Session,
+    name: str,
+    normalized_name: str,
+    *,
+    log_prefix: str = "",
+) -> tuple[Person, bool]:
+    """Find an existing Person by fuzzy matching, or create a new one.
+
+    Matching strategy (in order):
+    1. Exact match on normalized_name.
+    2. Substring match: any word from the candidate name appears as a word
+       in an existing normalized_name (catches "Hartke" matching "kevin hartke").
+    3. Reverse substring: any word from an existing name matches the candidate
+       (catches partial full-name input matching an existing single-name record).
+
+    Returns (Person, was_created) tuple.
+    """
+    norm = normalized_name.lower().strip()
+    name_clean = name.strip()
+
+    # 1. Exact match
+    existing = session.execute(
+        select(Person).where(Person.normalized_name == norm)
+    ).scalar_one_or_none()
+    if existing:
+        existing.name = name_clean
+        existing.updated_at = datetime.now(timezone.utc)
+        return existing, False
+
+    # 2. Substring match: name parts of candidate appear in existing records
+    #    (e.g. "hartke" in "kevin hartke", "curley" in "kevin curley")
+    candidate_words = set(norm.split())
+    if candidate_words:
+        # Build OR clause: for each word, check if any existing normalized_name
+        # contains that word as a whole word
+        word_conditions = []
+        for word in candidate_words:
+            if len(word) >= 3:  # ignore very short words
+                word_conditions.append(Person.normalized_name.like(f"% {word}"))
+                word_conditions.append(Person.normalized_name.like(f"{word} %"))
+                word_conditions.append(Person.normalized_name == word)
+        if word_conditions:
+            matches = session.execute(
+                select(Person).where(or_(*word_conditions))
+            ).scalars().all()
+            if matches:
+                # Prefer full-name records (contain space) over single-name
+                full = [m for m in matches if " " in (m.name or "")]
+                best = full[0] if full else matches[0]
+                best.name = name_clean
+                best.updated_at = datetime.now(timezone.utc)
+                log.info(
+                    "%sFuzzy-matched '%s' → existing Person %d (%s)",
+                    log_prefix, norm, best.id, best.normalized_name,
+                )
+                return best, False
+
+    # 3. Create new Person record
+    new_p = Person(name=name_clean, normalized_name=norm)
+    session.add(new_p)
+    session.flush()
+    log.info(
+        "%sCreated new Person %d: '%s' (norm=%s)",
+        log_prefix, new_p.id, name_clean, norm,
+    )
+    return new_p, True
+
+
+
 def create_or_get_meeting(session: Session, body: str, meeting_dict: dict) -> Meeting:
     """Get or create a meeting row, setting sync_status=pending for new rows.
 
@@ -620,6 +690,12 @@ def persist_votes(
     warnings.filterwarnings("ignore", category=sa_exc.SAWarning, module="db")
     """Persist supervisor info and vote results for a meeting.
 
+    NOTE: This function writes to LEGACY tables ``meeting_supervisors`` and
+    ``supervisor_votes``.  New bodies should use ``member_votes`` and
+    ``meeting_attendance`` instead (via ``persist_pz_votes()``).
+    A future migration should redirect BOS vote data to ``member_votes``
+    and meeting attendance to ``meeting_attendance``.
+
     1. Upsert supervisor records (by normalized_name).
     2. Delete existing meeting_supervisors, agenda_item_votes, supervisor_votes
        for this meeting_id.
@@ -666,13 +742,11 @@ def persist_votes(
             _ensure_membership(session, existing.id, body, meeting_date)
             supervisor_map[norm] = existing.id
         else:
-            new = Supervisor(
-                name=sup_name,
-                normalized_name=norm,
+            person, _ = _find_or_create_person(
+                session, sup_name, norm,
+                log_prefix="persist_votes[",
             )
-            session.add(new)
-            session.flush()
-            supervisor_map[norm] = new.id
+            supervisor_map[norm] = person.id
 
             # If Tempe council member, pass role info to membership
             role = None
@@ -681,7 +755,7 @@ def persist_votes(
                 role = titler_map.get(norm, "Councilmember")
 
             # Ensure BodyMembership exists for new person + body
-            membership = _ensure_membership(session, new.id, body, meeting_date)
+            membership = _ensure_membership(session, person.id, body, meeting_date)
             if membership and role:
                 membership.role = role
 
@@ -787,24 +861,30 @@ def persist_votes(
                     sup_id = existing_sup.id
                     supervisor_map[norm_name] = sup_id
                 else:
-                    # Create a new supervisor record for this name
-                    new = Supervisor(
-                        name=name,
-                        normalized_name=norm_name,
+                    # Create a new supervisor record for this name (with fuzzy dedup)
+                    person, _ = _find_or_create_person(
+                        session, name, norm_name,
+                        log_prefix="persist_votes[sv]",
                     )
-                    session.add(new)
-                    session.flush()
-                    sup_id = new.id
+                    sup_id = person.id
                     supervisor_map[norm_name] = sup_id
 
                     # Ensure BodyMembership for this new person
-                    _ensure_membership(session, new.id, body, meeting_date)
+                    _ensure_membership(session, person.id, body, meeting_date)
+
+            # Normalize vote value: aye→yes, nay→no; preserve original in raw_vote_text
+            raw_vote = sv.get("vote", "unknown")
+            norm_vote = raw_vote.lower().strip()
+            if norm_vote in ("aye",):
+                norm_vote = "yes"
+            elif norm_vote in ("nay",):
+                norm_vote = "no"
 
             sv_rec = SupervisorVote(
                 agenda_item_vote_id=aiv.id,
                 supervisor_id=sup_id,
-                vote=sv.get("vote", "unknown"),
-                raw_vote_text=sv.get("raw_vote_text"),
+                vote=norm_vote,
+                raw_vote_text=sv.get("raw_vote_text") or raw_vote,
             )
             session.add(sv_rec)
 
@@ -1016,30 +1096,11 @@ def persist_pz_votes(
         name_to_id: dict[str, int] = {}
         for name in commissioner_names:
             norm = name.lower().strip().rstrip(".")
-            matches = session.execute(
-                select(Person).where(Person.normalized_name == norm)
-            ).scalars().all()
-            if not matches:
-                # Minutes use last names only — try matching by last name
-                matches = session.execute(
-                    select(Person).where(Person.normalized_name.like(f"% {norm}"))
-                ).scalars().all()
-            if matches:
-                # Prefer full-name records (contain space) over single-name duplicates
-                full = [m for m in matches if " " in (m.name or "")]
-                if full:
-                    existing = full[0]
-                else:
-                    existing = matches[0]
-                name_to_id[name] = existing.id
-            else:
-                new_person = Person(
-                    name=name.strip(),
-                    normalized_name=norm,
-                )
-                session.add(new_person)
-                session.flush()
-                name_to_id[name] = new_person.id
+            person, _ = _find_or_create_person(
+                session, name.strip(), norm,
+                log_prefix="persist_pz_votes[",
+            )
+            name_to_id[name] = person.id
 
         # Delete existing member votes for this AIV
         session.execute(
@@ -1082,20 +1143,11 @@ def persist_pz_votes(
     if absent_commissioner_names:
         for name in absent_commissioner_names:
             norm = name.lower().strip().rstrip(".")
-            matches = session.execute(
-                select(Person).where(Person.normalized_name == norm)
-            ).scalars().all()
-            if not matches:
-                matches = session.execute(
-                    select(Person).where(Person.normalized_name.like(f"% {norm}"))
-                ).scalars().all()
-            if not matches:
-                new_p = Person(name=name.strip(), normalized_name=norm)
-                session.add(new_p)
-                session.flush()
-                matches = [new_p]
-            full = [m for m in matches if " " in (m.name or "")]
-            pid = (full[0] if full else matches[0]).id
+            person, _ = _find_or_create_person(
+                session, name.strip(), norm,
+                log_prefix="persist_pz_votes[absent]",
+            )
+            pid = person.id
             aivs = session.execute(
                 select(AgendaItemVote).where(
                     AgendaItemVote.body == body,

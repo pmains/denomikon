@@ -313,27 +313,19 @@ async def main() -> int:
             if not pb:
                 return
             titler_map = {"woods": "Mayor", "garlid": "Vice Mayor"}
-            from db import BodyMembership, _ensure_membership
+            from db import BodyMembership, _ensure_membership, _find_or_create_person
             for sup in sup_list:
                 norm = sup.get("normalized_name", "").strip().lower()
                 if not norm:
                     continue
-                existing = session.execute(
-                    select(Supervisor).where(Supervisor.normalized_name == norm)
-                ).scalar_one_or_none()
                 role = titler_map.get(norm, "Councilmember")
                 name = sup.get("name", norm.capitalize())
                 person_id = None
-                if existing:
-                    person_id = existing.id
-                else:
-                    new_person = Supervisor(
-                        name=name,
-                        normalized_name=norm,
-                    )
-                    session.add(new_person)
-                    session.flush()
-                    person_id = new_person.id
+                person, _ = _find_or_create_person(
+                    session, name, norm,
+                    log_prefix="_ensure_tempe_members[",
+                )
+                person_id = person.id
 
                 if person_id:
                     membership = _ensure_membership(session, person_id, "tempe-cc")
@@ -742,6 +734,207 @@ async def main() -> int:
         session.close()
         ts = _dt.datetime.now().strftime("%H:%M:%S")
         print("%s Synced %d Chandler agenda items across %d meeting(s)" % (ts, total_items, meeting_count))
+        return 0
+
+    # ── MCACC sync (Maricopa County AgendaCenter) ──
+    if args.source == "mcacc" and args.sync:
+        import datetime as _dt
+        from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
+        from db import Meeting as MeetingModel
+        from sqlalchemy import select
+
+        from scraper.mcacc import (
+            MCACC_BODY_MAP, MCACC_BODY_CODES,
+            body_code_to_cid, body_code_to_name,
+            build_mcacc_search_url,
+            extract_mcacc_meetings,
+            extract_mcacc_agenda_items,
+            _format_mm_dd_yyyy as fmt_date_fn,
+        )
+
+        init_db()
+
+        body_codes_str = getattr(args, "bodies", None) or ",".join(MCACC_BODY_CODES)
+        body_codes = [s.strip() for s in body_codes_str.split(",") if s.strip()]
+
+        # Validate body codes
+        valid_codes = MCACC_BODY_CODES
+        unknown = [b for b in body_codes if b not in valid_codes]
+        if unknown:
+            print(f"Unknown body codes: {unknown}. Valid: {', '.join(valid_codes)}")
+            return 1
+
+        now = _dt.date.today()
+        if args.start_date:
+            sd = _dt.date.fromisoformat(args.start_date)
+            pz_start = fmt_date_fn(args.start_date) or f"{sd.month:02d}/{sd.day:02d}/{sd.year}"
+        else:
+            three_months_ago = now - _dt.timedelta(days=90)
+            pz_start = f"{three_months_ago.month:02d}/01/{three_months_ago.year}"
+
+        if args.end_date:
+            ed = _dt.date.fromisoformat(args.end_date)
+            pz_end = fmt_date_fn(args.end_date) or f"{ed.month:02d}/{ed.day:02d}/{ed.year}"
+        else:
+            pz_end = f"{now.month:02d}/{min(28, now.day):02d}/{now.year}"
+
+        # Resolve public_body_id mapping and register MCACC bodies
+        from db import PublicBody as PublicBodyModel
+        from scraper.mcacc import ensure_mcacc_public_bodies
+        session = get_session()
+        pb_map = {}
+        try:
+            # Register MCACC bodies in public_bodies if needed
+            mcacc_pb_ids = ensure_mcacc_public_bodies(session)
+            session.commit()
+            for pb in session.execute(select(PublicBodyModel)).scalars().all():
+                pb_map[pb.body_code] = pb
+        except Exception:
+            pass
+        session.close()
+
+        async_playwright = get_async_playwright()
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=not args.headed)
+            page = await browser.new_page()
+            page.set_default_timeout(60000)
+            try:
+                grand_total_items = 0
+                grand_total_meetings = 0
+
+                for body_code in body_codes:
+                    cid = body_code_to_cid(body_code)
+                    display_name = body_code_to_name(body_code)
+                    if not cid:
+                        print(f"  {body_code}: unknown CID, skipping")
+                        continue
+
+                    search_url = build_mcacc_search_url(cid, pz_start, pz_end)
+                    print(f"{display_name} ({body_code}): searching {pz_start} to {pz_end}")
+
+                    try:
+                        meetings = await extract_mcacc_meetings(page, search_url, body_code)
+                    except Exception as e:
+                        print(f"  {body_code}: search failed: {e}")
+                        continue
+
+                    if not meetings:
+                        print(f"  {body_code}: no meetings found")
+                        continue
+
+                    if args.limit:
+                        meetings = meetings[:args.limit]
+
+                    print(f"  {body_code}: found {len(meetings)} meeting(s)")
+
+                    session = get_session()
+                    total_items = 0
+
+                    pb = pb_map.get(body_code)
+
+                    for idx, meeting in enumerate(meetings, 1):
+                        meeting_dict = {
+                            "meeting_id": meeting.meeting_id,
+                            "meeting_date": meeting.meeting_date,
+                            "meeting_type": meeting.meeting_type,
+                            "meeting_title": meeting.meeting_title,
+                            "source_url": meeting.agenda_url,
+                        }
+
+                        # Check if already synced
+                        db_m = session.execute(
+                            select(MeetingModel).where(
+                                MeetingModel.body == body_code,
+                                MeetingModel.meeting_id == meeting.meeting_id,
+                            )
+                        ).scalar_one_or_none()
+
+                        if db_m and db_m.sync_status in ("complete", "no_agenda") and not args.force:
+                            print(f"    [{idx}/{len(meetings)}] {meeting.meeting_id} {meeting.meeting_date}: {db_m.sync_status} (skip)")
+                            if db_m.sync_status == "complete":
+                                total_items += db_m.item_count_actual or 0
+                            continue
+
+                        # Build the HTML agenda URL (add ?html=true if not present)
+                        agenda_html_url = meeting.agenda_url
+                        if "?html=true" not in agenda_html_url:
+                            if "?" in agenda_html_url:
+                                agenda_html_url += "&html=true"
+                            else:
+                                agenda_html_url += "?html=true"
+
+                        # Fetch agenda items
+                        try:
+                            items = await extract_mcacc_agenda_items(page, agenda_html_url, body_code)
+                        except Exception as e:
+                            print(f"    [{idx}/{len(meetings)}] {meeting.meeting_id} {meeting.meeting_date}: FAILED items - {e}")
+                            try:
+                                update_sync_status(session, body_code, meeting.meeting_id, "failed", error=str(e)[:500])
+                                session.commit()
+                            except Exception:
+                                session.rollback()
+                            continue
+
+                        if not items:
+                            # Tag as no_agenda if we got the page but no parseable items
+                            print(f"    [{idx}/{len(meetings)}] {meeting.meeting_id} {meeting.meeting_date}: no items (no_agenda)")
+                            replace_meeting_data_safe(session, body_code, meeting.meeting_id, meeting_dict, [])
+                            continue
+
+                        # Normalize items
+                        for it in items:
+                            it["meeting_id"] = meeting.meeting_id
+                            it["agenda_item_id"] = f"{meeting.meeting_id}-{it.get('agenda_item_number', '0')}-item"
+                            it["source_body"] = body_code
+                            it["meeting_type"] = meeting.meeting_type
+                            it["meeting_date"] = meeting.meeting_date
+
+                        replace_meeting_data_safe(session, body_code, meeting.meeting_id, meeting_dict, items)
+                        total_items += len(items)
+                        print(f"    [{idx}/{len(meetings)}] {meeting.meeting_id} {meeting.meeting_date}: {len(items)} item(s)")
+
+                        # ── Minutes-based member extraction ──
+                        minutes_url = meeting.minutes_url
+                        if minutes_url:
+                            try:
+                                from scraper.mcacc import extract_members_from_minutes_pdf
+                                from db import _find_or_create_person, _ensure_membership
+                                member_data = extract_members_from_minutes_pdf(minutes_url)
+                                if member_data:
+                                    pb = session.execute(
+                                        select(PublicBodyModel).where(
+                                            PublicBodyModel.body_code == body_code
+                                        )
+                                    ).scalar_one_or_none()
+                                    if pb:
+                                        member_count = 0
+                                        for md in member_data:
+                                            person, _ = _find_or_create_person(
+                                                session, md["name"], md["normalized_name"],
+                                                log_prefix=f"mcacc[{body_code}]",
+                                            )
+                                            membership = _ensure_membership(
+                                                session, person.id, body_code,
+                                                meeting_date=_dt.date.today(),
+                                            )
+                                            if membership and md.get("role"):
+                                                membership.role = md["role"]
+                                            member_count += 1
+                                        session.commit()
+                                        print(f"          members: {member_count} extracted from minutes")
+                            except Exception as me:
+                                log.debug("MCACC minutes member extraction failed: %s", me)
+
+                    session.close()
+                    grand_total_items += total_items
+                    grand_total_meetings += len(meetings)
+                    print(f"  {body_code}: synced {total_items} items across {len(meetings)} meeting(s)")
+
+                ts = _dt.datetime.now().strftime("%H:%M:%S")
+                print(f"{ts} MCACC synced {grand_total_items} items across {grand_total_meetings} meeting(s) across {len(body_codes)} body/bodies")
+                return 0
+            finally:
+                await browser.close()
         return 0
 
     # ── Gilbert sync (via OnBase JSON) ──

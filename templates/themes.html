@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Theme Preview — Poliscopic{% endblock %}
+
+{% block extra_css %}
+<style>
+.theme-card {
+    transition: transform .15s ease, box-shadow .15s ease;
+    cursor: pointer;
+}
+.theme-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 6px 20px rgba(0,0,0,.12);
+}
+.color-swatch {
+    display: inline-block;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 2px solid #eee;
+    margin-right: 4px;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<h1 class="mb-3">Theme Previews</h1>
+<p class="lead mb-4">Different color schemes applied to the front-page layout. Click a theme to see the full page.</p>
+
+<div class="row g-4">
+    {% for id, theme in themes.items() %}
+    <div class="col-md-6 col-lg-3">
+        <a href="/themes/{{ id }}" class="text-decoration-none">
+            <div class="card theme-card h-100">
+                <div class="card-body">
+                    <h5 class="card-title">{{ theme.name }}</h5>
+                    <p class="card-text small text-muted">{{ theme.desc }}</p>
+                    <div class="mb-2">
+                        {% for role, hex in theme.colors.items() %}
+                        <span class="color-swatch" style="background:{{ hex }}" title="{{ role }}: {{ hex }}"></span>
+                        {% endfor %}
+                    </div>
+                    <div class="small text-muted">
+                        <code>{{ theme.colors.primary }}</code> nav<br>
+                        <code>{{ theme.colors.accent }}</code> buttons
+                    </div>
+                </div>
+            </div>
+        </a>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

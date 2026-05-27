@@ -242,7 +242,7 @@
                 <td>{{ sv.agenda_item_number }}</td>
                 <td>{% if sv.agenda_item_title %}{{ sv.agenda_item_title[:60] }}{% if sv.agenda_item_title|length > 60 %}...{% endif %}{% else %}&mdash;{% endif %}</td>
                 <td>{{ vote_badge(sv.supervisor_vote or '') }}</td>
-                <td><span class="badge bg-secondary">{{ sv.motion_result or '' }}</span></td>
+                <td><span class="badge bg-{% if sv.motion_result in ('approved','carried') %}success{% elif sv.motion_result in ('denied','failed') %}danger{% elif sv.motion_result == 'continued' %}info{% else %}secondary{% endif %}">{{ sv.motion_result or '' }}</span></td>
                 <td>{{ vote_badge(sv.majority_position) if sv.majority_position else '&mdash;'|safe }}</td>
                 <td>
                     {% if sv.with_or_against_majority %}
@@ -284,7 +284,7 @@
                 <td>{{ d.agenda_item_number }}</td>
                 <td>{% if d.agenda_item_title %}{{ d.agenda_item_title[:60] }}{% if d.agenda_item_title|length > 60 %}...{% endif %}{% else %}&mdash;{% endif %}</td>
                 <td>{{ vote_badge(d.supervisor_vote or '') }}</td>
-                <td><span class="badge bg-secondary">{{ d.motion_result or '' }}</span></td>
+                <td><span class="badge bg-{% if d.motion_result in ('approved','carried') %}success{% elif d.motion_result in ('denied','failed') %}danger{% elif d.motion_result == 'continued' %}info{% else %}secondary{% endif %}">{{ d.motion_result or '' }}</span></td>
                 <td>{{ vote_badge(d.majority_position) if d.majority_position else '&mdash;'|safe }}</td>
             </tr>
             {% endfor %}
@@ -319,7 +319,7 @@
                 <td>{{ sw.agenda_item_number }}</td>
                 <td>{{ (sw.agenda_item_title or '')[:60] }}{% if (sw.agenda_item_title or '')|length > 60 %}...{% endif %}</td>
                 <td>{{ vote_badge(sw.supervisor_vote) }}</td>
-                <td><span class="badge bg-secondary">{{ sw.motion_result }}</span></td>
+                <td><span class="badge bg-{% if sw.motion_result in ('approved','carried') %}success{% elif sw.motion_result in ('denied','failed') %}danger{% elif sw.motion_result == 'continued' %}info{% else %}secondary{% endif %}">{{ sw.motion_result }}</span></td>
                 <td><code>{{ sw.vote_tally }}</code></td>
             </tr>
             {% endfor %}
@@ -351,7 +351,7 @@
                 <td>{{ a.meeting_type }}</td>
                 <td>{{ a.agenda_item_number }}</td>
                 <td>{% if a.agenda_item_title %}{{ a.agenda_item_title[:60] }}{% if a.agenda_item_title|length > 60 %}...{% endif %}{% else %}&mdash;{% endif %}</td>
-                <td><span class="badge bg-secondary">{{ a.motion_result or '' }}</span></td>
+                <td><span class="badge bg-{% if a.motion_result in ('approved','carried') %}success{% elif a.motion_result in ('denied','failed') %}danger{% elif a.motion_result == 'continued' %}info{% else %}secondary{% endif %}">{{ a.motion_result or '' }}</span></td>
             </tr>
             {% endfor %}
         </tbody>
@@ -444,7 +444,7 @@
                 <td>{% if r.agenda_item_title %}{{ r.agenda_item_title[:50] }}{% if r.agenda_item_title|length > 50 %}...{% endif %}{% else %}&mdash;{% endif %}</td>
                 <td>{% if r.c_number %}<code>{{ r.c_number }}</code>{% else %}&mdash;{% endif %}</td>
                 <td>{{ vote_badge(r.vote or '') }}</td>
-                <td><span class="badge bg-secondary">{{ r.motion_result or '' }}</span></td>
+                <td><span class="badge bg-{% if r.motion_result in ('approved','carried') %}success{% elif r.motion_result in ('denied','failed') %}danger{% elif r.motion_result == 'continued' %}info{% else %}secondary{% endif %}">{{ r.motion_result or '' }}</span></td>
                 <td>{% if r.is_split_vote %}<span class="badge bg-warning text-dark">Split</span>{% else %}&mdash;{% endif %}</td>
                 <td>{% if r.majority_position %}{{ vote_badge(r.majority_position) }}{% else %}&mdash;{% endif %}</td>
                 <td>{% if r.with_or_against_majority %}{{ majority_badge(r.with_or_against_majority) }}{% else %}&mdash;{% endif %}</td>

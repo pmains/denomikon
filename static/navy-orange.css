@@ -1,0 +1,351 @@
+
+        :root {
+            --theme-primary: #05235B;
+            --theme-secondary: #0456AF;
+            --theme-accent: #ED6800;
+            --theme-highlight: #FAB003;
+        }
+
+        /* ── Navbar ── */
+        .navbar-dark.bg-dark {
+            background-color: #05235B !important;
+            border-top: 4px solid #ED6800 !important;
+        }
+        .navbar-brand { color: #fff !important; }
+        .navbar .nav-link { color: rgba(255,255,255,.85) !important; }
+        .navbar .nav-link:hover { color: #fff !important; }
+
+        /* ── Primary buttons = dark blue (all themes) ── */
+        .btn-primary {
+            background-color: #05235B !important;
+            border-color: #05235B !important;
+            color: #fff !important;
+        }
+        .btn-primary:hover {
+            background-color: #ED6800 !important;
+            border-color: #ED6800 !important;
+            color: #fff !important;
+        }
+        .btn-outline-primary {
+            border-color: #05235B !important;
+            color: #05235B !important;
+        }
+        .btn-outline-primary:hover {
+            background-color: #05235B !important;
+            color: #fff !important;
+        }
+
+        /* ── Secondary buttons = accent color (orange/yellow) ── */
+        .btn-secondary {
+            background-color: #ED6800 !important;
+            border-color: #ED6800 !important;
+            color: #fff !important;
+        }
+        .btn-secondary:hover {
+            background-color: #05235B !important;
+            border-color: #05235B !important;
+            color: #fff !important;
+        }
+        .btn-outline-secondary {
+            border-color: #ED6800 !important;
+            color: #ED6800 !important;
+        }
+        .btn-outline-secondary:hover {
+            background-color: #ED6800 !important;
+            color: #fff !important;
+        }
+
+        /* ── Outline variants for highlight colors ── */
+        .btn-outline-accent {
+            border-color: #ED6800 !important;
+            color: #ED6800 !important;
+        }
+        .btn-outline-accent:hover {
+            background-color: #ED6800 !important;
+            color: #fff !important;
+        }
+        .btn-outline-highlight {
+            border-color: #FAB003 !important;
+            color: #FAB003 !important;
+        }
+        .btn-outline-highlight:hover {
+            background-color: #FAB003 !important;
+            color: #05235B !important;
+        }
+        .btn-outline-primary-alt {
+            border-color: #0456AF !important;
+            color: #0456AF !important;
+        }
+        .btn-outline-primary-alt:hover {
+            background-color: #0456AF !important;
+            color: #fff !important;
+        }
+
+        /* ── Links: secondary color, hover to primary ── */
+        a { color: #0456AF; }
+        a:hover { color: #05235B; }
+
+        /* ── Badges ── */
+        .badge.bg-primary {
+            background-color: #0456AF !important;
+            color: #fff !important;
+        }
+        .badge.bg-secondary {
+            background-color: #ED6800 !important;
+            color: #fff !important;
+        }
+        a.badge.bg-primary:hover {
+            background-color: #05235B !important;
+            color: #fff !important;
+        }
+        a.badge.bg-secondary:hover {
+            background-color: #05235B !important;
+            color: #fff !important;
+        }
+
+        /* ── List groups, cards ── */
+        .list-group-item-action:hover {
+            background-color: color-mix(in srgb, #ED6800 8%, white) !important;
+        }
+        .card {
+            border-color: color-mix(in srgb, #05235B 20%, white) !important;
+        }
+
+        /* ── Text & border helpers ── */
+        .text-primary { color: #0456AF !important; }
+        .text-secondary { color: #ED6800 !important; }
+        .border-primary { border-color: #ED6800 !important; }
+        .bg-primary { background-color: #05235B !important; }
+
+        /* ── Dashboard stat cards ── */
+        .bg-soft-primary {
+            background-color: color-mix(in srgb, #05235B 8%, white) !important;
+        }
+        .bg-soft-secondary {
+            background-color: color-mix(in srgb, #0456AF 8%, white) !important;
+        }
+        .bg-soft-accent {
+            background-color: color-mix(in srgb, #ED6800 8%, white) !important;
+        }
+        .bg-soft-highlight {
+            background-color: color-mix(in srgb, #FAB003 8%, white) !important;
+        }
+
+        /* ── Pagination ── */
+        .page-link { color: #0456AF; }
+        .page-item.active .page-link {
+            background-color: #0456AF;
+            border-color: #0456AF;
+        }
+
+        /* ── Accordion ── */
+        .accordion-button:not(.collapsed) {
+            background-color: color-mix(in srgb, #0456AF 10%, white);
+            color: #05235B;
+        }
+
+        /* ── Dividers, blockquotes ── */
+        hr {
+            border-color: color-mix(in srgb, #FAB003 30%, white) !important;
+        }
+        blockquote {
+            border-left-color: #ED6800 !important;
+        }
+
+        /* ── Alerts ── */
+        .alert-primary {
+            background-color: color-mix(in srgb, #05235B 8%, white) !important;
+            border-color: color-mix(in srgb, #05235B 30%, white) !important;
+            color: #05235B !important;
+        }
+        .alert-secondary {
+            background-color: color-mix(in srgb, #0456AF 8%, white) !important;
+            border-color: color-mix(in srgb, #0456AF 30%, white) !important;
+            color: #05235B !important;
+        }
+
+        /* ── Progress bars ── */
+        .progress-bar {
+            background-color: #0456AF !important;
+        }
+        .progress-bar.bg-success {
+            background-color: color-mix(in srgb, #ED6800 60%, white) !important;
+        }
+        .progress-bar.bg-warning {
+            background-color: #FAB003 !important;
+        }
+
+        /* ── Tables ── */
+        .table-striped > tbody > tr:nth-of-type(odd) {
+            background-color: color-mix(in srgb, #05235B 3%, white) !important;
+        }
+        .table-hover > tbody > tr:hover {
+            background-color: color-mix(in srgb, #ED6800 10%, white) !important;
+        }
+
+        /* ── Misc ── */
+        .btn-outline-light:hover {
+            background-color: #FAB003 !important;
+            border-color: #FAB003 !important;
+        }
+    
+/* ── Theme tables ── */
+.table-dark {
+    --bs-table-bg: #05235B !important;
+    --bs-table-striped-bg: #0a2d6b !important;
+    --bs-table-striped-color: #fff !important;
+    --bs-table-active-bg: #05235B !important;
+    --bs-table-hover-bg: #0a2d6b !important;
+    color: #fff !important;
+    border-color: color-mix(in srgb, #05235B 60%, white) !important;
+}
+.table-primary {
+    --bs-table-bg: color-mix(in srgb, #ED6800 10%, white) !important;
+    --bs-table-striped-bg: color-mix(in srgb, #ED6800 8%, white) !important;
+    --bs-table-active-bg: color-mix(in srgb, #ED6800 15%, white) !important;
+    --bs-table-hover-bg: color-mix(in srgb, #ED6800 12%, white) !important;
+    color: #05235B !important;
+    border-color: color-mix(in srgb, #ED6800 25%, white) !important;
+}
+.table-secondary {
+    --bs-table-bg: color-mix(in srgb, #0456AF 10%, white) !important;
+    --bs-table-striped-bg: color-mix(in srgb, #0456AF 8%, white) !important;
+    --bs-table-active-bg: color-mix(in srgb, #0456AF 15%, white) !important;
+    --bs-table-hover-bg: color-mix(in srgb, #0456AF 12%, white) !important;
+    color: #05235B !important;
+    border-color: color-mix(in srgb, #0456AF 25%, white) !important;
+}
+
+/* ── Semantic colors derived from the palette ── */
+/* Info = medium blue #0456AF */
+/* Warning = yellow #FAB003 */
+/* Danger = dark orange #9e4500 (orange darkened 15 L) */
+/* Success = teal derived from blue shifted toward green #008a7a */
+
+.btn-info {
+    background-color: #0456AF !important;
+    border-color: #0456AF !important;
+    color: #fff !important;
+}
+.btn-info:hover {
+    background-color: #05235B !important;
+    border-color: #05235B !important;
+    color: #fff !important;
+}
+
+.btn-warning {
+    background-color: #FAB003 !important;
+    border-color: #FAB003 !important;
+    color: #05235B !important;
+}
+.btn-warning:hover {
+    background-color: #ED6800 !important;
+    border-color: #ED6800 !important;
+    color: #fff !important;
+}
+
+.btn-danger {
+    background-color: #ae2313 !important;
+    border-color: #ae2313 !important;
+    color: #fff !important;
+}
+.btn-danger:hover {
+    background-color: #ED6800 !important;
+    border-color: #ED6800 !important;
+    color: #fff !important;
+}
+
+.btn-success {
+    background-color: #008a7a !important;
+    border-color: #008a7a !important;
+    color: #fff !important;
+}
+.btn-success:hover {
+    background-color: #004d43 !important;
+    border-color: #004d43 !important;
+    color: #fff !important;
+}
+
+/* Alert variants */
+.alert-success {
+    background-color: color-mix(in srgb, #008a7a 10%, white) !important;
+    border-color: color-mix(in srgb, #008a7a 30%, white) !important;
+    color: #004d43 !important;
+}
+.alert-danger {
+    background-color: color-mix(in srgb, #ae2313 10%, white) !important;
+    border-color: color-mix(in srgb, #ae2313 30%, white) !important;
+    color: #9e4500 !important;
+}
+.alert-warning {
+    background-color: color-mix(in srgb, #FAB003 15%, white) !important;
+    border-color: color-mix(in srgb, #FAB003 30%, white) !important;
+    color: #ae2313 !important;
+}
+.alert-info {
+    background-color: color-mix(in srgb, #0456AF 8%, white) !important;
+    border-color: color-mix(in srgb, #0456AF 25%, white) !important;
+    color: #05235B !important;
+}
+
+/* ── Info: medium blue #0456AF ── */
+.alert-info, .text-info, .badge.bg-info, .table-info,
+.border-info, .link-info, .list-group-item-info {
+    --bs-info: #0456AF !important;
+    --bs-table-bg: color-mix(in srgb, #0456AF 10%, white) !important;
+    background-color: color-mix(in srgb, #0456AF 10%, white) !important;
+    border-color: color-mix(in srgb, #0456AF 30%, white) !important;
+    color: #05235B !important;
+}
+
+/* ── Warning: yellow #FAB003 ── */
+.alert-warning, .text-warning, .badge.bg-warning, .table-warning,
+.border-warning, .link-warning, .list-group-item-warning {
+    --bs-warning: #FAB003 !important;
+    --bs-table-bg: color-mix(in srgb, #FAB003 15%, white) !important;
+    background-color: color-mix(in srgb, #FAB003 15%, white) !important;
+    border-color: color-mix(in srgb, #FAB003 30%, white) !important;
+    color: #ae2313 !important;
+}
+
+/* ── Danger: dark orange #9e4500 ── */
+.alert-danger, .text-danger, .badge.bg-danger, .table-danger,
+.border-danger, .link-danger, .list-group-item-danger {
+    --bs-danger: #ae2313 !important;
+    --bs-table-bg: color-mix(in srgb, #ae2313 10%, white) !important;
+    background-color: color-mix(in srgb, #ae2313 10%, white) !important;
+    border-color: color-mix(in srgb, #ae2313 30%, white) !important;
+    color: #ae2313 !important;
+}
+
+/* ── Success: teal #008a7a ── */
+.alert-success, .text-success, .badge.bg-success, .table-success,
+.border-success, .link-success, .list-group-item-success {
+    --bs-success: #008a7a !important;
+    --bs-table-bg: color-mix(in srgb, #008a7a 10%, white) !important;
+    background-color: color-mix(in srgb, #008a7a 10%, white) !important;
+    border-color: color-mix(in srgb, #008a7a 30%, white) !important;
+    color: #004d43 !important;
+}
+
+/* ── Badge color hierarchy ── */
+/* Map Bootstrap contextual classes to our palette for consistent badges */
+.badge.bg-primary { background-color: #05235B !important; color: #fff !important; }
+.badge.bg-secondary { background-color: #ED6800 !important; color: #fff !important; }
+.badge.bg-info { background-color: #0456AF !important; color: #fff !important; }
+.badge.bg-success { background-color: #008a7a !important; color: #fff !important; }
+.badge.bg-warning { background-color: #FAB003 !important; color: #05235B !important; }
+.badge.bg-danger { background-color: #ae2313 !important; color: #fff !important; }
+.badge.bg-dark { background-color: #05235B !important; color: #fff !important; }
+.badge.bg-light {
+    background-color: color-mix(in srgb, #ED6800 20%, white) !important;
+    color: #05235B !important;
+}
+a.badge.bg-primary:hover,
+a.badge.bg-secondary:hover,
+a.badge.bg-info:hover,
+a.badge.bg-dark:hover { background-color: #ED6800 !important; }
+a.badge.bg-light:hover { background-color: #ED6800 !important; color: #fff !important; }
+a.badge.bg-success:hover { background-color: #004d43 !important; }
+a.badge.bg-warning:hover { background-color: #ED6800 !important; color: #fff !important; }
+a.badge.bg-danger:hover { background-color: #7a170a !important; }

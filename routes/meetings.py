@@ -85,6 +85,27 @@ def get_distinct_meeting_types(body=None, jurisdiction=None):
             "peoria-sub": "peoria-sub", "peoria subcommittee": "peoria-sub", "peoria-subcommittee-meeting": "peoria-sub",
 
             "gilbert-tc": "gilbert-tc", "gilbert town council": "gilbert-tc",
+            # MCACC bodies (Maricopa County AgendaCenter)
+            "mc-audit": "mc-audit", "audit advisory committee": "mc-audit",
+            "mc-benefit-trust": "mc-benefit-trust", "benefit board of trustees": "mc-benefit-trust",
+            "mc-community-action": "mc-community-action", "community action commission": "mc-community-action",
+            "mc-cdac": "mc-cdac", "community development advisory committee": "mc-cdac",
+            "mc-eed-policy": "mc-eed-policy", "early education division policy council": "mc-eed-policy",
+            "mc-flood-advisory": "mc-flood-advisory", "flood control advisory board": "mc-flood-advisory",
+            "mc-home": "mc-home", "home consortium": "mc-home",
+            "mc-mclepc": "mc-mclepc", "local emergency planning committee": "mc-mclepc",
+            "mc-mcao-psprs": "mc-mcao-psprs", "mcao public safety personnel retirement": "mc-mcao-psprs",
+            "mc-mcso-corp": "mc-mcso-corp", "mcso correctional officer retirement": "mc-mcso-corp",
+            "mc-mcso-psprs": "mc-mcso-psprs", "mcso public safety personnel retirement": "mc-mcso-psprs",
+            "mc-merit": "mc-merit", "merit systems commission": "mc-merit",
+            "mc-psfc": "mc-psfc", "public safety funding committee": "mc-psfc",
+            "mc-risk-trust": "mc-risk-trust", "self-insured risk trust fund": "mc-risk-trust",
+            "mc-smart-savings": "mc-smart-savings", "smart savings committee": "mc-smart-savings",
+            "mc-stadium": "mc-stadium", "stadium district board": "mc-stadium",
+            "mc-trp": "mc-trp", "travel reduction program": "mc-trp",
+            "mc-air-pollution": "mc-air-pollution", "air pollution hearing board": "mc-air-pollution",
+            "mc-bcab": "mc-bcab", "building code advisory board": "mc-bcab",
+            "mc-flood-stakeholder": "mc-flood-stakeholder", "flood control district stakeholder group": "mc-flood-stakeholder",
             # Scottsdale bodies
             "scottsdale-cc": "scottsdale-cc", "scottsdale city council": "scottsdale-cc",
             "scottsdale-pc": "scottsdale-pc", "scottsdale planning": "scottsdale-pc",
@@ -172,6 +193,27 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             "peoria-sub": "peoria-sub", "peoria subcommittee": "peoria-sub", "peoria-subcommittee-meeting": "peoria-sub",
 
             "gilbert-tc": "gilbert-tc", "gilbert town council": "gilbert-tc",
+            # MCACC bodies (Maricopa County AgendaCenter)
+            "mc-audit": "mc-audit",
+            "mc-benefit-trust": "mc-benefit-trust",
+            "mc-community-action": "mc-community-action",
+            "mc-cdac": "mc-cdac",
+            "mc-eed-policy": "mc-eed-policy",
+            "mc-flood-advisory": "mc-flood-advisory",
+            "mc-home": "mc-home",
+            "mc-mclepc": "mc-mclepc",
+            "mc-mcao-psprs": "mc-mcao-psprs",
+            "mc-mcso-corp": "mc-mcso-corp",
+            "mc-mcso-psprs": "mc-mcso-psprs",
+            "mc-merit": "mc-merit",
+            "mc-psfc": "mc-psfc",
+            "mc-risk-trust": "mc-risk-trust",
+            "mc-smart-savings": "mc-smart-savings",
+            "mc-stadium": "mc-stadium",
+            "mc-trp": "mc-trp",
+            "mc-air-pollution": "mc-air-pollution",
+            "mc-bcab": "mc-bcab",
+            "mc-flood-stakeholder": "mc-flood-stakeholder",
             # Scottsdale bodies
             "scottsdale-cc": "scottsdale-cc", "scottsdale city council": "scottsdale-cc",
             "scottsdale-pc": "scottsdale-pc", "scottsdale planning": "scottsdale-pc",
@@ -223,6 +265,69 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
     q = base_q.order_by(Meeting.meeting_date.desc(), Meeting.meeting_id.desc())
     q = q.offset((page - 1) * per_page).limit(per_page)
     rows = session.execute(q).all()
+
+    # ── Consistent source badge color scheme ──
+    # Blue (primary)      = City Councils, primary legislative bodies
+    # Orange (secondary)  = P&Z, DRC, BOA, HPC — land use / development
+    # Teal (success)      = Health, housing, community services
+    # Yellow (warning)    = Transportation, infrastructure, flood control
+    # Brick red (danger)  = Fiscal, pension, audit, enforcement
+    # Medium blue (info)  = Culture, museums, parks, stadiums, misc boards
+    _BODY_BADGE = {
+        # Maricopa County
+        "bos": "primary",
+        "pz": "secondary", "adj": "secondary",
+        "health": "success", "tab": "warning", "ida": "danger", "drain": "info",
+        # Tempe
+        "tempe-cc": "primary",
+        "tempe-drc": "secondary", "tempe-boa": "secondary", "tempe-hpc": "secondary",
+        "tempe-ha": "success", "tempe-rio": "warning",
+        "tempe-rmt": "danger", "tempe-jrc": "info",
+        # Mesa
+        "mesa-cc": "primary", "mesa-city-council": "primary",
+        "mesa-pz": "secondary", "mesa-drb": "secondary",
+        "mesa-boa": "secondary", "mesa-hpb": "secondary",
+        "mesa-cadence": "info", "mesa-eastmark1": "info", "mesa-eastmark2": "info",
+        # Chandler
+        "chandler-cc": "primary",
+        "chandler-pz": "secondary", "chandler-drc": "secondary",
+        "chandler-boa": "secondary", "chandler-hpc": "secondary",
+        "chandler-ida": "danger",
+        "chandler-prb": "info", "chandler-lb": "info",
+        "chandler-mf": "info", "chandler-cf": "info", "chandler-arts": "info",
+        "chandler-tc": "warning",
+        "chandler-mvc": "info", "chandler-hhsc": "success", "chandler-hrc": "info",
+        "chandler-dvc": "info", "chandler-pha": "success",
+        "chandler-nac": "info", "chandler-yc": "info", "chandler-pdc": "info",
+        "chandler-eda": "info", "chandler-psprs-f": "danger", "chandler-psprs-p": "danger",
+        "chandler-hcc": "success", "chandler-cpr": "info",
+        "chandler-hct": "danger", "chandler-wct": "danger", "chandler-air": "warning",
+        # Scottsdale
+        "scottsdale-cc": "primary",
+        "scottsdale-pc": "secondary", "scottsdale-boa": "secondary",
+        "scottsdale-drb": "secondary", "scottsdale-hpc": "secondary",
+        "scottsdale-baba": "secondary",
+        # Glendale
+        "glendale-cc": "primary",
+        # Gilbert
+        "gilbert-tc": "primary",
+        # Peoria
+        "peoria-cc": "primary", "peoria-pz": "secondary",
+        "peoria-boa": "secondary",
+        # Surprise
+        "surprise-cc": "primary",
+        # MCACC boards
+        "mc-audit": "danger", "mc-benefit-trust": "danger",
+        "mc-community-action": "success", "mc-cdac": "info",
+        "mc-eed-policy": "success", "mc-flood-advisory": "warning",
+        "mc-home": "success", "mc-mclepc": "warning",
+        "mc-mcao-psprs": "danger", "mc-mcso-corp": "danger",
+        "mc-mcso-psprs": "danger", "mc-merit": "danger",
+        "mc-psfc": "danger", "mc-risk-trust": "danger",
+        "mc-smart-savings": "danger", "mc-stadium": "info",
+        "mc-trp": "warning", "mc-air-pollution": "info",
+        "mc-bcab": "secondary", "mc-flood-stakeholder": "warning",
+    }
 
     meetings_list = []
     for row in rows:
@@ -335,6 +440,20 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             }
             source = scottsdale_labels.get(body_val, "Scottsdale")
             source_badge = "info"
+        elif body_val.startswith("mc-"):
+            mc_labels = {
+                "mc-audit": "Audit", "mc-benefit-trust": "Benefits",
+                "mc-community-action": "Comm Action", "mc-cdac": "CDAC",
+                "mc-eed-policy": "EED Policy", "mc-flood-advisory": "Flood Adv",
+                "mc-home": "HOME", "mc-mclepc": "MCLEPC",
+                "mc-mcao-psprs": "MCAO PSPRS", "mc-mcso-corp": "MCSO CORP",
+                "mc-mcso-psprs": "MCSO PSPRS", "mc-merit": "Merit",
+                "mc-psfc": "PSFC", "mc-risk-trust": "Risk Trust",
+                "mc-smart-savings": "Savings", "mc-stadium": "Stadium",
+                "mc-trp": "TRP", "mc-air-pollution": "Air Pollution",
+                "mc-bcab": "BCAB", "mc-flood-stakeholder": "Flood Stake",
+            }
+            source = mc_labels.get(body_val, "Maricopa")
         else:
             source = "IDA" if is_ida else ("TAB" if is_tab else ("BOH" if is_health else ("DRB" if is_drain else ("ADJ" if is_adj else ("PZ" if is_pz else "BOS")))))
             source_badge = "light" if is_ida else ("warning" if is_tab else ("success" if is_health else ("info" if is_drain else ("dark" if is_adj else ("secondary" if is_pz else "primary")))))
@@ -377,7 +496,7 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             "jurisdiction": jur_name,
             "jurisdiction_slug": jur_slug,
             "source": source,
-            "source_badge": source_badge,
+            "source_badge": _BODY_BADGE.get(body_val, source_badge),
             "sync_status": row.sync_status or "pending",
             "badge_class": SYNC_STATUS_BADGES.get((row.sync_status or "").lower(), "secondary"),
             "item_count": row.item_count,

@@ -11,6 +11,71 @@ from db.newsroom import Article, Tag, search_articles, search_agenda_items
 articles_bp = Blueprint("articles", __name__)
 
 
+def _code_to_name(code: str) -> str:
+    """Safely convert a body code to a human-readable name."""
+    if not code:
+        return code
+    # Maricopa County boards
+    _mc_names = {
+        "bos": "Maricopa County Board of Supervisors",
+        "pz": "Maricopa County Planning & Zoning",
+        "adj": "Maricopa County Board of Adjustment",
+        "health": "Maricopa County Board of Health",
+        "tab": "Maricopa County Transportation Advisory Board",
+        "ida": "Maricopa County Industrial Development Authority",
+    }
+    if code in _mc_names:
+        return _mc_names[code]
+
+    if code.startswith("mc-"):
+        # Convert mc-audit → Audit Advisory, mc-mcso-corp → MCSO CORP, etc.
+        rest = code[3:]  # strip "mc-"
+        label = rest.replace("-", " ").upper()
+        # Known MCACC board names
+        _mcacc = {
+            "audit": "Audit Advisory Committee",
+            "benefit trust": "Benefit Board of Trustees",
+            "community action": "Community Action Commission",
+            "cdac": "Community Development Advisory Committee",
+            "eed policy": "Early Education Division Policy Council",
+            "flood advisory": "Flood Control Advisory Board",
+            "home": "HOME Consortium",
+            "mclepc": "Local Emergency Planning Committee",
+            "mcao psprs": "MCAO PSPRS Local Board",
+            "mcso corp": "MCSO CORP Local Board",
+            "mcso psprs": "MCSO PSPRS Local Board",
+            "merit": "Merit Systems Commission",
+            "psfc": "Public Safety Funding Committee",
+            "risk trust": "Self-Insured Risk Trust Fund",
+            "smart savings": "Smart Savings Committee",
+            "stadium": "Stadium District Board",
+            "trp": "Travel Reduction Program",
+            "air pollution": "Air Pollution Hearing Board",
+            "bcab": "Building Code Advisory Board",
+            "flood stakeholder": "Flood Control Stakeholder Group",
+        }
+        return _mcacc.get(rest.replace("-", " "), f"Maricopa County {label}")
+
+    parts = code.split("-")
+    if len(parts) >= 2:
+        city = parts[0].title()
+        suffix = parts[-1].upper()
+        if suffix == "CC":
+            return f"{city} City Council"
+        if suffix == "PZ":
+            return f"{city} Planning & Zoning"
+        if suffix == "DRC" or suffix == "DRB":
+            return f"{city} Development Review Commission"
+        if suffix == "BOA":
+            return f"{city} Board of Adjustment"
+        if suffix == "HPC":
+            return f"{city} Historic Preservation Commission"
+        if suffix == "TC":
+            return f"{city} Town Council"
+        return f"{city} {suffix}"
+    return code.title()
+
+
 @articles_bp.route("/")
 def front_page():
     """Main front page — published news feed."""
@@ -53,6 +118,26 @@ def front_page():
     _body_names = {
         # Maricopa County
         "bos": "Maricopa County Board of Supervisors",
+        "mc-audit": "Maricopa County Audit Advisory Committee",
+        "mc-benefit-trust": "Maricopa County Benefit Board of Trustees",
+        "mc-community-action": "Maricopa County Community Action Commission",
+        "mc-cdac": "Maricopa County Community Development Advisory Committee",
+        "mc-eed-policy": "Maricopa County Early Education Division Policy Council",
+        "mc-flood-advisory": "Maricopa County Flood Control Advisory Board",
+        "mc-home": "Maricopa County HOME Consortium",
+        "mc-mclepc": "Maricopa County Local Emergency Planning Committee",
+        "mc-mcao-psprs": "Maricopa County MCAO PSPRS Local Board",
+        "mc-mcso-corp": "Maricopa County MCSO CORP Local Board",
+        "mc-mcso-psprs": "Maricopa County MCSO PSPRS Local Board",
+        "mc-merit": "Maricopa County Merit Systems Commission",
+        "mc-psfc": "Maricopa County Public Safety Funding Committee",
+        "mc-risk-trust": "Maricopa County Self-Insured Risk Trust Fund Board of Trustees",
+        "mc-smart-savings": "Maricopa County Smart Savings Committee",
+        "mc-stadium": "Maricopa County Stadium District Board",
+        "mc-trp": "Maricopa County Travel Reduction Program",
+        "mc-air-pollution": "Maricopa County Air Pollution Hearing Board",
+        "mc-bcab": "Maricopa County Building Code Advisory Board",
+        "mc-flood-stakeholder": "Maricopa County Flood Control District Stakeholder Group",
         "pz": "Maricopa County Planning & Zoning",
         "adj": "Maricopa County Board of Adjustment",
         "drain": "Maricopa County Drainage Review",
@@ -102,11 +187,36 @@ def front_page():
         # Scottsdale
         "scottsdale-cc": "Scottsdale City Council",
         # Gilbert
+        "glendale-cc": "Glendale City Council",
+        "peoria-cc": "Peoria City Council",
+        "peoria-pz": "Peoria Planning & Zoning Commission",
+        "surprise-cc": "Surprise City Council",
         "gilbert-tc": "Gilbert Town Council",
+        # MCACC bodies (Maricopa County AgendaCenter)
+        "mc-audit": "Audit Advisory Committee",
+        "mc-benefit-trust": "Benefit Board of Trustees",
+        "mc-community-action": "Community Action Commission",
+        "mc-cdac": "Community Development Advisory Committee",
+        "mc-eed-policy": "Early Education Division Policy Council",
+        "mc-flood-advisory": "Flood Control Advisory Board",
+        "mc-home": "HOME Consortium",
+        "mc-mclepc": "Maricopa County Local Emergency Planning Committee",
+        "mc-mcao-psprs": "MCAO PSPRS Local Board",
+        "mc-mcso-corp": "MCSO Correctional Officer Retirement Plan Local Board",
+        "mc-mcso-psprs": "MCSO PSPRS Local Board",
+        "mc-merit": "Merit Systems Commission",
+        "mc-psfc": "Public Safety Funding Committee",
+        "mc-risk-trust": "Self-Insured Risk Trust Fund Board of Trustees",
+        "mc-smart-savings": "Smart Savings Committee (Deferred Compensation)",
+        "mc-stadium": "Stadium District Board",
+        "mc-trp": "Travel Reduction Program",
+        "mc-air-pollution": "Air Pollution Hearing Board",
+        "mc-bcab": "Building Code Advisory Board",
+        "mc-flood-stakeholder": "Flood Control District Stakeholder Group",
     }
     upcoming_display = []
     for m in upcoming:
-        display = _body_names.get(m.body, m.body)
+        display = _body_names.get(m.body) if _body_names.get(m.body) else _code_to_name(m.body)
         upcoming_display.append({
             "body": m.body,
             "display_name": display,

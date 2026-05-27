@@ -193,7 +193,7 @@
                 <td>{{ sv.agenda_item_number }}</td>
                 <td>{{ sv.agenda_item_title[:60] }}{% if sv.agenda_item_title|length > 60 %}...{% endif %}</td>
                 <td><code>{{ sv.vote_tally }}</code></td>
-                <td><span class="badge bg-secondary">{{ sv.motion_result or '' }}</span></td>
+                <td><span class="badge bg-{% if sv.motion_result in ('approved','carried') %}success{% elif sv.motion_result in ('denied','failed') %}danger{% elif sv.motion_result == 'continued' %}info{% else %}secondary{% endif %}">{{ sv.motion_result or '' }}</span></td>
                 <td style="max-width:240px">
                     {% for mv in sv.member_votes %}
                     <a href="/members/{{ jurisdiction_slug }}/{{ body_code }}/{{ mv.slug }}" class="text-decoration-none badge bg-{{ {'yes':'success','aye':'success','no':'danger','nay':'danger','abstain':'warning','abstained':'warning','absent':'secondary','recused':'secondary'}.get(mv.vote|lower,'secondary') }} me-1">{{ mv.name.split()|last }}: {{ mv.vote|title }}</a>

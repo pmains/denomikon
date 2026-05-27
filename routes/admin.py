@@ -218,7 +218,8 @@ def _generate_pitch(suggestion: dict) -> dict:
     jurisdiction_map = {"bos": "Maricopa County", "pz": "Maricopa County PZ",
         "adj": "Maricopa County ADJ", "mesa-cc": "Mesa", "mesa-pz": "Mesa PZ",
         "chandler-cc": "Chandler", "chandler-pz": "Chandler PZ",
-        "tempe-cc": "Tempe", "scottsdale-cc": "Scottsdale", "gilbert-tc": "Gilbert"}
+        "tempe-cc": "Tempe", "scottsdale-cc": "Scottsdale", "gilbert-tc": "Gilbert",
+        "mc-": "Maricopa County"}
     location = ""
     for prefix, name in jurisdiction_map.items():
         if body.startswith(prefix): location = name; break

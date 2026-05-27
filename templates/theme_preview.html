@@ -1,0 +1,387 @@
+{% extends "base.html" %}
+{% block title %}{{ theme.name }} Preview — Poliscopic{% endblock %}
+
+{% block extra_css %}
+<style>
+{{ theme_css|safe }}
+.theme-badge {
+    position: fixed;
+    bottom: 16px;
+    right: 16px;
+    z-index: 9999;
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    box-shadow: 0 2px 12px rgba(0,0,0,.15);
+    opacity: .9;
+}
+.theme-badge:hover { opacity: 1; }
+.widget-section { scroll-margin-top: 80px; }
+.widget-section h2 {
+    font-size: 1rem;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: var(--theme-secondary, #0456AF);
+    border-bottom: 2px solid color-mix(in srgb, var(--theme-highlight, #FAB003) 30%, transparent);
+    padding-bottom: 6px;
+    margin-bottom: 16px;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <a href="/themes" class="text-decoration-none small">&larr; Back to themes</a>
+        <h1 class="mt-2">{{ theme.name }}</h1>
+        <p class="text-muted">{{ theme.desc }}</p>
+    </div>
+    <div class="btn-group btn-group-sm">
+        <a href="#widget-articles" class="btn btn-outline-primary">Articles</a>
+        <a href="#widget-buttons" class="btn btn-outline-primary">Buttons</a>
+        <a href="#widget-forms" class="btn btn-outline-primary">Forms</a>
+        <a href="#widget-tables" class="btn btn-outline-primary">Tables</a>
+        <a href="#widget-alerts" class="btn btn-outline-primary">Alerts</a>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-8">
+
+        {# ─── ARTICLES ─── #}
+        <section id="widget-articles" class="widget-section mb-5">
+            <h2>Articles</h2>
+            {% if featured %}
+            <div class="row g-3 mb-4">
+                {% for article in featured %}
+                <div class="col-md-4">
+                    <div class="card h-100 border-primary">
+                        {% if article.featured_image %}
+                        <img src="{{ article.featured_image }}" class="card-img-top" alt="">
+                        {% endif %}
+                        <div class="card-body d-flex flex-column">
+                            <h5 class="card-title">{{ article.title[:60] }}{% if article.title|length > 60 %}&hellip;{% endif %}</h5>
+                            <p class="card-text small flex-grow-1">{{ article.summary[:120] }}{% if article.summary|length > 120 %}&hellip;{% endif %}</p>
+                            <a href="/articles/{{ article.slug }}" class="btn btn-primary btn-sm mt-auto">Read</a>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {% if articles %}
+            <div class="list-group mb-3">
+                {% for article in articles[:5] %}
+                <a href="/articles/{{ article.slug }}" class="list-group-item list-group-item-action">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <strong class="small">{{ article.title[:80] }}{% if article.title|length > 80 %}&hellip;{% endif %}</strong>
+                        <small class="text-muted">{{ article.published_at.strftime('%b %d') if article.published_at else '' }}</small>
+                    </div>
+                    <p class="mb-0 small text-muted">{{ article.summary[:180] }}{% if article.summary|length > 180 %}&hellip;{% endif %}</p>
+                </a>
+                {% endfor %}
+            </div>
+
+            <nav>
+                <ul class="pagination pagination-sm">
+                    <li class="page-item disabled"><a class="page-link" href="#">&laquo;</a></li>
+                    <li class="page-item active"><a class="page-link" href="#">1</a></li>
+                    <li class="page-item"><a class="page-link" href="#">2</a></li>
+                    <li class="page-item"><a class="page-link" href="#">3</a></li>
+                    <li class="page-item"><a class="page-link" href="#">&raquo;</a></li>
+                </ul>
+            </nav>
+
+            <div class="mb-4">
+                <span class="badge bg-primary me-1">Housing</span>
+                <span class="badge bg-secondary me-1">Zoning</span>
+                <span class="badge bg-primary me-1">Transportation</span>
+                <span class="badge bg-secondary me-1">Budget</span>
+                <a href="#" class="badge bg-primary">Development</a>
+                <a href="#" class="badge bg-secondary">Water</a>
+            </div>
+            {% endif %}
+        </section>
+
+        {# ─── BUTTONS ─── #}
+        <section id="widget-buttons" class="widget-section mb-5">
+            <h2>Buttons</h2>
+            <div class="d-flex flex-wrap gap-2 mb-3">
+                <button class="btn btn-primary">Primary</button>
+                <button class="btn btn-secondary">Secondary</button>
+                <button class="btn btn-outline-primary">Outline</button>
+                <button class="btn btn-outline-secondary">Outline 2</button>
+                <button class="btn btn-outline-accent">Outline accent</button>
+                <button class="btn btn-outline-highlight">Outline highlight</button>
+                <button class="btn btn-outline-primary-alt">Outline alt</button>
+                <button class="btn btn-success">Success</button>
+                <button class="btn btn-danger">Danger</button>
+                <button class="btn btn-warning">Warning</button>
+                <button class="btn btn-info">Info</button>
+                <button class="btn btn-light">Light</button>
+                <button class="btn btn-dark">Dark</button>
+            </div>
+            <div class="d-flex flex-wrap gap-2 mb-3">
+                <button class="btn btn-primary btn-sm">Small</button>
+                <button class="btn btn-secondary btn-sm">Small</button>
+                <button class="btn btn-outline-primary btn-sm">Outline sm</button>
+                <button class="btn btn-primary btn-lg">Large</button>
+                <button class="btn btn-outline-primary btn-lg">Large outline</button>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                <a href="#" class="btn btn-primary">Link as button</a>
+                <button class="btn btn-primary" disabled>Disabled</button>
+                <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-primary active">Active</button>
+                    <button class="btn btn-outline-primary">Middle</button>
+                    <button class="btn btn-outline-primary">End</button>
+                </div>
+                <div class="dropdown d-inline-block">
+                    <button class="btn btn-primary dropdown-toggle" data-bs-toggle="dropdown">Dropdown</button>
+                    <ul class="dropdown-menu"><li><a class="dropdown-item" href="#">Action</a></li></ul>
+                </div>
+            </div>
+        </section>
+
+        {# ─── FORMS ─── #}
+        <section id="widget-forms" class="widget-section mb-5">
+            <h2>Forms &amp; Inputs</h2>
+            <div class="row g-3 mb-3">
+                <div class="col-md-6">
+                    <label class="form-label">Text input</label>
+                    <input type="text" class="form-control" placeholder="Placeholder text" value="Filled value">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Select</label>
+                    <select class="form-select">
+                        <option>Option one</option>
+                        <option selected>Option two</option>
+                        <option>Option three</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Date</label>
+                    <input type="date" class="form-control" value="2026-05-26">
+                </div>
+            </div>
+            <div class="row g-3 mb-3">
+                <div class="col-md-4">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="c1" checked>
+                        <label for="c1">Checked checkbox</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="c2">
+                        <label for="c2">Unchecked checkbox</label>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="r" id="r1" checked>
+                        <label for="r1">Selected radio</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="r" id="r2">
+                        <label for="r2">Unselected radio</label>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="s1" checked>
+                        <label for="s1">Switch on</label>
+                    </div>
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="s2">
+                        <label for="s2">Switch off</label>
+                    </div>
+                </div>
+            </div>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <textarea class="form-control" rows="3" placeholder="Textarea…">Some content</textarea>
+                </div>
+                <div class="col-md-6">
+                    <div class="input-group">
+                        <span class="input-group-text">$</span>
+                        <input type="text" class="form-control" value="48,000,000">
+                        <span class="input-group-text">.00</span>
+                    </div>
+                    <div class="input-group mt-2">
+                        <input type="text" class="form-control" placeholder="Search…">
+                        <button class="btn btn-primary">Go</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        {# ─── TABLES ─── #}
+        <section id="widget-tables" class="widget-section mb-5">
+            <h2>Tables</h2>
+            <div class="table-responsive mb-3">
+                <table class="table table-striped table-hover small">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Item</th>
+                            <th>Vote</th>
+                            <th>Result</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>May 20</td>
+                            <td><a href="#">Budget Adjustment</a></td>
+                            <td><span class="badge bg-primary">Yes</span></td>
+                            <td>Approved</td>
+                        </tr>
+                        <tr>
+                            <td>May 6</td>
+                            <td><a href="#">Court Services Agreement</a></td>
+                            <td><span class="badge bg-secondary">No</span></td>
+                            <td>Approved</td>
+                        </tr>
+                        <tr>
+                            <td>Apr 22</td>
+                            <td><a href="#">Procurement — Statecraft PLLC</a></td>
+                            <td><span class="badge bg-secondary">No</span></td>
+                            <td>Approved</td>
+                        </tr>
+                        <tr>
+                            <td>Apr 22</td>
+                            <td><a href="#">Case No. CV2025-020621</a></td>
+                            <td><span class="badge bg-secondary">No</span></td>
+                            <td>Carried</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        {# ─── ALERTS ─── #}
+        <section id="widget-alerts" class="widget-section mb-5">
+            <h2>Alerts &amp; Cards</h2>
+            <div class="alert alert-primary" role="alert">Primary alert — check back for meeting updates.</div>
+            <div class="alert alert-secondary" role="alert">Secondary alert with <a href="#" class="alert-link">a linked action</a>.</div>
+            <div class="alert alert-success" role="alert">Success — meeting minutes posted.</div>
+            <div class="alert alert-danger" role="alert">Danger — sync failed, retry needed.</div>
+            <div class="alert alert-warning" role="alert">Warning — agenda not yet published.</div>
+            <div class="alert alert-info" role="alert">Info — 3 new meetings synced.</div>
+
+            <div class="row g-3 mt-3">
+                <div class="col-md-4">
+                    <div class="card">
+                        <div class="card-body text-center">
+                            <h3 class="display-6 text-primary">1,247</h3>
+                            <p class="text-muted small mb-0">Meetings indexed</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card border-primary">
+                        <div class="card-body text-center">
+                            <h3 class="display-6">82%</h3>
+                            <p class="text-muted small mb-0">Attendance rate</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card bg-soft-primary">
+                        <div class="card-body text-center">
+                            <h3 class="display-6">43K</h3>
+                            <p class="text-muted small mb-0">Votes recorded</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </div>
+
+    {# ─── SIDEBAR ─── #}
+    <div class="col-lg-4">
+        <div class="card mb-3">
+            <div class="card-body">
+                <h6 class="card-title">Upcoming Meetings</h6>
+                <ul class="list-unstyled small mb-0">
+                    <li class="mb-2"><a href="#">May 27 — P&amp;Z Commission</a></li>
+                    <li class="mb-2"><a href="#">May 28 — Chandler City Council</a></li>
+                    <li class="mb-2"><a href="#">May 28 — Tempe DRC</a></li>
+                    <li class="mb-2"><a href="#">Jun 2 — BOS Informal</a></li>
+                    <li class="mb-2"><a href="#">Jun 3 — Glendale CC Workshop</a></li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-body">
+                <h6 class="card-title">Filter by Tag</h6>
+                {% if tags %}
+                {% for t in tags[:12] %}
+                <a href="#" class="badge bg-primary text-decoration-none me-1 mb-1">{{ t.name }}</a>
+                {% endfor %}
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-body">
+                <h6 class="card-title">Progress</h6>
+                <div class="mb-2">
+                    <div class="d-flex justify-content-between small">
+                        <span>Meetings synced</span>
+                        <span>3,476 / 4,000</span>
+                    </div>
+                    <div class="progress" style="height:6px">
+                        <div class="progress-bar" role="progressbar" style="width:87%"></div>
+                    </div>
+                </div>
+                <div class="mb-2">
+                    <div class="d-flex justify-content-between small">
+                        <span>Articles published</span>
+                        <span>9 / 20</span>
+                    </div>
+                    <div class="progress" style="height:6px">
+                        <div class="progress-bar bg-success" role="progressbar" style="width:45%"></div>
+                    </div>
+                </div>
+                <div>
+                    <div class="d-flex justify-content-between small">
+                        <span>Bodies with members</span>
+                        <span>6 / 62</span>
+                    </div>
+                    <div class="progress" style="height:6px">
+                        <div class="progress-bar bg-warning" role="progressbar" style="width:10%"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-body">
+                <h6 class="card-title">Quick Stats</h6>
+                <div class="row g-2 text-center">
+                    <div class="col-6">
+                        <div class="p-2 rounded bg-soft-primary">
+                            <strong class="d-block fs-5 text-primary">87%</strong>
+                            <small class="text-muted">Attendance</small>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="p-2 rounded bg-soft-primary">
+                            <strong class="d-block fs-5">94</strong>
+                            <small class="text-muted">Split votes</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="theme-badge bg-dark text-white">
+    <strong>{{ theme.name }}</strong> &middot;
+    <span style="color:{{ theme.colors.highlight }}">●</span>
+    <a href="/themes" class="text-white ms-2">All themes</a>
+</div>
+{% endblock %}

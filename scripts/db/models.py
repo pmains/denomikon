@@ -268,7 +268,12 @@ class AgendaItem(Base):
 
 
 class PublicBodyMember(Base):
-    """DEPRECATED — merged into supervisors table. Kept for migration only."""
+    """DEPRECATED — do not use. Use body_memberships + persons instead.
+
+    This table has 0 rows in production and is never written to by active
+    code paths.  It is kept only for migration compatibility.  All new
+    member data goes through ``body_memberships`` and ``persons``.
+    """
     __tablename__ = "public_body_members"
 
     id = Column(Integer, primary_key=True, autoincrement=True)

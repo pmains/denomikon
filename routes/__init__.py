@@ -144,6 +144,17 @@ def create_app():
 
     app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key-change-in-production")
 
+    # Explicit session cookie settings for broader browser compatibility
+    app.config.update(
+        SESSION_COOKIE_NAME="poliscopic_session",  # Avoid conflicts with old cookies
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SECURE=False,  # HTTP on localhost
+        PERMANENT_SESSION_LIFETIME=3600 * 24,  # 24 hours
+        SESSION_REFRESH_EACH_REQUEST=False,
+        WTF_CSRF_ENABLED=False,  # Disable CSRF for dev
+    )
+
     # ── Markdown filter ──────────────────────────────────────────────────
     import markdown as _md
 
@@ -171,6 +182,7 @@ def create_app():
     from routes.auth import auth_bp
     from routes.admin import admin_bp
     from routes.articles import articles_bp
+    from routes.themes import themes_bp
 
     app.register_blueprint(meetings_bp)
     app.register_blueprint(bodies_bp)
@@ -178,6 +190,7 @@ def create_app():
     app.register_blueprint(members_bp)
     app.register_blueprint(codes_bp)
     app.register_blueprint(articles_bp)
+    app.register_blueprint(themes_bp)
 
     # Admin and auth are only registered when admin is enabled
     if not _disable_admin:

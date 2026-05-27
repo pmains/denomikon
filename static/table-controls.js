@@ -260,7 +260,7 @@ const url = this.apiUrl + separator + params.toString();
         { text: r.agenda_item_title ? r.agenda_item_title.slice(0, 50) + (r.agenda_item_title.length > 50 ? '...' : '') : '\u2014' },
         { text: r.c_number || '\u2014', code: !!r.c_number },
         { text: r.vote || '', badge: this._badgeClass(r.vote || '', r.is_inferred), title: r.is_inferred ? 'Inferred — vote not found in meeting summary. May indicate a parser gap.' : '' },
-        { text: r.motion_result || '', badge: 'secondary' },
+        { text: r.motion_result || '', badge: (function() { var mr = (r.motion_result || '').toLowerCase(); return (mr === 'approved' || mr === 'carried') ? 'success' : (mr === 'denied' || mr === 'failed') ? 'danger' : (mr === 'continued') ? 'info' : 'secondary'; })() },
         { text: r.is_split_vote ? 'Split' : '\u2014', badge: r.is_split_vote ? 'warning text-dark' : '' },
         { text: r.majority_position || '\u2014', badge: r.majority_position ? this._badgeClass(r.majority_position) : '' },
         { text: r.with_or_against_majority ? this._titleCase(r.with_or_against_majority.replace(/_/g, ' ')) : '\u2014', badge: r.with_or_against_majority === 'with_majority' ? 'success' : r.with_or_against_majority === 'against_majority' ? 'danger' : '' },

@@ -278,11 +278,20 @@ def get_supervisor_vote_stats(
 
     if aiv_id_list:
         # Get per-AIV vote tallies in ONE query (was: load all rows)
+        # Normalize vote values: "aye" → "yes", "nay" → "no"
+        _yes_cond = or_(
+            SupervisorVote.vote == "yes",
+            SupervisorVote.vote.ilike("aye"),
+        )
+        _no_cond = or_(
+            SupervisorVote.vote == "no",
+            SupervisorVote.vote.ilike("nay"),
+        )
         tallies = session.execute(
             select(
                 SupervisorVote.agenda_item_vote_id,
-                func.sum(case((SupervisorVote.vote == "yes", 1), else_=0)).label("yes_cnt"),
-                func.sum(case((SupervisorVote.vote == "no", 1), else_=0)).label("no_cnt"),
+                func.sum(case((_yes_cond, 1), else_=0)).label("yes_cnt"),
+                func.sum(case((_no_cond, 1), else_=0)).label("no_cnt"),
             )
             .where(SupervisorVote.agenda_item_vote_id.in_(aiv_id_list))
             .group_by(SupervisorVote.agenda_item_vote_id)
@@ -458,7 +467,7 @@ def get_supervisor_split_votes(
             LEFT JOIN agenda_items ai
                 ON ai.meeting_id = aiv.meeting_id
                 AND ai.agenda_item_number = aiv.agenda_item_number
-            LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id
+            LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id AND m.body = aiv.body
             WHERE aiv.id IN ({ids_str})
             ORDER BY m.meeting_date, aiv.agenda_item_number
         """)
@@ -557,7 +566,7 @@ def get_supervisor_abstentions(
         LEFT JOIN agenda_items ai
             ON ai.meeting_id = aiv.meeting_id
             AND ai.agenda_item_number = aiv.agenda_item_number
-        LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id
+        LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id AND m.body = aiv.body
         WHERE {where_sql}
         ORDER BY m.meeting_date, aiv.agenda_item_number
     """)
@@ -674,7 +683,7 @@ def get_supervisor_full_voting_record(
         LEFT JOIN agenda_items ai
             ON ai.meeting_id = aiv.meeting_id
             AND ai.agenda_item_number = aiv.agenda_item_number
-        LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id
+        LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id AND m.body = aiv.body
         WHERE {where_sql}
         ORDER BY m.meeting_date DESC, aiv.agenda_item_number{limit_clause}
     """)
@@ -1143,7 +1152,7 @@ def get_supervisor_swing_votes(
             LEFT JOIN agenda_items ai
                 ON ai.meeting_id = aiv.meeting_id
                 AND ai.agenda_item_number = aiv.agenda_item_number
-            LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id
+            LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id AND m.body = aiv.body
             WHERE aiv.id IN ({ids_str})
             ORDER BY m.meeting_date, aiv.agenda_item_number
         """)

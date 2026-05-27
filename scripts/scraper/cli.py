@@ -31,6 +31,7 @@ def _print_top_level_help() -> None:
     print("  peoria    City of Peoria (Council, P&Z, BOA, DRB, HPC via NovusAgenda)")
     print("  surprise  City of Surprise (Council, P&Z, boards via CivicClerk)")
     print("  all       Sync all Maricopa County boards: BOS, PZ, ADJ, Drain, Health, TAB, IDA")
+    print("  mcacc     All remaining Maricopa County boards via AgendaCenter")
     print()
     print("Common options (varies per subcommand; use <subcommand> --help for details):")
     print("  --sync                    Search online, extract, and persist to database")
@@ -106,7 +107,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "all"):
+    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "mcacc", "all"):
         source = rest.pop(0)
 
     if source == "bos":
@@ -141,6 +142,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         args = _parse_surprise_args(rest)
     elif source == "peoria":
         args = _parse_mesa_args(rest)
+    elif source == "mcacc":
+        args = _parse_mcacc_args(rest)
     elif source == "all":
         args = _parse_bos_args(rest)
     else:
@@ -412,6 +415,46 @@ def _parse_tempe_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
     p.add_argument("--download", action="store_true", help="Download agenda PDF and packet PDF")
     p.add_argument("--bodies", help="Body group to sync: council, drc, boa, hpc, all (default: all)")
+    args = p.parse_args(rest)
+    if args.date:
+        if args.start_date or args.end_date:
+            p.error("--date cannot be combined with --start-date or --end-date")
+        args.start_date = args.date
+        args.end_date = args.date
+    _normalize_year_month(args, p)
+    return args
+
+
+def _parse_mcacc_args(rest: list[str]) -> argparse.Namespace:
+    """Parse MCACC (Maricopa County AgendaCenter boards) arguments."""
+    from scraper.mcacc import MCACC_BODY_CODES, body_code_to_name
+    default_bodies = ",".join(MCACC_BODY_CODES)
+    p = argparse.ArgumentParser(
+        description="Scrape Maricopa County AgendaCenter boards (mcacc)",
+        prog="mcacc",
+    )
+    p.add_argument("--start-date", help="Start date in YYYY-MM-DD")
+    p.add_argument("--end-date", help="End date in YYYY-MM-DD")
+    p.add_argument("--year", help="Sync an entire year (e.g. --year=2026)")
+    p.add_argument("--month", help="Sync an entire month (e.g. --month=2026-04)")
+    p.add_argument("--date", help="Single date in YYYY-MM-DD (shorthand for --start-date=DATE --end-date=DATE)")
+    p.add_argument("--sync", action="store_true", help="Search online, extract agenda items, and persist to database")
+    p.add_argument("--headed", action="store_true", help="Run Playwright headed")
+    p.add_argument("--limit", type=int, default=None, help="Optional meeting limit per body")
+    p.add_argument("--meeting-id", help="Single meeting ID to sync")
+    p.add_argument("--force", action="store_true", help="Re-sync meetings even if sync_status = complete")
+    p.add_argument("--retry-count", type=int, default=3, help="Max retry attempts (default 3)")
+    p.add_argument("--retry-failed", action="store_true", help="Sync only meetings with status failed, partial, or pending")
+    p.add_argument("--init-db", action="store_true", help="Create database tables")
+    p.add_argument("--status", action="store_true", help="Print summary counts of meetings by sync_status")
+    p.add_argument("--failed", action="store_true", help="List failed/partial meetings with errors")
+    p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
+    p.add_argument("--download", action="store_true", help="Download agenda PDF files")
+    p.add_argument("--bodies",
+        default=default_bodies,
+        help=f"Body codes to sync (comma-separated). Default: all {len(MCACC_BODY_CODES)} bodies. "
+             f"Available: {', '.join(MCACC_BODY_CODES)}",
+    )
     args = p.parse_args(rest)
     if args.date:
         if args.start_date or args.end_date:
