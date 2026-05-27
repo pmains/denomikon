@@ -1711,6 +1711,65 @@ async def main() -> int:
         return 0
 
 
+    # ── El Mirage sync (via AgendaQuick) ──
+    if args.source == "el-mirage" and args.sync:
+        import datetime as _dt
+        from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
+        from scraper.el_mirage import (
+            search_el_mirage_meetings, parse_agenda_items,
+            fetch_page, BASE_URL, ORG_ID,
+            DEFAULT_BODY_SLUGS,
+        )
+        init_db()
+        body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
+        body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
+        year_val = getattr(args, "year", None)
+        year = int(year_val) if year_val else _dt.date.today().year
+        print("Searching El Mirage meetings for %d..." % year)
+        meetings = search_el_mirage_meetings(year, body_slugs=body_slugs)
+        if args.limit:
+            meetings = meetings[:args.limit]
+        if not meetings:
+            print("No El Mirage meetings found for %d." % year)
+            return 0
+        print("Found %d El Mirage meeting(s)" % len(meetings))
+        session = get_session()
+        total_items = 0
+        meeting_count = len(meetings)
+        from db import Meeting as MeetingModel
+        from sqlalchemy import select
+        for idx, m in enumerate(meetings, 1):
+            meeting_id = m["meeting_id"]
+            meeting_date = m["meeting_date"]
+            body_code = m.get("body_code", "el-mirage-cc")
+            agenda_url = m.get("agenda_url", "")
+            meeting_type = m.get("meeting_type", "")
+            meeting_title = m.get("body_name", "")
+            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": agenda_url}
+            existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
+            if existing and existing.sync_status == "complete" and not args.force:
+                print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
+                continue
+            try:
+                html = fetch_page(agenda_url)
+                items = parse_agenda_items(html, meeting_id)
+                if not items:
+                    replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
+                    print("  [%d/%d] %s %s: no items" % (idx, meeting_count, meeting_id, meeting_date))
+                    continue
+                agenda_item_dicts = []
+                for it in items:
+                    an = it.get("agenda_item_number", "")
+                    agenda_item_dicts.append({"agenda_item_id": body_code + "-" + meeting_id + "_" + an, "meeting_id": meeting_id, "agenda_item_number": an, "agenda_item_title": it.get("agenda_item_title", ""), "agenda_item_text": it.get("agenda_item_text", ""), "source_body": body_code, "source_url": agenda_url, "sort_order": it.get("sort_order", 0)})
+                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_item_dicts)
+                total_items += len(items)
+                print("  [%d/%d] %s %s: %d item(s)" % (idx, meeting_count, meeting_id, meeting_date, len(items)))
+            except Exception as e:
+                log.error("Failed El Mirage meeting %s: %s", meeting_id, e)
+        session.close()
+        print("Synced %d El Mirage items across %d meeting(s)" % (total_items, meeting_count))
+        return 0
+
     # ── Buckeye sync (via NovusAgenda) ──
     if args.source == "buckeye" and args.sync:
         import datetime as _dt
