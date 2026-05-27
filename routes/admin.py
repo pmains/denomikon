@@ -14,7 +14,7 @@ from sqlalchemy.orm import joinedload
 from db.core import get_session
 from db.newsroom import (
     Article, ArticleSource, Tag, article_tags, AdminUser, Notification,
-    sync_article_fts, search_agenda_items,
+    MediaImage, sync_article_fts, search_agenda_items,
 )
 
 
@@ -80,7 +80,7 @@ def dashboard():
     session = get_session()
     drafts = session.execute(
         select(Article).where(Article.status == "draft")
-        .order_by(desc(Article.created_at))
+        .order_by(desc(Article.priority), desc(Article.updated_at))
     ).scalars().all()
     published = session.execute(
         select(Article).where(Article.status == "published")
@@ -571,6 +571,7 @@ def article_new():
             title=title,
             slug=_unique_slug(title),
             body=request.form.get("body", "").strip(),
+            featured_image=request.form.get("featured_image", "").strip(),
             status=request.form.get("status", "draft"),
             author_id=current_user.id,
         )
@@ -646,6 +647,7 @@ def article_edit(article_id):
         article.slug = _unique_slug(article.title, exclude_id=article.id)
         article.summary = request.form.get("summary", "").strip()
         article.body = request.form.get("body", "").strip()
+        article.featured_image = request.form.get("featured_image", "").strip()
         article.status = request.form.get("status", article.status)
         article.updated_at = datetime.now(timezone.utc)
 
@@ -739,6 +741,41 @@ def article_archive(article_id):
         session.commit()
     session.close()
     return redirect(url_for("admin.dashboard"))
+
+
+@admin_bp.route("/articles/<int:article_id>/priority", methods=["POST"])
+@login_required
+def article_set_priority(article_id):
+    """Set article priority (higher = higher in draft list)."""
+    session = get_session()
+    article = session.get(Article, article_id)
+    if article:
+        try:
+            priority = int(request.form.get("priority", 0))
+            article.priority = max(0, min(999, priority))
+            session.commit()
+        except (ValueError, TypeError):
+            pass
+    session.close()
+    return redirect(url_for("admin.dashboard"))
+
+
+@admin_bp.route("/articles/reorder", methods=["POST"])
+@login_required
+def articles_reorder():
+    """Batch reorder drafts — accepts JSON {order: [id, id, ...]}."""
+    data = request.get_json(silent=True)
+    if not data or "order" not in data:
+        return jsonify({"ok": False}), 400
+    session = get_session()
+    order = data["order"]
+    for pos, article_id in enumerate(order):
+        article = session.get(Article, int(article_id))
+        if article and article.status == "draft":
+            article.priority = len(order) - pos
+    session.commit()
+    session.close()
+    return jsonify({"ok": True})
 
 
 # ── Suggestion Dismissal ──
@@ -970,3 +1007,272 @@ def notification_delete(notif_id):
         session.commit()
     session.close()
     return redirect(url_for("admin.notifications"))
+
+# ── Image management ──
+
+import os as _os
+
+_UPLOAD_DIR = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "static", "uploads")
+_os.makedirs(_UPLOAD_DIR, exist_ok=True)
+
+
+@admin_bp.route("/images")
+@login_required
+def images_index():
+    """Image library — upload, browse, search."""
+    session = get_session()
+    tag_filter = request.args.get("tag", "").strip()
+    q = request.args.get("q", "").strip()
+
+    query = select(MediaImage).order_by(desc(MediaImage.uploaded_at))
+    if tag_filter:
+        query = query.where(MediaImage.tags.contains(tag_filter))
+    if q:
+        like = f"%{q}%"
+        query = query.where(
+            or_(MediaImage.alt_text.ilike(like), MediaImage.original_name.ilike(like))
+        )
+    images = session.execute(query).scalars().all()
+
+    # Collect all unique tags
+    all_tags: set[str] = set()
+    for img in images:
+        for t in img.tags.split(","):
+            t = t.strip()
+            if t:
+                all_tags.add(t)
+
+    session.close()
+    return render_template(
+        "admin/images.html",
+        images=images,
+        all_tags=sorted(all_tags),
+        tag_filter=tag_filter,
+        q=q,
+    )
+
+
+@admin_bp.route("/images/upload", methods=["POST"])
+@login_required
+def images_upload():
+    """Upload one or more image files."""
+    files = request.files.getlist("files")
+    if not files:
+        flash("No files selected.", "error")
+        return redirect(url_for("admin.images_index"))
+
+    from PIL import Image as PILImage
+    import uuid
+
+    session = get_session()
+    uploaded = []
+    for f in files:
+        if not f.filename:
+            continue
+        ext = f.filename.rsplit(".", 1)[-1].lower() if "." in f.filename else "jpg"
+        new_name = f"{uuid.uuid4().hex}.{ext}"
+        save_path = _os.path.join(_UPLOAD_DIR, new_name)
+        f.save(save_path)
+
+        # Read dimensions
+        w, h = 0, 0
+        try:
+            with PILImage.open(save_path) as img:
+                w, h = img.size
+        except Exception:
+            pass
+
+        tags = request.form.get("tags", "").strip()
+        alt = request.form.get(f"alt_{f.filename}", "").strip()
+
+        img = MediaImage(
+            filename=new_name,
+            original_name=f.filename,
+            alt_text=alt,
+            tags=tags,
+            file_size=_os.path.getsize(save_path),
+            width=w,
+            height=h,
+            uploaded_by=current_user.id,
+        )
+        session.add(img)
+        uploaded.append(f.filename)
+
+    session.commit()
+    session.close()
+    flash(f"Uploaded {len(uploaded)} image(s).", "success")
+    return redirect(url_for("admin.images_index"))
+
+
+@admin_bp.route("/images/<int:img_id>/delete", methods=["POST"])
+@login_required
+def images_delete(img_id):
+    """Delete an image."""
+    session = get_session()
+    img = session.get(MediaImage, img_id)
+    if img:
+        path = _os.path.join(_UPLOAD_DIR, img.filename)
+        if _os.path.exists(path):
+            _os.remove(path)
+        session.delete(img)
+        session.commit()
+        flash("Image deleted.", "success")
+    session.close()
+    return redirect(url_for("admin.images_index"))
+
+
+@admin_bp.route("/images/<int:img_id>/edit", methods=["POST"])
+@login_required
+def images_edit(img_id):
+    """Update image metadata (alt text, tags)."""
+    session = get_session()
+    img = session.get(MediaImage, img_id)
+    if img:
+        img.alt_text = request.form.get("alt_text", img.alt_text)
+        img.tags = request.form.get("tags", img.tags)
+        session.commit()
+        flash("Image updated.", "success")
+    session.close()
+    return redirect(url_for("admin.images_index"))
+
+
+@admin_bp.route("/images/api")
+@login_required
+def images_api():
+    """Return images as JSON for the article image picker."""
+    session = get_session()
+    q = request.args.get("q", "").strip()
+    tag = request.args.get("tag", "").strip()
+
+    query = select(MediaImage).order_by(desc(MediaImage.uploaded_at))
+    if tag:
+        query = query.where(MediaImage.tags.contains(tag))
+    if q:
+        like = f"%{q}%"
+        query = query.where(
+            or_(MediaImage.alt_text.ilike(like), MediaImage.original_name.ilike(like))
+        )
+    images = session.execute(query).scalars().all()
+    session.close()
+
+    return jsonify([
+        {
+            "id": img.id,
+            "url": img.url,
+            "filename": img.filename,
+            "alt_text": img.alt_text,
+            "tags": img.tags,
+            "width": img.width,
+            "height": img.height,
+        }
+        for img in images
+    ])
+
+
+# ── Style check ──
+
+
+def _check_inline_links(body: str) -> bool:
+    return body.count("](/") + body.count("](http") > 0
+
+_STYLE_RULES = {
+    "inline_links": {
+        "label": "Inline Links",
+        "desc": "Link to sources directly in the article body.",
+        "check": _check_inline_links,
+        "threshold": 1,
+        "pass_msg": "Has inline links",
+        "fail_msg": "No inline links found",
+    },
+    "min_sources": {
+        "label": "Minimum Sources",
+        "desc": "Aim for at least 3 sources.",
+        "check": lambda body, sources: len(sources) >= 3,
+        "threshold": 3,
+        "pass_msg": "Has enough sources",
+        "fail_msg": lambda n: f"Only {n} source(s) — add more",
+    },
+    "em_dash_count": {
+        "label": "Em-Dashes",
+        "desc": "Max 2 em-dashes per article.",
+        "check": lambda body: len(__import__('re').findall(r'\u2014|---|&mdash;', body)),
+        "threshold": 2,
+        "pass_msg": "Em-dash count OK",
+        "fail_msg": lambda n: f"{n} em-dashes (max 2)",
+    },
+    "narrative_angle": {
+        "label": "Narrative Angle",
+        "desc": "Does the article answer 'so what?'",
+        "check": lambda body: any(kw in body.lower() for kw in ["question", "but", "however", "whether", "why", "at stake"]),
+        "threshold": 1,
+        "pass_msg": "Has narrative framing",
+        "fail_msg": "No narrative angle detected",
+    },
+}
+
+
+@admin_bp.route("/articles/<int:article_id>/style-check")
+@login_required
+def article_style_check(article_id):
+    from db.core import get_session
+    session = get_session()
+    article = session.get(Article, article_id)
+    if not article:
+        session.close()
+        return jsonify({"error": "Article not found"}), 404
+
+    body = article.body or ""
+    sources = list(article.sources)
+
+    results = []
+    score = 0
+    total = len(_STYLE_RULES)
+
+    for rule_id, rule in _STYLE_RULES.items():
+        check = rule["check"]
+        import sys
+        if rule_id == "inline_links":
+            print(f"Style check debug: body length={len(body)}, count = {body.count(chr(93)+chr(40)+chr(47))}", file=sys.stderr)
+        try:
+            result = check(body)
+        except TypeError:
+            result = check(body, sources)
+
+        if isinstance(result, bool):
+            passed = result
+            msg = rule["pass_msg"] if passed else rule["fail_msg"]
+        elif isinstance(result, int):
+            passed = result <= rule["threshold"]
+            key = "pass_msg" if passed else "fail_msg"
+            msg = rule[key]
+            if callable(msg):
+                msg = msg(result)
+        elif isinstance(result, list):
+            passed = len(result) <= rule["threshold"]
+            key = "pass_msg" if passed else "fail_msg"
+            msg = rule[key]
+            if callable(msg):
+                msg = msg(result)
+        else:
+            passed = True
+            msg = str(result)
+
+        if callable(msg):
+            msg = msg() if passed else msg(result)
+
+        if passed:
+            score += 1
+
+        results.append({
+            "id": rule_id,
+            "label": rule["label"],
+            "passed": passed,
+            "message": msg,
+        })
+
+    session.close()
+    return jsonify({
+        "score": f"{score}/{total}",
+        "all_passed": score == total,
+        "checks": results,
+    })

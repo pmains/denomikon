@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Admin Dashboard — Poliscopic{% endblock %}
 {% block content %}
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
 <div class="d-flex justify-content-between align-items-start mb-3">
   <h1>Admin Dashboard</h1>
   <div>
@@ -33,27 +34,57 @@
 <div class="tab-content">
   <div class="tab-pane fade show active" id="drafts" role="tabpanel">
     {% if drafts %}
+      <div id="draft-list">
       {% for article in drafts %}
-        <div class="card mb-2">
-          <div class="card-body py-2 d-flex justify-content-between align-items-center">
-            <div>
-              <a href="/admin/articles/{{ article.id }}/edit" class="fw-bold text-decoration-none">{{ article.title }}</a>
-              <small class="text-muted ms-2">{{ article.created_at.strftime('%b %d, %Y') }}</small>
-              {% if article.tags %}
-                {% for t in article.tags %}<span class="badge bg-light text-dark ms-1">{{ t.name }}</span>{% endfor %}
-              {% endif %}
-            </div>
-            <div class="d-flex gap-1">
-              <form method="POST" action="/admin/articles/{{ article.id }}/promote" style="display:inline">
-                <button class="btn btn-sm btn-success">Publish</button>
-              </form>
-              <form method="POST" action="/admin/articles/{{ article.id }}/delete" style="display:inline" onsubmit="return confirm('Delete this article?')">
-                <button class="btn btn-sm btn-outline-danger">Delete</button>
-              </form>
+        <div class="card mb-2" data-id="{{ article.id }}">
+          <div class="card-body py-2">
+            <div class="d-flex justify-content-between align-items-center">
+              <div class="d-flex align-items-center gap-2">
+                <span class="drag-handle" style="cursor:grab;font-size:16px;color:#aaa" title="Drag to reorder">⠿</span>
+                <div>
+                  <a href="/admin/articles/{{ article.id }}/edit" class="fw-bold text-decoration-none">{{ article.title[:80] }}{% if article.title|length > 80 %}…{% endif %}</a>
+                  <small class="text-muted ms-2">{{ article.created_at.strftime('%b %d') }}</small>
+                  {% if article.tags %}
+                    {% for t in article.tags %}<span class="badge bg-light text-dark ms-1">{{ t.name }}</span>{% endfor %}
+                  {% endif %}
+                </div>
+              </div>
+              <div class="d-flex gap-1">
+                <a href="/admin/articles/{{ article.id }}/edit" class="btn btn-sm btn-outline-primary">Edit</a>
+                <form method="POST" action="/admin/articles/{{ article.id }}/promote" style="display:inline">
+                  <button class="btn btn-sm btn-success">Publish</button>
+                </form>
+                <form method="POST" action="/admin/articles/{{ article.id }}/delete" style="display:inline" onsubmit="return confirm('Delete this article?')">
+                  <button class="btn btn-sm btn-outline-danger">Delete</button>
+                </form>
+              </div>
             </div>
           </div>
         </div>
       {% endfor %}
+      </div>
+      <script>
+      (function() {
+        var list = document.getElementById('draft-list');
+        if (!list) return;
+        Sortable.create(list, {
+          animation: 150,
+          handle: '.drag-handle',
+          forceFallback: true,
+          fallbackClass: 'sortable-fallback',
+          onEnd: function() {
+            var order = Array.from(list.querySelectorAll('.card')).map(function(el) {
+              return el.getAttribute('data-id');
+            });
+            fetch('/admin/articles/reorder', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ order: order })
+            });
+          }
+        });
+      })();
+      </script>
     {% else %}
       <p class="text-muted">No drafts yet. <a href="/admin/suggestions">Check AI suggestions</a> to get started.</p>
     {% endif %}

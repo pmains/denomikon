@@ -1,96 +1,92 @@
 {% extends "base.html" %}
-{% block title %}AI Story Suggestions — Poliscopic{% endblock %}
+{% block title %}Story Suggestions — Poliscopic{% endblock %}
 {% block content %}
-<h1 class="mb-3">AI Story Suggestions</h1>
-<div class="d-flex justify-content-between align-items-start mb-3">
-  <p class="text-muted mb-0">Ranked by impact. Click "Write story" to draft, "Dismiss" to hide, or "Split" to create a multi-part series.</p>
-  <form method="GET" class="d-flex gap-2 flex-wrap align-items-center">
-    <select name="jurisdiction" class="form-select form-select-sm" style="max-width:200px" onchange="this.form.submit()">
+<h1 class="mb-1">Story Suggestions</h1>
+<p class="text-muted mb-3">Agenda items ranked by newsworthiness. Click <strong>Write story</strong> to draft an article.</p>
+
+<form method="GET" class="row g-2 mb-3 align-items-end">
+  <div class="col-auto">
+    <select name="jurisdiction" class="form-select form-select-sm" onchange="this.form.submit()" style="min-width:160px">
       <option value="">All jurisdictions</option>
       <option value="maricopa-county" {% if filter_jurisdiction == 'maricopa-county' %}selected{% endif %}>Maricopa County</option>
       <option value="tempe" {% if filter_jurisdiction == 'tempe' %}selected{% endif %}>Tempe</option>
       <option value="mesa" {% if filter_jurisdiction == 'mesa' %}selected{% endif %}>Mesa</option>
       <option value="chandler" {% if filter_jurisdiction == 'chandler' %}selected{% endif %}>Chandler</option>
-      <option value="gilbert" {% if filter_jurisdiction == 'gilbert' %}selected{% endif %}>Gilbert</option>
       <option value="scottsdale" {% if filter_jurisdiction == 'scottsdale' %}selected{% endif %}>Scottsdale</option>
+      <option value="glendale" {% if filter_jurisdiction == 'glendale' %}selected{% endif %}>Glendale</option>
+      <option value="peoria" {% if filter_jurisdiction == 'peoria' %}selected{% endif %}>Peoria</option>
     </select>
-    <input type="date" name="start_date" class="form-control form-control-sm" style="max-width:160px"
-           value="{{ filter_start_date }}" placeholder="Start date">
-    <input type="date" name="end_date" class="form-control form-control-sm" style="max-width:160px"
-           value="{{ filter_end_date }}" placeholder="End date">
+  </div>
+  <div class="col-auto">
+    <input type="date" name="start_date" class="form-control form-control-sm" value="{{ filter_start_date }}" placeholder="From">
+  </div>
+  <div class="col-auto">
+    <input type="date" name="end_date" class="form-control form-control-sm" value="{{ filter_end_date }}" placeholder="To">
+  </div>
+  <div class="col-auto">
     <button class="btn btn-sm btn-outline-primary" type="submit">Filter</button>
-  </form>
-</div>
-
-{% set signal_topics = ['bonds-finance','policy-planning','infrastructure','homelessness','development-pipeline','annexation','enforcement-signals'] %}
+  </div>
+</form>
 
 {% for topic, items in grouped.items() %}
   {% if items %}
-  <div class="card mb-3">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      {% set label = {'bonds-finance':'Bonds & Finance','policy-planning':'Policy & Planning','infrastructure':'Infrastructure Signals','homelessness':'Homelessness','development-pipeline':'Dev Pipeline','annexation':'Annexation','enforcement-signals':'Enforcement Signals'}.get(topic, topic|replace('-',' ')|title) %}
-      <strong>{{ label }}</strong>
-      {% if topic in signal_topics %}<span class="badge bg-danger ms-1">Signal</span>{% endif %}
-      <span class="badge bg-secondary ms-auto">{{ items|length }}</span>
-    </div>
-    <div class="list-group list-group-flush">
-      {% for item in items %}
-      {% set score = item.score|default(0)|int %}
-      <div class="list-group-item">
-        <div class="d-flex justify-content-between align-items-start">
-          <div style="flex:1">
+    {% set sorted = items|sort(true, attribute='score') %}
+    {% for item in sorted %}
+    {% set score = item.score|default(0)|int %}
+    <div class="card mb-2">
+      <div class="card-body py-2">
+        <div class="d-flex justify-content-between align-items-start gap-3">
+          <div style="flex:1;min-width:0">
             <div class="d-flex align-items-center gap-2 mb-1">
-              <span class="badge bg-{% if score >= 30 %}danger{% elif score >= 15 %}warning{% else %}secondary{% endif %}">Impact {{ score }}</span>
-              <small class="text-muted">{{ item.body }} · {{ item.meeting_date }} · Item {{ item.agenda_item_number }}</small>
+              <span class="badge bg-{% if score >= 30 %}danger{% elif score >= 15 %}warning{% else %}secondary{% endif %} py-0" style="font-size:9px">{{ score }}</span>
+              <small class="text-muted">
+                {% set locations = {'bos':'Maricopa County','pz':'Maricopa County P&Z','tempe-cc':'Tempe','tempe-drc':'Tempe DRC','mesa-cc':'Mesa','chandler-cc':'Chandler','glendale-cc':'Glendale','scottsdale-cc':'Scottsdale'} %}
+                {{ locations.get(item.body, item.body) }}
+                · {{ item.meeting_date }}
+              </small>
             </div>
-            <div><strong>{{ item.headline }}</strong></div>
-            {% if item.matched_keywords %}
-            <div>
-              {% for kw in item.matched_keywords %}<span class="badge bg-info text-dark me-1">{{ kw }}</span>{% endfor %}
-            </div>
-            {% endif %}
-            {% if item.editorial_notes %}
-            <div class="mt-1 small text-muted fst-italic">
-              {% for note in item.editorial_notes %}{{ note }}<br>{% endfor %}
-            </div>
-            {% endif %}
+            <div class="fw-semibold mb-1">{{ item.headline }}</div>
             {% if item.pitch %}
-            <div class="mt-2 p-2 bg-light rounded" style="font-size:0.9em">{{ item.pitch|safe }}</div>
+            <div class="small text-muted">
+              {{ item.pitch.split('<br>')[1] if '<br>' in item.pitch else item.pitch[:200] }}
+            </div>
             {% endif %}
+            <div class="mt-1 d-flex gap-2">
+              <a href="/meetings/{{ item.body }}/{{ item.meeting_id }}" class="small text-decoration-none" target="_blank">View meeting →</a>
+              {% if item.azcentral_url or item.ddg_url %}
+              <a href="{{ item.ddg_url }}" class="small text-decoration-none" target="_blank">Search news →</a>
+              {% endif %}
+            </div>
           </div>
-          <div class="d-flex flex-column gap-1 ms-2" style="min-width:110px">
-            <form method="POST" action="/admin/suggestions/draft" class="d-inline">
+          <div class="d-flex flex-column gap-1" style="min-width:100px;flex-shrink:0">
+            <form method="POST" action="/admin/suggestions/draft">
               <input type="hidden" name="body" value="{{ item.body }}">
               <input type="hidden" name="meeting_id" value="{{ item.meeting_id }}">
               <input type="hidden" name="agenda_item_number" value="{{ item.agenda_item_number }}">
-              <input type="hidden" name="topic" value="{{ topic }}">
+              <input type="hidden" name="topic" value="{{ item.topic }}">
               <input type="hidden" name="source_url" value="{{ item.source_url }}">
               <button class="btn btn-sm btn-primary w-100">Write story</button>
             </form>
-            <form method="POST" action="/admin/suggestions/dismiss" class="d-inline">
+            <form method="POST" action="/admin/suggestions/dismiss">
               <input type="hidden" name="body" value="{{ item.body }}">
               <input type="hidden" name="meeting_id" value="{{ item.meeting_id }}">
               <input type="hidden" name="agenda_item_number" value="{{ item.agenda_item_number }}">
-              <button class="btn btn-sm btn-outline-secondary w-100" onclick="return confirm('Dismiss this suggestion?')">Dismiss</button>
+              <button class="btn btn-sm btn-outline-secondary w-100">Dismiss</button>
             </form>
-            <form method="POST" action="/admin/suggestions/split" class="d-inline">
-              <input type="hidden" name="body" value="{{ item.body }}">
-              <input type="hidden" name="meeting_id" value="{{ item.meeting_id }}">
-              <input type="hidden" name="agenda_item_number" value="{{ item.agenda_item_number }}">
-              <input type="hidden" name="title" value="{{ item.headline[:100] }}">
-              <button class="btn btn-sm btn-outline-info w-100" onclick="return confirm('Create a multi-part series from this?')">Split</button>
-            </form>
-            <a href="/meetings/{{ item.body }}/{{ item.meeting_id }}" class="btn btn-sm btn-outline-secondary" target="_blank">Meeting</a>
           </div>
         </div>
       </div>
-      {% endfor %}
     </div>
-  </div>
+    {% endfor %}
   {% endif %}
 {% endfor %}
 
 {% if not grouped %}
-<p class="text-muted">No matching agenda items found. Sync more meetings first.</p>
+<div class="card">
+  <div class="card-body text-center text-muted py-4">
+    <p class="mb-1">No suggestions found.</p>
+    <small>Try a different jurisdiction or date range, or sync more meetings.</small>
+  </div>
+</div>
 {% endif %}
 {% endblock %}

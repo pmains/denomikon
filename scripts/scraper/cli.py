@@ -28,6 +28,8 @@ def _print_top_level_help() -> None:
     print("  scottsdale-boards Scottsdale P&Z, BOA, DRB, HPC, Bldg Appeals")
     print("  glendale  City of Glendale (Council via Legistar)")
     print("  glendale-new  City of Glendale (Council, PC, BOA via AgendaQuick)")
+    print("  buckeye   City of Buckeye (Council, P&Z, BOA, PRC, HPC, Library, PSPRS via NovusAgenda)")
+    print("  goodyear  City of Goodyear (Council, P&Z, boards via AgendaQuick)")
     print("  peoria    City of Peoria (Council, P&Z, BOA, DRB, HPC via NovusAgenda)")
     print("  surprise  City of Surprise (Council, P&Z, boards via CivicClerk)")
     print("  all       Sync all Maricopa County boards: BOS, PZ, ADJ, Drain, Health, TAB, IDA")
@@ -107,7 +109,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "mcacc", "all"):
+    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "buckeye", "goodyear", "mcacc", "all"):
         source = rest.pop(0)
 
     if source == "bos":
@@ -141,6 +143,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     elif source == "surprise":
         args = _parse_surprise_args(rest)
     elif source == "peoria":
+        args = _parse_mesa_args(rest)
+    elif source == "buckeye":
+        args = _parse_mesa_args(rest)
+    elif source == "goodyear":
         args = _parse_mesa_args(rest)
     elif source == "mcacc":
         args = _parse_mcacc_args(rest)

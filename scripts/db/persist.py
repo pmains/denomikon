@@ -144,6 +144,11 @@ def _find_or_create_person(
 
     # 2. Substring match: name parts of candidate appear in existing records
     #    (e.g. "hartke" in "kevin hartke", "curley" in "kevin curley")
+    #
+    #    Safety: when both the candidate and the existing record have 2+ words,
+    #    require at least 2 shared words to avoid merging different people who
+    #    happen to share a surname (e.g. "Michael McGee" vs "Kate Brophy McGee"
+    #    should NOT merge just because both contain "mcgee").
     candidate_words = set(norm.split())
     if candidate_words:
         # Build OR clause: for each word, check if any existing normalized_name
@@ -162,13 +167,28 @@ def _find_or_create_person(
                 # Prefer full-name records (contain space) over single-name
                 full = [m for m in matches if " " in (m.name or "")]
                 best = full[0] if full else matches[0]
-                best.name = name_clean
-                best.updated_at = datetime.now(timezone.utc)
-                log.info(
-                    "%sFuzzy-matched '%s' → existing Person %d (%s)",
-                    log_prefix, norm, best.id, best.normalized_name,
-                )
-                return best, False
+                # Count overlapping words to avoid surname-only merges
+                existing_words = set(best.normalized_name.split())
+                overlap = candidate_words & existing_words
+                candidate_has_multiple = len(candidate_words) > 1
+                existing_has_multiple = len(existing_words) > 1
+                # Require at least 2 shared words when both sides have 2+ words
+                if candidate_has_multiple and existing_has_multiple and len(overlap) < 2:
+                    log.debug(
+                        "%sSkipped fuzzy-match '%s' vs '%s' (only %d shared word(s): %s)",
+                        log_prefix, norm, best.normalized_name, len(overlap), overlap,
+                    )
+                else:
+                    # Don't overwrite a multi-word name with a single word
+                    # (e.g. "Adams" should not replace "Jennifer Adams")
+                    if len(candidate_words) >= len(existing_words):
+                        best.name = name_clean
+                    best.updated_at = datetime.now(timezone.utc)
+                    log.info(
+                        "%sFuzzy-matched '%s' → existing Person %d (%s)",
+                        log_prefix, norm, best.id, best.normalized_name,
+                    )
+                    return best, False
 
     # 3. Create new Person record
     new_p = Person(name=name_clean, normalized_name=norm)

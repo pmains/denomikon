@@ -38,7 +38,7 @@ print(f"DB exists:    {_expected_db.exists()}", file=sys.stderr)
 
 
 # ── Cache version — bump to invalidate all cached pages ──────────────────
-_CACHE_VERSION = "v9"
+_CACHE_VERSION = "v10"
 
 # ── Shared template constants ────────────────────────────────────────────
 SYNC_STATUS_BADGES = {

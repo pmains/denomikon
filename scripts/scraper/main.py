@@ -312,6 +312,15 @@ async def main() -> int:
             ).scalar_one_or_none()
             if not pb:
                 return
+            # Tempe's Legal Action Summary PDF only contains last names
+            # (e.g. "Adams" not "Jennifer Adams"). Map last names to full names
+            # so Persons are created correctly.
+            _TEMPE_NAME_MAP = {
+                "adams": "Jennifer Adams", "amberg": "Nikki Amberg",
+                "chin": "Arlene Chin", "garlid": "Doreen Garlid",
+                "hodge": "Berdetta Hodge", "keating": "Randy Keating",
+                "navarro": "Joel Navarro", "woods": "Corey D Woods",
+            }
             titler_map = {"woods": "Mayor", "garlid": "Vice Mayor"}
             from db import BodyMembership, _ensure_membership, _find_or_create_person
             for sup in sup_list:
@@ -319,7 +328,7 @@ async def main() -> int:
                 if not norm:
                     continue
                 role = titler_map.get(norm, "Councilmember")
-                name = sup.get("name", norm.capitalize())
+                name = _TEMPE_NAME_MAP.get(norm) or sup.get("name", norm.capitalize())
                 person_id = None
                 person, _ = _find_or_create_person(
                     session, name, norm,
@@ -735,6 +744,63 @@ async def main() -> int:
         ts = _dt.datetime.now().strftime("%H:%M:%S")
         print("%s Synced %d Chandler agenda items across %d meeting(s)" % (ts, total_items, meeting_count))
         return 0
+
+
+    # ── Goodyear sync (via AgendaQuick) ──
+    if args.source == "goodyear" and args.sync:
+        import datetime as _dt
+        from db import get_session, init_db, replace_meeting_data_safe
+        from scraper.goodyear import search_goodyear_meetings, fetch_page, parse_agenda_items, BODY_MAP, DEFAULT_BODY_SLUGS, GOODYEAR_ID, BASE_URL
+        init_db()
+        body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
+        body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
+        year_val = getattr(args, "year", None)
+        year = int(year_val) if year_val else _dt.date.today().year
+        print("Searching Goodyear meetings for %d..." % year)
+        meetings = search_goodyear_meetings(year, body_slugs=body_slugs)
+        if not meetings:
+            print("No Goodyear meetings found for %d." % year)
+            return 0
+        if args.limit:
+            meetings = meetings[:args.limit]
+        print("Found %d Goodyear meeting(s)" % len(meetings))
+        session = get_session()
+        total_items = 0
+        meeting_count = len(meetings)
+        for idx, m in enumerate(meetings, 1):
+            meeting_id = m["meeting_id"]
+            meeting_date = m["meeting_date"]
+            body_code = m.get("body_code", "goodyear-cc")
+            agenda_url = m.get("agenda_url", "")
+            meeting_type = m.get("meeting_type", "")
+            meeting_title = m.get("meeting_title", m.get("body_name", ""))
+            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": agenda_url}
+            from db import Meeting as MeetingModel
+            from sqlalchemy import select
+            existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
+            if existing and existing.sync_status == "complete" and not args.force:
+                print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
+                continue
+            try:
+                html = fetch_page(agenda_url)
+                items = parse_agenda_items(html, meeting_id)
+                if not items:
+                    replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
+                    print("  [%d/%d] %s %s: no items" % (idx, meeting_count, meeting_id, meeting_date))
+                    continue
+                agenda_item_dicts = []
+                for it in items:
+                    an = it.get("agenda_item_number", "")
+                    agenda_item_dicts.append({"agenda_item_id": body_code + "-" + meeting_id + "_" + an, "meeting_id": meeting_id, "agenda_item_number": an, "agenda_item_title": it.get("agenda_item_title", ""), "agenda_item_text": it.get("agenda_item_text", ""), "source_body": body_code, "source_url": agenda_url, "sort_order": it.get("sort_order", 0)})
+                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_item_dicts)
+                total_items += len(items)
+                print("  [%d/%d] %s %s: %d item(s)" % (idx, meeting_count, meeting_id, meeting_date, len(items)))
+            except Exception as e:
+                log.error("Failed Goodyear meeting %s: %s", meeting_id, e)
+        session.close()
+        print("Synced %d Goodyear items across %d meeting(s)" % (total_items, meeting_count))
+        return 0
+
 
     # ── MCACC sync (Maricopa County AgendaCenter) ──
     if args.source == "mcacc" and args.sync:
@@ -1519,6 +1585,60 @@ async def main() -> int:
         session.close()
         print("Synced %d Peoria items across %d meeting(s)" % (total_items, meeting_count))
         return 0
+
+
+    # ── Buckeye sync (via NovusAgenda) ──
+    if args.source == "buckeye" and args.sync:
+        import datetime as _dt
+        from db import get_session, init_db, replace_meeting_data_safe
+        from scraper.buckeye import search_buckeye_meetings, fetch_agenda_items_async, SLUG_TO_CODE, BODY_CODE_MAP, DEFAULT_BODY_SLUGS
+        init_db()
+        body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
+        body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
+        year_val = getattr(args, "year", None)
+        year = int(year_val) if year_val else _dt.date.today().year
+        print("Searching Buckeye meetings for %d..." % year)
+        meetings = search_buckeye_meetings(date_range="lyr", body_slugs=body_slugs)
+        if not meetings:
+            print("No Buckeye meetings found for %d." % year)
+            return 0
+        print("Found %d Buckeye meeting(s)" % len(meetings))
+        session = get_session()
+        total_items = 0
+        meeting_count = len(meetings)
+        for idx, m in enumerate(meetings, 1):
+            meeting_id = str(m["meeting_id"])
+            meeting_date = m["meeting_date"]
+            body_code = SLUG_TO_CODE.get(m.get("body_slug", ""), "buckeye-cc")
+            meeting_url = m.get("meeting_view_url", "") or m.get("meeting_url", "") or m.get("agenda_url", "")
+            meeting_type = m.get("meeting_type", "")
+            meeting_title = m.get("meeting_title", m.get("body_name", ""))
+            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": meeting_url}
+            from db import Meeting as MeetingModel
+            from sqlalchemy import select
+            existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
+            if existing and existing.sync_status == "complete" and not args.force:
+                print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
+                continue
+            try:
+                items = fetch_agenda_items_async(meeting_url, meeting_id)
+                if not items:
+                    replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
+                    print("  [%d/%d] %s %s: no items" % (idx, meeting_count, meeting_id, meeting_date))
+                    continue
+                agenda_item_dicts = []
+                for it in items:
+                    an = it.get("agenda_item_number", "")
+                    agenda_item_dicts.append({"agenda_item_id": body_code + "-" + meeting_id + "_" + an, "meeting_id": meeting_id, "agenda_item_number": an, "agenda_item_title": it.get("agenda_item_title", ""), "agenda_item_text": it.get("agenda_item_text", ""), "source_body": body_code, "source_url": meeting_url, "sort_order": it.get("sort_order", 0)})
+                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_item_dicts)
+                total_items += len(items)
+                print("  [%d/%d] %s %s: %d item(s)" % (idx, meeting_count, meeting_id, meeting_date, len(items)))
+            except Exception as e:
+                log.error("Failed Buckeye meeting %s: %s", meeting_id, e)
+        session.close()
+        print("Synced %d Buckeye items across %d meeting(s)" % (total_items, meeting_count))
+        return 0
+
 
     # ── Surprise sync (via CivicClerk) ──
     if args.source == "surprise" and args.sync:

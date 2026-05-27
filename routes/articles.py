@@ -87,7 +87,7 @@ def front_page():
     ).scalars().all()
 
     articles = session.execute(
-        select(Article).where(Article.status == "published")
+        select(Article).where(Article.status == "published", Article.is_featured == False)
         .order_by(desc(Article.published_at))
         .limit(20)
     ).scalars().all()
@@ -189,6 +189,12 @@ def front_page():
         # Gilbert
         "glendale-cc": "Glendale City Council",
         "peoria-cc": "Peoria City Council",
+        # Buckeye
+        "buckeye-cc": "Buckeye City Council",
+        "buckeye-pz": "Buckeye Planning & Zoning",
+        # Goodyear
+        "goodyear-cc": "Goodyear City Council",
+        "goodyear-pz": "Goodyear Planning & Zoning",
         "peoria-pz": "Peoria Planning & Zoning Commission",
         "surprise-cc": "Surprise City Council",
         "gilbert-tc": "Gilbert Town Council",

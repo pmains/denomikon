@@ -1,5 +1,27 @@
 {% extends "base.html" %}
 {% block title %}{{ article.title }} — Poliscopic{% endblock %}
+{% block extra_css %}
+<style>
+  .article-body table {
+    width: 100%;
+    margin-bottom: 1rem;
+    border-collapse: collapse;
+  }
+  .article-body th,
+  .article-body td {
+    padding: 0.5rem;
+    border: 1px solid #dee2e6;
+    vertical-align: top;
+  }
+  .article-body th {
+    background: #f8f9fa;
+    font-weight: 600;
+  }
+  .article-body tr:nth-child(even) {
+    background: #f8f9fa;
+  }
+</style>
+{% endblock %}
 {% block content %}
 <div class="mb-3">
   <a href="/" class="text-decoration-none text-muted">&larr; Back to front page</a>
@@ -24,6 +46,9 @@
   </div>
   {% endif %}
 
+  {% if article.featured_image %}
+  <img src="{{ article.featured_image }}" alt="" style="float:right;max-width:45%;max-height:350px;width:auto;height:auto;margin:0 0 0.75rem 1rem;border-radius:8px;border:2px solid #e8651a;">
+  {% endif %}
   {% if article.summary %}
   <div class="lead mb-4">{{ article.summary }}</div>
   {% endif %}
@@ -31,6 +56,8 @@
   <div class="article-body">
     {{ article.body|markdown|safe }}
   </div>
+
+  <div style="clear:both;"></div>
 
   {% if article.sources %}
   <div class="mt-4 p-3 bg-light rounded">

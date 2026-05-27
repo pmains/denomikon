@@ -344,6 +344,8 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
         is_gilbert = body_val.startswith("gilbert-")
         is_scottsdale = body_val.startswith("scottsdale-")
         is_peoria = body_val.startswith("peoria-")
+        is_buckeye = body_val.startswith("buckeye-")
+        is_goodyear = body_val.startswith("goodyear-")
         # Derive source label and badge from body value
         if is_tempe:
             source_labels = {
@@ -419,6 +421,31 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             source = "City Council" if body_val == "surprise-cc" else "Surprise"
             source_badge = "dark"
 
+        elif is_buckeye:
+            buckeye_labels = {
+                "buckeye-cc": "City Council",
+                "buckeye-pz": "Planning elif is_peoria: Zoning",
+                "buckeye-boa": "Board of Adj",
+                "buckeye-prc": "Parks elif is_peoria: Rec",
+                "buckeye-hpc": "Hist Preserv",
+                "buckeye-library": "Library Board",
+                "buckeye-psprs": "PSPRS",
+            }
+            source = buckeye_labels.get(body_val, "Buckeye")
+            source_badge = "dark"
+        elif is_goodyear:
+            goodyear_labels = {
+                "goodyear-cc": "City Council",
+                "goodyear-pz": "Planning elif is_peoria: Zoning",
+                "goodyear-acc": "Arts elif is_peoria: Culture",
+                "goodyear-wac": "Water Advisory",
+                "goodyear-yc": "Youth Comm",
+                "goodyear-audit": "Audit",
+                "goodyear-psprs-f": "Fire PSPRS",
+                "goodyear-psprs-p": "Police PSPRS",
+            }
+            source = goodyear_labels.get(body_val, "Goodyear")
+            source_badge = "success"
         elif is_peoria:
             peoria_labels = {
                 "peoria-cc": "City Council",
@@ -477,6 +504,18 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
         elif jur_id == 10:
             jur_name = "Peoria"
             jur_slug = "peoria"
+        elif jur_id == 11:
+            jur_name = "Glendale"
+            jur_slug = "glendale"
+        elif jur_id == 12:
+            jur_name = "Surprise"
+            jur_slug = "surprise"
+        elif jur_id == 13:
+            jur_name = "Buckeye"
+            jur_slug = "buckeye"
+        elif jur_id == 14:
+            jur_name = "Goodyear"
+            jur_slug = "goodyear"
         elif jur_id == 11:
             jur_name = "Glendale"
             jur_slug = "glendale"

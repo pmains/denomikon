@@ -71,6 +71,7 @@ class Article(Base):
     author = relationship("AdminUser", backref="articles")
     featured_image = Column(String(512), nullable=False, default="")
     is_featured = Column(Boolean, nullable=False, default=False)
+    priority = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), nullable=False,
                         default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False,
@@ -111,6 +112,30 @@ class Notification(Base):
     is_read = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), nullable=False,
                         default=lambda: datetime.now(timezone.utc))
+
+
+class MediaImage(Base):
+    """Uploaded media item (image) for use in articles and pages."""
+    __tablename__ = "media_images"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    filename = Column(String(256), nullable=False)
+    original_name = Column(String(256), nullable=False, default="")
+    alt_text = Column(String(512), nullable=False, default="")
+    tags = Column(String(512), nullable=False, default="")
+    file_size = Column(Integer, nullable=False, default=0)
+    width = Column(Integer, nullable=False, default=0)
+    height = Column(Integer, nullable=False, default=0)
+    uploaded_by = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    uploaded_at = Column(DateTime(timezone=True), nullable=False,
+                        default=lambda: datetime.now(timezone.utc))
+
+    @property
+    def url(self) -> str:
+        return f"/static/uploads/{self.filename}"
+
+    def __repr__(self):
+        return f"<MediaImage #{self.id}: {self.filename}>"
 
 
 class DismissedSuggestion(Base):

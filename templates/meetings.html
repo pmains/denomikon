@@ -17,6 +17,8 @@
             <option value="peoria" {% if filter_jurisdiction == 'peoria' %}selected{% endif %}>City of Peoria</option>
             <option value="glendale" {% if filter_jurisdiction == 'glendale' %}selected{% endif %}>City of Glendale</option>
             <option value="surprise" {% if filter_jurisdiction == 'surprise' %}selected{% endif %}>City of Surprise</option>
+            <option value="buckeye" {% if filter_jurisdiction == 'buckeye' %}selected{% endif %}>City of Buckeye</option>
+            <option value="goodyear" {% if filter_jurisdiction == 'goodyear' %}selected{% endif %}>City of Goodyear</option>
         </select>
     </div>
     <div class="col-md-2">
@@ -123,6 +125,23 @@
             <option value="glendale-pc" {% if filter_body == 'glendale-pc' %}selected{% endif %}>Planning Commission</option>
             <option value="glendale-boa" {% if filter_body == 'glendale-boa' %}selected{% endif %}>Board of Adjustment</option>
             </optgroup>
+            <optgroup label="City of Buckeye">
+            <option value="buckeye-cc" {% if filter_body == 'buckeye-cc' %}selected{% endif %}>City Council</option>
+            <option value="buckeye-pz" {% if filter_body == 'buckeye-pz' %}selected{% endif %}>Planning <optgroup label="City of Surprise">amp; Zoning</option>
+            <option value="buckeye-boa" {% if filter_body == 'buckeye-boa' %}selected{% endif %}>Board of Adjustment</option>
+            <option value="buckeye-prc" {% if filter_body == 'buckeye-prc' %}selected{% endif %}>Parks <optgroup label="City of Surprise">amp; Rec</option>
+            <option value="buckeye-hpc" {% if filter_body == 'buckeye-hpc' %}selected{% endif %}>Historic Preservation</option>
+            <option value="buckeye-library" {% if filter_body == 'buckeye-library' %}selected{% endif %}>Library Board</option>
+            <option value="buckeye-psprs" {% if filter_body == 'buckeye-psprs' %}selected{% endif %}>PSPRS</option>
+            </optgroup>
+            <optgroup label="City of Goodyear">
+            <option value="goodyear-cc" {% if filter_body == 'goodyear-cc' %}selected{% endif %}>City Council</option>
+            <option value="goodyear-pz" {% if filter_body == 'goodyear-pz' %}selected{% endif %}>Planning <optgroup label="City of Surprise">amp; Zoning</option>
+            <option value="goodyear-acc" {% if filter_body == 'goodyear-acc' %}selected{% endif %}>Arts <optgroup label="City of Surprise">amp; Culture</option>
+            <option value="goodyear-wac" {% if filter_body == 'goodyear-wac' %}selected{% endif %}>Water Advisory</option>
+            <option value="goodyear-yc" {% if filter_body == 'goodyear-yc' %}selected{% endif %}>Youth Comm</option>
+            <option value="goodyear-audit" {% if filter_body == 'goodyear-audit' %}selected{% endif %}>Audit</option>
+            </optgroup>
             <optgroup label="City of Surprise">
             <option value="surprise-cc" {% if filter_body == 'surprise-cc' %}selected{% endif %}>City Council</option>
             </optgroup>
@@ -177,6 +196,8 @@ var JUR_TO_LABEL = {
     "peoria": "City of Peoria",
     "glendale": "City of Glendale",
     "surprise": "City of Surprise",
+    "buckeye": "City of Buckeye",
+    "goodyear": "City of Goodyear",
 };
 
 function filterSourceOptions() {
