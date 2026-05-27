@@ -12,7 +12,7 @@ from scraper.drain import *
 from scraper.health import *
 from scraper.tab import *
 from scraper.ida import *
-from scraper.mcacc import *
+from scraper.agendacenter import *
 from scraper.tempe import *
 from scraper.agenda_items import *
 from scraper.supporting_docs import *
@@ -38,8 +38,8 @@ from scraper.adj import _extract_adj_year_tabs_from_html, _normalize_adj_meeting
 from scraper.drain import _extract_drain_year_tabs_from_html
 from scraper.health import _extract_health_year_tabs_from_html
 from scraper.tab import _extract_tab_year_tabs_from_html
-from scraper.mcacc import _extract_year_tabs_from_html
-from scraper.mcacc import _format_mm_dd_yyyy as _format_mcacc_mm_dd_yyyy
+from scraper.agendacenter import _extract_year_tabs_from_html
+from scraper.agendacenter import _format_mm_dd_yyyy as _format_mcacc_mm_dd_yyyy
 from scraper.supporting_docs import _extract_supporting_docs_from_table
 from scraper.onbase import (
     OnBaseConfig,
@@ -133,9 +133,9 @@ __all__ = [
     "extract_meetings",
     "extract_pz_agenda_items",
     "extract_pz_meetings",
-    "extract_mcacc_meetings",
-    "extract_mcacc_agenda_items",
-    "parse_mcacc_meetings_from_html",
+    "extract_ac_meetings",
+    "extract_ac_agenda_items",
+    "parse_ac_meetings_from_html",
     "MCACC_BODY_MAP",
     "MCACC_BODY_CODES",
     "body_code_to_cid",

@@ -344,6 +344,8 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
         is_gilbert = body_val.startswith("gilbert-")
         is_scottsdale = body_val.startswith("scottsdale-")
         is_peoria = body_val.startswith("peoria-")
+        # Default badge — overridden per jurisdiction below
+        source_badge = "primary"
         is_buckeye = body_val.startswith("buckeye-")
         is_goodyear = body_val.startswith("goodyear-")
         # Derive source label and badge from body value
@@ -623,6 +625,18 @@ def meeting_detail(meeting_id, body=None):
 
     meeting_body_val = meeting.body or "bos"
 
+    # Try to construct a minutes URL from the source URL
+    # AgendaCenter: replace Agenda with Minutes, strip ?html=true
+    # Destiny (Chandler/Glendale): look for chanddocs/glendocs in source
+    minutes_url = ""
+    if meeting.source_url:
+        src = meeting.source_url
+        if "AgendaCenter/ViewFile/Agenda" in src:
+            minutes_url = src.replace("/Agenda/", "/Minutes/").replace("?html=true", "")
+        elif "/chanddocs/" in src or "/glendocs/" in src:
+            # These are already PDFs — minutes may be at a similar path
+            pass
+
     # --- Agenda items ---
     items = session.execute(
         select(AgendaItem)
@@ -770,6 +784,7 @@ def meeting_detail(meeting_id, body=None):
         pz_details=pz_details,
         related_pz=related_pz,
         related_bos=related_bos,
+        minutes_url=minutes_url,
     )
 
 

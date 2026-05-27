@@ -553,6 +553,19 @@ def suggestions():
     )
 
 
+
+
+def _post_article_to_bluesky(article):
+    """Post an article to Bluesky if it's published and has a slug."""
+    if article.status != "published" or not article.slug:
+        return
+    from social import post_to_bluesky
+    # Determine the full URL
+    from flask import url_for
+    base_url = "https://poliscopic.com"
+    article_url = f"{base_url}/articles/{article.slug}"
+    post_to_bluesky(article.title, article.summary, article_url)
+
 # ── Article CRUD ──
 
 @admin_bp.route("/articles/new", methods=["GET", "POST"])
@@ -586,6 +599,8 @@ def article_new():
 
         session.add(article)
         session.flush()
+
+        # Bluesky posting is handled by scripts/bluesky_sync.py after production sync
 
         # Attach tags
         tag_ids = request.form.getlist("tags")
@@ -686,7 +701,7 @@ def article_edit(article_id):
 
         session.commit()
         sync_article_fts(article.id)
-        session.close()
+        # Bluesky posting is handled by scripts/bluesky_sync.py after production sync
         flash("Article updated.", "success")
         return redirect(url_for("admin.article_edit", article_id=article.id))
 

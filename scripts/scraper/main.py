@@ -210,6 +210,46 @@ async def count_agenda_items_for_meeting(page, meeting_url: str) -> int:
 
 
 
+
+def _extract_chandler_minutes(session, body_code, meeting_id, meeting_date):
+    """Extract votes from Chandler meeting minutes PDF for a single meeting.
+
+    Runs independently of the agenda sync so minutes can be backfilled
+    for already-synced meetings without re-syncing agenda items.
+    """
+    try:
+        from scraper.chandler import (
+            build_attachments_url, fetch_attachments_page,
+            parse_attachments_for_minutes,
+            fetch_minutes_pdf_bytes, extract_pdf_text,
+            parse_minutes_votes,
+        )
+        from db.persist import persist_votes
+
+        att_url = build_attachments_url(meeting_id, meeting_date)
+        att_html = fetch_attachments_page(att_url)
+        if att_html:
+            minutes_pdfs = parse_attachments_for_minutes(att_html, meeting_id)
+            for pdf_url in minutes_pdfs:
+                pdf_bytes = fetch_minutes_pdf_bytes(pdf_url)
+                if pdf_bytes:
+                    text = extract_pdf_text(pdf_bytes)
+                    if text:
+                        vote_data = parse_minutes_votes(text)
+                        if vote_data.get("votes"):
+                            count = persist_votes(
+                                session, body_code, meeting_id,
+                                vote_data["supervisors"],
+                                vote_data["votes"],
+                            )
+                            session.flush()
+                            print("        minutes votes: %d recorded (%d persisted)" % (len(vote_data["votes"]), count))
+                            break
+    except Exception as ve:
+        log.debug("Chandler minutes vote extraction failed for %s: %s", meeting_id, ve)
+
+
+
 async def main() -> int:
     setup_logger()
     args = parse_args()
@@ -601,6 +641,7 @@ async def main() -> int:
         return 0
 
 
+
     # ── Chandler sync (via AgendaQuick) ──
     if args.source == "chandler" and args.sync:
         import datetime as _dt
@@ -659,6 +700,9 @@ async def main() -> int:
                 select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)
             ).scalar_one_or_none()
             if existing and existing.sync_status == "complete" and not args.force:
+                # ── Try minutes vote extraction even for already-synced meetings ──
+                _extract_chandler_minutes(session, body_code, meeting_id, meeting_date)
+                session.commit()
                 print("  [%d/%d] %s %s: already synced, skipping" % (idx, meeting_count, meeting_id, meeting_date))
                 continue
 
@@ -732,6 +776,9 @@ async def main() -> int:
                                     print("        votes: %d recorded" % len(vote_data["votes"]))
                     except Exception as ve:
                         log.debug("Chandler vote extraction failed: %s", ve)
+
+                # ── Chandler meeting minutes PDF vote extraction ──
+                _extract_chandler_minutes(session, body_code, meeting_id, meeting_date)
 
             except Exception as e:
                 log.error("Failed to sync Chandler meeting %s: %s", meeting_id, e)
@@ -809,12 +856,12 @@ async def main() -> int:
         from db import Meeting as MeetingModel
         from sqlalchemy import select
 
-        from scraper.mcacc import (
+        from scraper.agendacenter import (
             MCACC_BODY_MAP, MCACC_BODY_CODES,
             body_code_to_cid, body_code_to_name,
-            build_mcacc_search_url,
-            extract_mcacc_meetings,
-            extract_mcacc_agenda_items,
+            build_ac_search_url,
+            extract_ac_meetings,
+            extract_ac_agenda_items,
             _format_mm_dd_yyyy as fmt_date_fn,
         )
 
@@ -846,12 +893,12 @@ async def main() -> int:
 
         # Resolve public_body_id mapping and register MCACC bodies
         from db import PublicBody as PublicBodyModel
-        from scraper.mcacc import ensure_mcacc_public_bodies
+        from scraper.agendacenter import ensure_agendacenter_public_bodies
         session = get_session()
         pb_map = {}
         try:
             # Register MCACC bodies in public_bodies if needed
-            mcacc_pb_ids = ensure_mcacc_public_bodies(session)
+            mcacc_pb_ids = ensure_agendacenter_public_bodies(session)
             session.commit()
             for pb in session.execute(select(PublicBodyModel)).scalars().all():
                 pb_map[pb.body_code] = pb
@@ -875,11 +922,11 @@ async def main() -> int:
                         print(f"  {body_code}: unknown CID, skipping")
                         continue
 
-                    search_url = build_mcacc_search_url(cid, pz_start, pz_end)
+                    search_url = build_ac_search_url(cid, pz_start, pz_end)
                     print(f"{display_name} ({body_code}): searching {pz_start} to {pz_end}")
 
                     try:
-                        meetings = await extract_mcacc_meetings(page, search_url, body_code)
+                        meetings = await extract_ac_meetings(page, search_url, body_code)
                     except Exception as e:
                         print(f"  {body_code}: search failed: {e}")
                         continue
@@ -931,7 +978,7 @@ async def main() -> int:
 
                         # Fetch agenda items
                         try:
-                            items = await extract_mcacc_agenda_items(page, agenda_html_url, body_code)
+                            items = await extract_ac_agenda_items(page, agenda_html_url, body_code)
                         except Exception as e:
                             print(f"    [{idx}/{len(meetings)}] {meeting.meeting_id} {meeting.meeting_date}: FAILED items - {e}")
                             try:
@@ -963,7 +1010,7 @@ async def main() -> int:
                         minutes_url = meeting.minutes_url
                         if minutes_url:
                             try:
-                                from scraper.mcacc import extract_members_from_minutes_pdf
+                                from scraper.agendacenter import extract_members_from_minutes_pdf
                                 from db import _find_or_create_person, _ensure_membership
                                 member_data = extract_members_from_minutes_pdf(minutes_url)
                                 if member_data:
@@ -990,6 +1037,65 @@ async def main() -> int:
                                         print(f"          members: {member_count} extracted from minutes")
                             except Exception as me:
                                 log.debug("MCACC minutes member extraction failed: %s", me)
+
+                        # ── Minutes document + outcome extraction ──
+                        minutes_url = getattr(meeting, "minutes_url", "")
+                        if minutes_url and not args.dry_run:
+                            try:
+                                import tempfile, os, subprocess, io, zipfile, xml.etree.ElementTree as ET
+                                from db import SupportingDocument as SdModel
+                                from sqlalchemy import delete as _sql_del
+
+                                # Add minutes as a meeting-level supporting document
+                                existing_min = session.execute(
+                                    select(SdModel).where(
+                                        SdModel.body == body_code,
+                                        SdModel.meeting_id == meeting.meeting_id,
+                                        SdModel.document_url == minutes_url,
+                                    )
+                                ).scalar_one_or_none()
+                                if not existing_min:
+                                    doc = SdModel(
+                                        body=body_code,
+                                        meeting_id=meeting.meeting_id,
+                                        agenda_item_number="",
+                                        document_url=minutes_url,
+                                        document_title=f"Meeting Minutes — {meeting.meeting_date}",
+                                        file_type="DOCX",
+                                    )
+                                    session.add(doc)
+
+                                # Try to parse minutes for outcomes
+                                # (DOCX format — zip containing word/document.xml)
+                                import urllib.request
+                                req = urllib.request.Request(minutes_url, headers={
+                                    "User-Agent": "Mozilla/5.0"
+                                })
+                                try:
+                                    resp = urllib.request.urlopen(req, timeout=15)
+                                    docx_bytes = resp.read()
+                                    with zipfile.ZipFile(io.BytesIO(docx_bytes)) as zf:
+                                        if "word/document.xml" in zf.namelist():
+                                            doc_xml = zf.read("word/document.xml")
+                                            ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+                                            root = ET.fromstring(doc_xml)
+                                            texts = root.findall(".//w:t", ns)
+                                            full_text = " ".join(t.text or "" for t in texts)
+
+                                            from scraper.agendacenter import extract_minutes_outcomes
+                                            outcomes = extract_minutes_outcomes(full_text)
+                                            if outcomes:
+                                                print(f"          minutes outcomes: {len(outcomes)} found")
+                                except Exception as mex:
+                                    log.debug("MCACC minutes parse failed: %s", mex)
+
+                                session.commit()
+                            except Exception as mex:
+                                log.debug("MCACC minutes doc processing failed: %s", mex)
+                                try:
+                                    session.rollback()
+                                except Exception:
+                                    pass
 
                     session.close()
                     grand_total_items += total_items
@@ -1510,6 +1616,24 @@ async def main() -> int:
                     an = it.get("agenda_item_number", "")
                     agenda_item_dicts.append({"agenda_item_id": body_code + "-" + meeting_id + "_" + an, "meeting_id": meeting_id, "agenda_item_number": an, "agenda_item_title": it.get("agenda_item_title", ""), "agenda_item_text": it.get("agenda_item_text", ""), "source_body": body_code, "source_url": agenda_url, "sort_order": it.get("sort_order", 0)})
                 replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_item_dicts)
+
+                # ── Glendale Results PDF vote extraction ──
+                try:
+                    from scraper.glendale_new import fetch_results_pdf_bytes, extract_pdf_text, parse_results_votes
+                    from db.persist import persist_votes
+                    results_url = m.get("results_url", "")
+                    if results_url:
+                        pdf_bytes = fetch_results_pdf_bytes(results_url)
+                        if pdf_bytes:
+                            text = extract_pdf_text(pdf_bytes)
+                            if text:
+                                vote_data = parse_results_votes(text)
+                                if vote_data.get("votes"):
+                                    persist_votes(session, body_code, meeting_id, vote_data["supervisors"], vote_data["votes"])
+                                    print("      votes: %d" % len(vote_data["votes"]))
+                except Exception as ve:
+                    log.debug("Glendale vote extraction failed for %s: %s", meeting_id, ve)
+
                 total_items += len(items)
                 print("  [%d/%d] %s %s: %d item(s)" % (idx, meeting_count, meeting_id, meeting_date, len(items)))
             except Exception as e:

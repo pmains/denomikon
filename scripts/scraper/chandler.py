@@ -491,3 +491,269 @@ def parse_results_votes(text: str) -> dict:
             i += 1
 
     return {"supervisors": supervisors, "votes": votes}
+
+
+# ── Attachments (dsp=atf) endpoint for finding minutes PDFs ──
+
+CHANDLER_ORG_ID = 24263
+
+
+def build_attachments_url(meeting_seq: str, meeting_date: str) -> str:
+    """Build the URL for the attachments page of a meeting.
+
+    The attachments page (dsp=atf) lists all PDFs attached to the meeting,
+    including meeting minutes, results, and other supporting documents.
+
+    The `ag` parameter is the meeting seq. Month and year are derived from
+    the meeting date.
+    """
+    parts = meeting_date.split("-")
+    year = parts[0] if len(parts) >= 1 else "2026"
+    month = parts[1] if len(parts) >= 2 else "01"
+    return (
+        f"{BASE_URL}/agenda_publish.cfm?id={CHANDLER_ORG_ID}"
+        f"&mt=ALL&get_month={month}&get_year={year}"
+        f"&dsp=atf&ag={meeting_seq}"
+    )
+
+
+def fetch_attachments_page(attachments_url: str) -> Optional[str]:
+    """Fetch the attachments (dsp=atf) page HTML."""
+    try:
+        return fetch_page(attachments_url, timeout=20)
+    except Exception as e:
+        log.debug("Attachments page not available for %s: %s", attachments_url, e)
+        return None
+
+
+def parse_attachments_for_minutes(html: str, meeting_seq: str = "") -> list[str]:
+    """Extract minutes PDF URLs from an attachments page.
+
+    Looks for PDF links that contain "minutes" or "minute" in the filename,
+    and whose URL path includes the meeting_seq (to filter out other bodies).
+
+    Returns list of absolute PDF URLs.
+    """
+    import urllib.parse
+    pdfs: list[str] = []
+    for m in re.finditer(r'href="([^"]*\.pdf)"', html, re.I):
+        url = m.group(1)
+        # Decode HTML entities
+        url = url.replace("&#x25;20", " ").replace("&amp;", "&")
+        filename = url.rsplit("/", 1)[-1].lower() if "/" in url else url.lower()
+        # Skip non-minutes/results PDFs
+        if not ("minutes" in filename or "minute" in filename or "result" in filename or "meeting" in filename):
+            continue
+        # Filter by meeting_seq in the URL path to avoid other bodies' PDFs
+        if meeting_seq and f"/{meeting_seq}_" not in url and f"_{meeting_seq}" not in url:
+            continue
+        full_url = urllib.parse.urljoin(BASE_URL, url)
+        if full_url not in pdfs:
+            pdfs.append(full_url)
+    return pdfs
+
+
+# ── Chandler Minutes PDF vote parsing ──
+
+def fetch_minutes_pdf_bytes(pdf_url: str) -> Optional[bytes]:
+    """Download a Chandler meeting minutes PDF."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(pdf_url, headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read()
+    except Exception as e:
+        log.debug("Minutes PDF not available for %s: %s", pdf_url, e)
+        return None
+
+
+def parse_minutes_votes(text: str) -> dict:
+    """Parse Chandler meeting minutes text for vote data.
+
+    Chandler's minutes don't record individual roll-call votes, but they DO
+    record attendance (Roll Call section) and dissenting votes by name.
+
+    Key patterns:
+
+      "Motion carried unanimously (7-0)"
+      "Motion carried by majority (4-3; Councilmembers Encinas, Orlando, and Poston dissenting)"
+      "Motion carried by majority (2-5; Mayor Hartke, Councilmembers ... dissenting)"
+
+    From this we can infer:
+    - Who was present from the Roll Call section
+    - Who dissented on split votes
+    - By subtraction: who was in the majority
+
+    Returns dict with keys:
+      - supervisors: all present members with normalized_name
+      - votes: list of dicts {agenda_item_number, motion_result, supervisor_votes}
+        where supervisor_votes contains {name, vote: "yes"/"no", raw_vote_text}
+    """
+    votes: list[dict] = []
+    seen_voters: set[str] = set()
+    # Track ALL present members from Roll Call so we can infer majority votes
+    present_members: list[str] = []  # full names like "Kevin Hartke"
+
+    lines = text.split("\n")
+
+    # Known Chandler council name parts for fuzzy matching
+    _COUNCIL_NAMES = {
+        "hartke": ("Kevin Hartke", "Mayor"),
+        "harris": ("OD Harris", "Vice Mayor"),
+        "od harris": ("OD Harris", "Vice Mayor"),
+        "encinas": ("Angel Encinas", "Councilmember"),
+        "ellis": ("Christine Ellis", "Councilmember"),
+        "stewart": ("Mark Stewart", "Councilmember"),
+        "orlando": ("Matt Orlando", "Councilmember"),
+        "poston": ("Jane Poston", "Councilmember"),
+        "jones": ("Rene Lopez", "Councilmember"),
+    }
+
+    def _resolve_name(raw: str) -> str:
+        raw = raw.strip().rstrip(".,; ").lower().lstrip()
+        # Direct match
+        if raw in _COUNCIL_NAMES:
+            return _COUNCIL_NAMES[raw][0]
+        # Try partial match: check if raw starts with any key
+        for key, (full, _) in _COUNCIL_NAMES.items():
+            if key.startswith(raw) or raw.startswith(key):
+                return full
+        return raw.title()
+
+    # Parse Roll Call section to determine who was present
+    in_roll_call = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("Roll Call"):
+            in_roll_call = True
+            continue
+        if not in_roll_call:
+            continue
+        # Stop at first blank line or next section header
+        if not stripped or any(kw in stripped.upper() for kw in ["INVOCATION", "PLEDGE", "CONSENT"]):
+            in_roll_call = False
+            continue
+        # Match "Mayor Name" or "Vice Mayor Name" or "Councilmember Name"
+        # The line may also contain appointee info after extra spaces (e.g.
+        # "Mayor Kevin Hartke                    Joshua Wright, City Manager")
+        # We extract just the council member name before the extra spaces.
+        m = re.match(
+            r"(?:Mayor|Vice Mayor|Councilmember)\s+([A-Z][A-Za-z.]*(?:\s+[A-Z][a-z]+)?)",
+            stripped,
+        )
+        if not m:
+            # Try the appointee-only row format (no council member here)
+            if any(kw in stripped.lower() for kw in
+                   ["joshua wright", "kelly schwab", "dana delong"]):
+                continue
+        if m:
+            name_raw = m.group(1)
+            full = _resolve_name(name_raw)
+            if full not in present_members:
+                present_members.append(full)
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+
+        # Pattern: Motion carried by majority (N-M; Councilmember X, Y, and Z dissenting)
+        dissenting_match = re.search(
+            r"Motion carried by majority\s*\((\d+)-(\d+);\s*(.*?)dissenting\)",
+            stripped, re.I,
+        )
+        if dissenting_match:
+            ayes = int(dissenting_match.group(1))
+            nays = int(dissenting_match.group(2))
+            dissenters_raw = dissenting_match.group(3)
+            # Extract individual dissenter names.
+            # Format: "Councilmembers Encinas, Orlando, and Poston"
+            # or: "Mayor Hartke, Councilmembers Encinas, Ellis, Orlando, and Poston"
+            # Strip the "Councilmembers" / "Councilmember" / "Mayor" / "Vice Mayor" prefix
+            dissenters = []
+            cleaned = dissenters_raw.strip()
+            # Strip all role prefixes (may appear before each name group)
+            cleaned = re.sub(
+                r"(?:\s*Councilmembers?|\s*Mayor|\s*Vice Mayor)\s+", " ", cleaned
+            )
+            # Split on commas and "and", strip whitespace and trailing periods
+            parts = re.split(r"[,\s]+and\s+|[,\s]+", cleaned)
+            for part in parts:
+                p = part.strip().strip(".;,")
+                if p and p[0].isupper() and len(p) > 2 and p.lower() not in ("dissenting", "and"):
+                    if p not in dissenters:
+                        dissenters.append(p)
+
+            supervisor_votes = []
+            dissenter_norms = set()
+            for name in dissenters:
+                full = _resolve_name(name)
+                norm = full.lower()
+                dissenter_norms.add(norm)
+                seen_voters.add(norm)
+                supervisor_votes.append({
+                    "name": full, "vote": "no",
+                    "raw_vote_text": name.strip(),
+                })
+
+            # Infer majority: present members minus dissenters
+            for full in present_members:
+                norm = full.lower()
+                if norm not in dissenter_norms:
+                    seen_voters.add(norm)
+                    supervisor_votes.append({
+                        "name": full, "vote": "yes",
+                        "raw_vote_text": full,
+                    })
+
+            idx = len(votes) + 1
+            result = "Carried" if ayes > nays else "Failed"
+            votes.append({
+                "agenda_item_number": f"minutes-{idx}",
+                "motion_result": result,
+                "vote_text": f"{ayes}-{nays} ({', '.join(d.strip() for d in dissenters)} dissenting)",
+                "supervisor_votes": supervisor_votes,
+            })
+            continue
+
+        # Pattern: Motion carried unanimously (N-0)
+        unanimous_match = re.search(
+            r"Motion carried unanimously\s*\((\d+)-0\)",
+            stripped, re.I,
+        )
+        if unanimous_match:
+            idx = len(votes) + 1
+            votes.append({
+                "agenda_item_number": f"minutes-{idx}",
+                "motion_result": "Carried Unanimously",
+                "vote_text": f"Unanimous ({unanimous_match.group(1)}-0)",
+                "supervisor_votes": [],
+            })
+            continue
+
+        # Pattern: passed N-0 with exception (conflict of interest)
+        exception_match = re.search(
+            r"passed\s+(\d+)-0,\s*(.*?)(?:Councilmember|Mayor|Vice Mayor)\s+([A-Z][a-zA-Z]+).*?(?:conflict|excused|absent)",
+            stripped, re.I,
+        )
+        if exception_match:
+            idx = len(votes) + 1
+            votes.append({
+                "agenda_item_number": f"minutes-{idx}",
+                "motion_result": "Carried",
+                "vote_text": stripped.strip(),
+                "supervisor_votes": [],
+            })
+            continue
+
+    # Build supervisor list from present members (roll call)
+    # Fall back to seen_voters if roll call parsing produced nothing
+    source_names = present_members if present_members else list(seen_voters)
+    supervisors = [
+        {
+            "name": name,
+            "normalized_name": name.lower(),
+            "present": True,
+        }
+        for name in source_names
+    ]
+
+    return {"supervisors": supervisors, "votes": votes}

@@ -433,7 +433,7 @@ def _parse_tempe_args(rest: list[str]) -> argparse.Namespace:
 
 def _parse_mcacc_args(rest: list[str]) -> argparse.Namespace:
     """Parse MCACC (Maricopa County AgendaCenter boards) arguments."""
-    from scraper.mcacc import MCACC_BODY_CODES, body_code_to_name
+    from scraper.agendacenter import MCACC_BODY_CODES, body_code_to_name
     default_bodies = ",".join(MCACC_BODY_CODES)
     p = argparse.ArgumentParser(
         description="Scrape Maricopa County AgendaCenter boards (mcacc)",

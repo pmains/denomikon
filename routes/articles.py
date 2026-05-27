@@ -221,7 +221,14 @@ def front_page():
         "mc-flood-stakeholder": "Flood Control District Stakeholder Group",
     }
     upcoming_display = []
+    seen_dedup: set[tuple[str, str, str]] = set()
     for m in upcoming:
+        # Deduplicate by (date, body, meeting_type) — occasionally two
+        # meeting_ids exist for the same meeting (rescheduled entries).
+        key = (m.meeting_date or "", m.body, m.meeting_type or "")
+        if key in seen_dedup:
+            continue
+        seen_dedup.add(key)
         display = _body_names.get(m.body) if _body_names.get(m.body) else _code_to_name(m.body)
         upcoming_display.append({
             "body": m.body,

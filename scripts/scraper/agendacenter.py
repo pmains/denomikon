@@ -102,7 +102,7 @@ def _format_mm_dd_yyyy(date_iso: str) -> str | None:
 # ── URL building ──
 
 
-def build_mcacc_search_url(cid: str, start_date: str, end_date: str) -> str:
+def build_ac_search_url(cid: str, start_date: str, end_date: str) -> str:
     """Build AgendaCenter search URL for a given CID (including trailing comma)."""
     params = {
         "term": "",
@@ -128,7 +128,7 @@ def _extract_year_tabs_from_html(html: str) -> list[int]:
 
 # ── Meeting extraction ──
 
-def parse_mcacc_meetings_from_html(html: str, base_url: str, body_code: str) -> list[Meeting]:
+def parse_ac_meetings_from_html(html: str, base_url: str, body_code: str) -> list[Meeting]:
     """Parse meetings from AgendaCenter search HTML for any CID body.
 
     Same catAgendaRow structure as PZ/ADJ.
@@ -228,7 +228,7 @@ def parse_mcacc_meetings_from_html(html: str, base_url: str, body_code: str) -> 
     return meetings
 
 
-async def extract_mcacc_meetings(page, search_url: str, body_code: str) -> list[Meeting]:
+async def extract_ac_meetings(page, search_url: str, body_code: str) -> list[Meeting]:
     """Extract meetings from AgendaCenter search results with year-tab clicking.
 
     Same pattern as PZ/ADJ — the AgendaCenter only shows one year at a time.
@@ -242,7 +242,7 @@ async def extract_mcacc_meetings(page, search_url: str, body_code: str) -> list[
 
     # Collect from initial HTML (default year)
     html = await page.content()
-    initial = parse_mcacc_meetings_from_html(html, base_for_url, body_code)
+    initial = parse_ac_meetings_from_html(html, base_for_url, body_code)
     all_meetings.extend(initial)
     for m in initial:
         seen_ids.add(m.meeting_id)
@@ -268,7 +268,7 @@ async def extract_mcacc_meetings(page, search_url: str, body_code: str) -> list[
             await page.goto(yr_url, wait_until="domcontentloaded")
             await page.wait_for_timeout(2000)
             yr_html = await page.content()
-            yr_meetings = parse_mcacc_meetings_from_html(yr_html, base_for_url, body_code)
+            yr_meetings = parse_ac_meetings_from_html(yr_html, base_for_url, body_code)
             for m in yr_meetings:
                 if m.meeting_id not in seen_ids:
                     all_meetings.append(m)
@@ -281,7 +281,7 @@ async def extract_mcacc_meetings(page, search_url: str, body_code: str) -> list[
 
 # ── Agenda item extraction ──
 
-async def extract_mcacc_agenda_items(page, meeting_url: str, body_code: str) -> list[dict]:
+async def extract_ac_agenda_items(page, meeting_url: str, body_code: str) -> list[dict]:
     """Extract agenda items from a meeting detail page.
 
     Many MCACC boards use the same structure as Health board:
@@ -339,6 +339,89 @@ async def extract_mcacc_agenda_items(page, meeting_url: str, body_code: str) -> 
     return []
 
 
+def _parse_cac_table(html: str, source_url: str) -> list[dict]:
+    """Parse a 3-column agenda table (Item, Agenda Item, Presenter).
+
+    Used by Community Action Commission and similar boards on the
+    Maricopa County AgendaCenter platform.
+
+    Table format:
+      <table>
+        <tr><th>Item</th><th>Agenda Item</th><th>Presenter</th></tr>
+        <tr><td>1.</td><td>Call to Order</td><td>Danielle Olaya</td></tr>
+      </table>
+    """
+    from scraper.html_utils import _parse_html, _find_all, _clean_html_text, _node_text
+    import re
+
+    items: list[dict] = []
+    root = _parse_html(html)
+    tables = _find_all(root, "table")
+
+    for table in tables:
+        rows = _find_all(table, "tr")
+        is_cac_table = False
+
+        for row in rows:
+            cells = _find_all(row, "td")
+            if not cells:
+                # Check for the CAC header pattern
+                ths = _find_all(row, "th")
+                header_text = " ".join(_clean_html_text(_node_text(th)) for th in ths).lower()
+                if "agenda item" in header_text and "presenter" in header_text:
+                    is_cac_table = True
+                continue
+
+            if not is_cac_table:
+                continue
+
+            # First cell: item number
+            first_text = _clean_html_text(_node_text(cells[0])).strip()
+            m = re.match(r"^(\d+)\.?\s*$", first_text)
+            if not m:
+                continue
+            item_num = m.group(1)
+
+            # Second cell: agenda item title
+            title = ""
+            desc = ""
+            if len(cells) >= 2:
+                title = _clean_html_text(_node_text(cells[1])).strip()
+
+            # Third cell: presenter
+            presenter = ""
+            if len(cells) >= 3:
+                presenter = _clean_html_text(_node_text(cells[2])).strip()
+
+            if not title:
+                continue
+
+            full_text = title
+            if presenter:
+                full_text += f"\n\nPresented by: {presenter}"
+
+            items.append({
+                "source_body": "mcacc",
+                "meeting_id": "",
+                "meeting_date": "",
+                "meeting_type": "",
+                "agenda_item_number": item_num,
+                "agenda_item_id": "",
+                "agenda_item_title": title,
+                "agenda_item_text": full_text,
+                "agenda_item_url": source_url,
+                "vote_or_action": "",
+                "source_url": source_url,
+                "c_number": "",
+                "c_number_base": "",
+                "c_number_revision": None,
+                "case_number": "",
+                "supporting_doc_dicts": [],
+            })
+
+    return items
+
+
 def _parse_html_agenda_items(html: str, source_url: str) -> list[dict]:
     """Try to extract numbered agenda items from HTML content.
 
@@ -350,6 +433,15 @@ def _parse_html_agenda_items(html: str, source_url: str) -> list[dict]:
     from scraper.health import parse_health_agenda_html
     try:
         items = parse_health_agenda_html(html, source_url, "mcacc", "mcacc")
+        if items:
+            return items
+    except Exception:
+        pass
+
+    # Try Community Action Commission / AgencyCenter 3-column table format
+    # (Item, Agenda Item, Presenter)
+    try:
+        items = _parse_cac_table(html, source_url)
         if items:
             return items
     except Exception:
@@ -477,14 +569,14 @@ def _download_and_parse_pdf(pdf_url: str) -> list[dict]:
             pdf_path = f.name
             f.write(pdf_data)
 
-        items = _parse_mcacc_agenda_pdf(pdf_path)
+        items = _parse_ac_agenda_pdf(pdf_path)
         Path(pdf_path).unlink(missing_ok=True)
         return items
     except Exception:
         return []
 
 
-def _parse_mcacc_agenda_pdf(filepath: str) -> list[dict]:
+def _parse_ac_agenda_pdf(filepath: str) -> list[dict]:
     """Generic PDF parser for MCACC agenda PDFs.
 
     Attempts to extract numbered items from a text-extracted PDF.
@@ -728,6 +820,58 @@ def _looks_like_name(text: str) -> bool:
     return True
 
 
+def extract_minutes_outcomes(text: str) -> list[dict]:
+    """Extract agenda item outcomes from meeting minutes text.
+
+    Scans the text for keywords like "motion", "approved", "adopted",
+    "carried", "failed", "denied", "received" near item numbers.
+
+    Returns list of dicts: {agenda_item_number, outcome, context}
+    """
+    import re
+    outcomes: list[dict] = []
+
+    # Known outcome keywords
+    outcome_kws = re.compile(
+        r"(motion\s+(?:made|by|carried|failed|approved|denied|adopted|passed|tabled)|"
+        r"approved|adopted|carried|failed|denied|received|ratified|accepted|"
+        r"unanimously|majority)", re.I
+    )
+
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # Look for item number references near outcome keywords
+        item_match = re.search(r"Item\s+#?(\d+)", stripped, re.I)
+        kw_match = outcome_kws.search(stripped)
+
+        if kw_match:
+            item_num = item_match.group(1) if item_match else ""
+            outcome = kw_match.group(0).strip()
+
+            # Normalize outcome
+            outcome_lower = outcome.lower()
+            if any(w in outcome_lower for w in ["carried", "approved", "adopted", "ratified", "accepted"]):
+                norm = "Approved"
+            elif any(w in outcome_lower for w in ["failed", "denied", "rejected", "tabled"]):
+                norm = "Failed"
+            elif "received" in outcome_lower or "unanimously" in outcome_lower:
+                norm = outcome
+            else:
+                norm = outcome
+
+            outcomes.append({
+                "agenda_item_number": item_num,
+                "outcome": norm,
+                "context": stripped[:300],
+            })
+
+    return outcomes
+
+
 def extract_members_from_minutes_pdf(pdf_url: str) -> list[dict]:
     """Download MCACC minutes PDF and extract member names/roles."""
     text = _download_pdf_text(pdf_url)
@@ -745,7 +889,7 @@ MCACC_PUBLIC_BODY_REGISTRATIONS: dict[str, tuple[str, str]] = {
 MCACC_JURISDICTION_SLUG = "maricopa-county"
 
 
-def ensure_mcacc_public_bodies(session) -> dict[str, int]:
+def ensure_agendacenter_public_bodies(session) -> dict[str, int]:
     """Register all MCACC bodies in the public_bodies table if not present.
 
     Returns a dict mapping body_code → public_body_id.

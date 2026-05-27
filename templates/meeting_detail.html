@@ -45,6 +45,12 @@
                 View on Agenda Online &nearr;
                 {%- endif -%}
             </a>
+            {% if minutes_url %}
+            &middot;
+            <a href="{{ minutes_url }}" target="_blank" rel="noopener">
+                Minutes &nearr;
+            </a>
+            {% endif %}
         </p>
         {% endif %}
 

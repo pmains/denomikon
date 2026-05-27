@@ -64,3 +64,4 @@ REMEDIATION.md
 seqs.txt
 benchmark_housing_queries.py
 run_app.sh
+bsky.credentials
