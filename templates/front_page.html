@@ -116,18 +116,23 @@
     </div>
     {% endif %}
 
-    <!-- Follow on Bluesky -->
+    {% if trending %}
     <div class="card mb-3">
       <div class="card-header">
-        <strong>Follow</strong>
+        <strong>Trending</strong>
       </div>
-      <div class="card-body small">
-        <p class="mb-2">New articles are posted to Bluesky as they're published.</p>
-        <a href="https://bsky.app/profile/polisopic.bsky.social" target="_blank" rel="noopener" class="btn btn-outline-primary btn-sm w-100">
-          @polisopic.bsky.social
+      <div class="list-group list-group-flush small">
+        {% for t in trending %}
+        <a href="/articles/{{ t.slug }}" class="list-group-item list-group-item-action">
+          <div class="d-flex justify-content-between">
+            <span>{{ t.title[:60] }}{% if t.title|length > 60 %}&hellip;{% endif %}</span>
+            <span class="text-muted ms-2">{{ t.recent_views }} view{% if t.recent_views != 1 %}s{% endif %}</span>
+          </div>
         </a>
+        {% endfor %}
       </div>
     </div>
+    {% endif %}
   </div>
 </div>
 {% endblock %}

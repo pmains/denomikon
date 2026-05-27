@@ -114,6 +114,22 @@ def front_page():
         .limit(15)
     ).scalars().all()
 
+    # Trending articles (most viewed in last 24 hours)
+    from sqlalchemy import text as _sql
+    trending_rows = session.execute(
+        _sql("""
+            SELECT a.id, a.title, a.slug, a.view_count, COUNT(pv.id) as recent_views
+            FROM articles a
+            LEFT JOIN page_views pv ON pv.article_id = a.id
+                AND pv.viewed_at >= datetime('now', '-1 day')
+            WHERE a.status = 'published'
+            GROUP BY a.id
+            HAVING recent_views > 0 OR a.view_count > 0
+            ORDER BY recent_views DESC, a.view_count DESC
+            LIMIT 5
+        """)
+    ).mappings().all()
+
     # Body code to human-readable name lookup
     _body_names = {
         # Maricopa County
@@ -194,6 +210,9 @@ def front_page():
         "buckeye-pz": "Buckeye Planning & Zoning",
         # Goodyear
         "goodyear-cc": "Goodyear City Council",
+        "buckeye-cc": "Buckeye City Council",
+        "avondale-cc": "Avondale City Council",
+        "el-mirage-cc": "El Mirage City Council",
         "goodyear-pz": "Goodyear Planning & Zoning",
         "peoria-pz": "Peoria Planning & Zoning Commission",
         "surprise-cc": "Surprise City Council",
@@ -241,7 +260,8 @@ def front_page():
     session.close()
     return render_template("front_page.html", articles=articles,
                            featured=featured, tags=tags,
-                           upcoming_meetings=upcoming_display)
+                           upcoming_meetings=upcoming_display,
+                           trending=trending_rows)
 
 
 @articles_bp.route("/articles/<slug>")
@@ -255,6 +275,27 @@ def article_detail(slug):
     if not article or article.status not in ("published", "archived"):
         session.close()
         abort(404)
+    # Track view
+    from sqlalchemy import text as _sql
+    try:
+        session.execute(
+            _sql("UPDATE articles SET view_count = view_count + 1 WHERE id = :aid"),
+            {"aid": article.id},
+        )
+        session.execute(
+            _sql("INSERT INTO page_views (article_id) VALUES (:aid)"),
+            {"aid": article.id},
+        )
+        session.commit()
+    except Exception:
+        from sqlalchemy import text as _sql2
+        session.rollback()
+    # Re-fetch article to avoid detached instance error (commit expires attrs)
+    article = session.execute(
+        select(Article)
+        .options(joinedload(Article.author), joinedload(Article.tags))
+        .where(Article.id == article.id)
+    ).unique().scalar_one_or_none()
     session.close()
     return render_template("article.html", article=article)
 
