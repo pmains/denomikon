@@ -115,20 +115,25 @@ def front_page():
     ).scalars().all()
 
     # Trending articles (most viewed in last 24 hours)
-    from sqlalchemy import text as _sql
-    trending_rows = session.execute(
-        _sql("""
-            SELECT a.id, a.title, a.slug, a.view_count, COUNT(pv.id) as recent_views
-            FROM articles a
-            LEFT JOIN page_views pv ON pv.article_id = a.id
-                AND pv.viewed_at >= datetime('now', '-1 day')
-            WHERE a.status = 'published'
-            GROUP BY a.id
-            HAVING recent_views > 0 OR a.view_count > 0
-            ORDER BY recent_views DESC, a.view_count DESC
-            LIMIT 5
-        """)
-    ).mappings().all()
+    from analytics_db import get_trending
+    _trending_data = get_trending(limit=5)
+    # Enrich with article metadata
+    trending_rows = []
+    if _trending_data:
+        trending_ids = [t['article_id'] for t in _trending_data]
+        from sqlalchemy import select as _sel
+        db_articles = session.execute(
+            _sel(Article).where(Article.id.in_(trending_ids))
+        ).scalars().all()
+        article_map = {a.id: a for a in db_articles}
+        for t in _trending_data:
+            a = article_map.get(t['article_id'])
+            if a and a.status == 'published':
+                trending_rows.append({
+                    'title': a.title,
+                    'slug': a.slug,
+                    'recent_views': t['recent_views'],
+                })
 
     # Body code to human-readable name lookup
     _body_names = {
@@ -275,22 +280,12 @@ def article_detail(slug):
     if not article or article.status not in ("published", "archived"):
         session.close()
         abort(404)
-    # Track view
-    from sqlalchemy import text as _sql
+    # Track view in analytics DB (persists across sync.sh overwrites)
     try:
-        session.execute(
-            _sql("UPDATE articles SET view_count = view_count + 1 WHERE id = :aid"),
-            {"aid": article.id},
-        )
-        session.execute(
-            _sql("INSERT INTO page_views (article_id) VALUES (:aid)"),
-            {"aid": article.id},
-        )
-        session.commit()
+        from analytics_db import track_page_view
+        track_page_view(article.id)
     except Exception:
-        from sqlalchemy import text as _sql2
-        session.rollback()
-    # Re-fetch article to avoid detached instance error (commit expires attrs)
+        pass
     article = session.execute(
         select(Article)
         .options(joinedload(Article.author), joinedload(Article.tags))
