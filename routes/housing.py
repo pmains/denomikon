@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import json
-from flask import Blueprint, render_template, jsonify, request
-
-from db import get_session
+from flask import Blueprint, render_template, request
 from sqlalchemy import text
+from db import get_session
 
 housing_bp = Blueprint("housing", __name__, url_prefix="/housing")
 
@@ -47,29 +46,35 @@ POPULATIONS = {
 @housing_bp.route("")
 def housing_index():
     view = request.args.get("view", "map")
-    year = request.args.get("year", "2024")
+    year = str(request.args.get("year", "2024"))
     city = request.args.get("city", "").strip().lower()
-    
+    chart_type = request.args.get("chart_type", "total")
+
     session = get_session()
-    
-    # All available years for filter dropdown
-    years = [r[0] for r in session.execute(
+
+    # All available years (strings for template comparison)
+    years = [str(r[0]) for r in session.execute(
         text("SELECT DISTINCT year FROM housing_units WHERE year >= 2000 ORDER BY year DESC")
     ).all()]
-    
-    # All jurisdictions
+
     jurisdictions = sorted(CITY_DISPLAY.keys())
-    
-    # City data for the selected year
-    city_rows = session.execute(text("""
+
+    # ── Per-city data for map & table ──
+    city_where = "year = :year"
+    city_params = {"year": year}
+    if city:
+        city_where += " AND jurisdiction_slug = :ct"
+        city_params["ct"] = city
+
+    city_rows = session.execute(text(f"""
         SELECT jurisdiction_slug,
                COALESCE(SUM(CASE WHEN unit_type='apartment' THEN units ELSE 0 END), 0) as apt,
                COALESCE(SUM(CASE WHEN unit_type='sf' THEN units ELSE 0 END), 0) as sf,
                COALESCE(SUM(units), 0) as total
-        FROM housing_units WHERE year = :year
+        FROM housing_units WHERE {city_where}
         GROUP BY jurisdiction_slug ORDER BY total DESC
-    """), {"year": year}).all()
-    
+    """), city_params).all()
+
     city_data = []
     total_apt = 0
     total_sf = 0
@@ -81,72 +86,43 @@ def housing_index():
         city_data.append({
             'slug': r.jurisdiction_slug,
             'name': CITY_DISPLAY.get(r.jurisdiction_slug, r.jurisdiction_slug),
-            'apt': r.apt,
-            'sf': r.sf,
-            'total': r.total,
+            'apt': r.apt, 'sf': r.sf, 'total': r.total,
             'per_capita': round(r.total / POPULATIONS.get(r.jurisdiction_slug, 1) * 1000, 2),
             'lat': CITY_LOCS.get(r.jurisdiction_slug, (33.4, -112.0))[0],
             'lng': CITY_LOCS.get(r.jurisdiction_slug, (33.4, -112.0))[1],
         })
-    
-    # County-wide yearly totals for chart
-    yearly_rows = session.execute(text("""
-        SELECT year,
-               COALESCE(SUM(CASE WHEN unit_type='apartment' THEN units ELSE 0 END), 0) as apt,
-               COALESCE(SUM(CASE WHEN unit_type='sf' THEN units ELSE 0 END), 0) as sf,
-               COALESCE(SUM(units), 0) as total
-        FROM housing_units WHERE year >= 2000
-        GROUP BY year ORDER BY year
-    """)).all()
-    
-    county_pop = 4700000
-    yearly_data = []
-    for r in yearly_rows:
-        yearly_data.append({
-            'year': r.year,
-            'apartment': r.apt,
-            'sf': r.sf,
-            'total': r.total,
-            'per_capita': round(r.total / county_pop * 1000, 2),
-        })
-    
-    # Per-city yearly data for chart
-    city_filter_cond = ""
-    city_filter_params = {"year": year}
+
+    # ── Yearly data for chart ──
+    yearly_where = "year >= 2000"
+    yearly_params = {}
     if city:
-        city_filter_cond = "AND jurisdiction_slug = :city"
-        city_filter_params["city"] = city
-    
-    city_yearly_rows = session.execute(text(f"""
+        yearly_where += " AND jurisdiction_slug = :ct2"
+        yearly_params["ct2"] = city
+
+    yearly_rows = session.execute(text(f"""
         SELECT year,
                COALESCE(SUM(CASE WHEN unit_type='apartment' THEN units ELSE 0 END), 0) as apt,
                COALESCE(SUM(CASE WHEN unit_type='sf' THEN units ELSE 0 END), 0) as sf,
                COALESCE(SUM(units), 0) as total
-        FROM housing_units WHERE year >= 2000 {city_filter_cond}
+        FROM housing_units WHERE {yearly_where}
         GROUP BY year ORDER BY year
-    """), city_filter_params).all()
-    
+    """), yearly_params).all()
+
+    county_pop = POPULATIONS.get(city, 4700000) if city else 4700000
     city_yearly = [{
-        'year': r.year, 'apartment': r.apt, 'sf': r.sf,
-        'total': r.total,
-        'per_capita': round(r.total / POPULATIONS.get(city, county_pop) * 1000, 2) if city else 0,
-    } for r in city_yearly_rows]
-    
+        'year': r.year, 'apartment': r.apt, 'sf': r.sf, 'total': r.total,
+        'per_capita': round(r.total / county_pop * 1000, 2),
+    } for r in yearly_rows]
+
     session.close()
-    
+
     return render_template(
         "housing.html",
-        view=view,
-        year=year,
-        city=city,
-        years=years,
-        jurisdictions=jurisdictions,
+        view=view, year=year, city=city, chart_type=chart_type,
+        years=years, jurisdictions=jurisdictions,
         city_data=city_data,
-        yearly_data=yearly_data,
         city_yearly=city_yearly,
-        total_apt=total_apt,
-        total_sf=total_sf,
-        total_all=total_all,
+        total_apt=total_apt, total_sf=total_sf, total_all=total_all,
         POPULATIONS=POPULATIONS,
         CITY_LOCS_JSON=json.dumps(CITY_LOCS),
         CITY_DISPLAY_JSON=json.dumps(CITY_DISPLAY),

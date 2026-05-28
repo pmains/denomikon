@@ -104,10 +104,10 @@ th.sort-desc::after { content: " ▼"; font-size: .7rem; }
     </h5>
     <div>
       <div class="btn-group btn-group-sm">
-        <button class="btn btn-outline-secondary {{ 'active' if not request.args.get('chart_type') or request.args.get('chart_type') == 'total' }}" onclick="switchChartType('total')">Total</button>
-        <button class="btn btn-outline-secondary {{ 'active' if request.args.get('chart_type') == 'apartment' }}" onclick="switchChartType('apartment')">Apt</button>
-        <button class="btn btn-outline-secondary {{ 'active' if request.args.get('chart_type') == 'sf' }}" onclick="switchChartType('sf')">SF</button>
-        <button class="btn btn-outline-secondary {{ 'active' if request.args.get('chart_type') == 'per_capita' }}" onclick="switchChartType('per_capita')">Per Capita</button>
+        <button class="btn btn-outline-secondary {{ 'active' if chart_type == 'total' }}" onclick="switchChartType('total')">Total</button>
+        <button class="btn btn-outline-secondary {{ 'active' if chart_type == 'apartment' }}" onclick="switchChartType('apartment')">Apt</button>
+        <button class="btn btn-outline-secondary {{ 'active' if chart_type == 'sf' }}" onclick="switchChartType('sf')">SF</button>
+        <button class="btn btn-outline-secondary {{ 'active' if chart_type == 'per_capita' }}" onclick="switchChartType('per_capita')">Per Capita</button>
       </div>
     </div>
   </div>
