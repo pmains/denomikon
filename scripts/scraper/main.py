@@ -270,13 +270,40 @@ async def main() -> int:
     if getattr(args, 'self_test_splitter', False):
         return 0 if splitter_self_test(verbose=True) else 1
 
+    if args.source == "hearings":
+        from scraper.housing_hearings import HearingFinder
+        import sys as _sys
+        import argparse as _argparse
+        
+        _p = _argparse.ArgumentParser(prog="hearings", add_help=False)
+        _p.add_argument("--days", type=int, default=30)
+        _p.add_argument("--body", default=None)
+        _p.add_argument("--json", action="store_true")
+        _hargs, _ = _p.parse_known_args(_sys.argv[_sys.argv.index('hearings')+1:])
+        
+        finder = HearingFinder()
+        items, hearing_meetings = finder.find_housing_hearings(
+            days=_hargs.days, body_filter=_hargs.body
+        )
+        return finder.print_report(items, hearing_meetings, _hargs.json)
+
     if args.init_db:
-        from db import init_db
-
-        init_db()
-        print("Database tables created.")
-        return 0
-
+        from scraper.housing_hearings import HearingFinder
+        import sys as _sys
+        
+        # Parse remaining args for hearings
+        import argparse as _argparse
+        _p = _argparse.ArgumentParser(prog="hearings", add_help=False)
+        _p.add_argument("--days", type=int, default=30)
+        _p.add_argument("--body", default=None)
+        _p.add_argument("--json", action="store_true")
+        _hargs, _ = _p.parse_known_args(_sys.argv[_sys.argv.index('hearings')+1:])
+        
+        finder = HearingFinder()
+        items, hearing_meetings = finder.find_housing_hearings(
+            days=_hargs.days, body_filter=_hargs.body
+        )
+        return finder.print_report(items, hearing_meetings, _hargs.json)
 
     if args.source == "tempe" and args.sync:
         from db import get_session, init_db, update_sync_status, replace_meeting_data_safe, persist_votes

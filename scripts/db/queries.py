@@ -419,6 +419,7 @@ def get_supervisor_split_votes(
         .join(
             Meeting,
             and_(Meeting.meeting_id == AgendaItemVote.meeting_id, Meeting.body == AgendaItemVote.body),
+        )
         .where(
             SupervisorVote.supervisor_id == sup_id,
             AgendaItemVote.body == body,

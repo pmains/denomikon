@@ -62,6 +62,18 @@ def _print_top_level_help() -> None:
     raise SystemExit(0)
 
 
+def _parse_hearings_args(rest):
+    p = argparse.ArgumentParser(description="Find upcoming housing hearings", prog="hearings", add_help=False)
+    p.add_argument("--sync", action="store_true")
+    p.add_argument("--days", type=int, default=30)
+    p.add_argument("--body", default=None)
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--start-date")
+    p.add_argument("--end-date")
+    p.add_argument("--year")
+    args, _ = p.parse_known_args(rest)
+    return args
+
 def _normalize_year_month(args, parser) -> None:
     """Expand --year and --month into --start-date and --end-date.
 
@@ -114,7 +126,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "mcacc", "phoenix", "all"):
+    if rest and rest[0] in ("hearings", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "mcacc", "phoenix", "all"):
         source = rest.pop(0)
 
     if source == "bos":
@@ -165,6 +177,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         args = _parse_mesa_args(rest)
     elif source == "goodyear":
         args = _parse_mesa_args(rest)
+    elif source == "hearings":
+        args = _parse_hearings_args(rest)
     elif source == "mcacc":
         args = _parse_mcacc_args(rest)
     elif source == "all":
