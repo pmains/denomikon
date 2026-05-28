@@ -369,7 +369,7 @@ def persist_meeting(
             agenda_item_text=item_dict.get("agenda_item_text", ""),
             agenda_item_url=item_dict.get("agenda_item_url", ""),
             vote_or_action=item_dict.get("vote_or_action", ""),
-            source_body=item_dict.get("source_body", "Board of Supervisors"),
+            source_body=item_dict.get("source_body") or item_dict.get("body") or body,
             source_url=item_dict.get("source_url", ""),
             c_number=item_dict.get("c_number", ""),
             c_number_base=item_dict.get("c_number_base", ""),
@@ -409,7 +409,8 @@ def persist_meeting(
     # Delete existing CaseEvent records for this meeting (idempotency)
     session.execute(
         CaseEvent.__table__.delete().where(
-            CaseEvent.meeting_id == meeting_id
+            CaseEvent.body == body,
+            CaseEvent.meeting_id == meeting_id,
         )
     )
     session.flush()
@@ -468,6 +469,7 @@ def _upsert_case_and_event(
     # Look up the DB agenda_item by meeting_id + agenda_item_id to get its ID
     db_item = session.execute(
         select(AgendaItem).where(
+            AgendaItem.body == body,
             AgendaItem.meeting_id == meeting_id,
             AgendaItem.agenda_item_id == item_dict.get("agenda_item_id", ""),
         )

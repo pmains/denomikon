@@ -5,7 +5,7 @@ from datetime import date
 from typing import Optional
 
 from flask import Blueprint, render_template, request, redirect, jsonify
-from sqlalchemy import select, func, or_, text as sa_text
+from sqlalchemy import select, func, or_, text as sa_text, and_
 
 from db import (
     get_session, Meeting, AgendaItem, SupportingDocument,
@@ -818,7 +818,7 @@ def c_number_revisions(c_number_base):
             Meeting.meeting_type,
             Meeting.meeting_body,
         )
-        .join(Meeting, Meeting.meeting_id == AgendaItem.meeting_id)
+        .join(Meeting, and_(Meeting.meeting_id == AgendaItem.meeting_id, Meeting.body == AgendaItem.body))
         .where(
             or_(
                 AgendaItem.c_number_base == c_number_base,
@@ -843,7 +843,7 @@ def c_number_revisions(c_number_base):
         ]
         all_docs = session.execute(
             select(_SD, Meeting.body)
-            .join(Meeting, Meeting.meeting_id == _SD.meeting_id)
+            .join(Meeting, and_(Meeting.meeting_id == _SD.meeting_id, Meeting.body == _SD.body))
             .where(or_(*conditions))
         ).all()
         for sd, body_code in all_docs:
@@ -856,6 +856,7 @@ def c_number_revisions(c_number_base):
         aiv = session.execute(
             select(AgendaItemVote).where(
                 AgendaItemVote.meeting_id == r.meeting_id,
+                AgendaItemVote.body == r.body,
                 AgendaItemVote.agenda_item_number == r.agenda_item_number,
             )
         ).scalar_one_or_none()
@@ -910,7 +911,7 @@ def get_related_case_events(case_number):
         return []
     events = session.execute(
         select(CaseEvent, Meeting.meeting_date, Meeting.meeting_type, Meeting.meeting_title)
-        .outerjoin(Meeting, Meeting.meeting_id == CaseEvent.meeting_id)
+        .outerjoin(Meeting, and_(Meeting.meeting_id == CaseEvent.meeting_id, Meeting.body == CaseEvent.body))
         .where(CaseEvent.case_id == case.id)
         .order_by(CaseEvent.event_date)
     ).all()

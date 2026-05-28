@@ -272,7 +272,7 @@ def get_supervisor_vote_stats(
         AgendaItemVote.body == body,
     ).group_by(SupervisorVote.vote, SupervisorVote.agenda_item_vote_id)
     if start_date or end_date:
-        q = q.join(Meeting, Meeting.meeting_id == AgendaItemVote.meeting_id)
+        q = q.join(Meeting, and_(Meeting.meeting_id == AgendaItemVote.meeting_id, Meeting.body == AgendaItemVote.body))
         if start_date:
             q = q.where(Meeting.meeting_date >= start_date)
         if end_date:
@@ -418,8 +418,7 @@ def get_supervisor_split_votes(
         )
         .join(
             Meeting,
-            Meeting.meeting_id == AgendaItemVote.meeting_id,
-        )
+            and_(Meeting.meeting_id == AgendaItemVote.meeting_id, Meeting.body == AgendaItemVote.body),
         .where(
             SupervisorVote.supervisor_id == sup_id,
             AgendaItemVote.body == body,
@@ -800,7 +799,7 @@ def get_supervisor_majority_alignment_stats(
         AgendaItemVote.body == body,
     )
     if start_date or end_date:
-        q = q.join(Meeting, Meeting.meeting_id == AgendaItemVote.meeting_id)
+        q = q.join(Meeting, and_(Meeting.meeting_id == AgendaItemVote.meeting_id, Meeting.body == AgendaItemVote.body))
         if start_date:
             q = q.where(Meeting.meeting_date >= start_date)
         if end_date:
@@ -960,7 +959,7 @@ def get_supervisor_voting_alignment(
         )
     )
     if start_date or end_date:
-        q = q.join(Meeting, Meeting.meeting_id == AgendaItemVote.meeting_id)
+        q = q.join(Meeting, and_(Meeting.meeting_id == AgendaItemVote.meeting_id, Meeting.body == AgendaItemVote.body))
         if start_date:
             q = q.where(Meeting.meeting_date >= start_date)
         if end_date:
@@ -1097,7 +1096,7 @@ def get_supervisor_swing_votes(
         )
     )
     if start_date or end_date:
-        q = q.join(Meeting, Meeting.meeting_id == AgendaItemVote.meeting_id)
+        q = q.join(Meeting, and_(Meeting.meeting_id == AgendaItemVote.meeting_id, Meeting.body == AgendaItemVote.body))
         if start_date:
             q = q.where(Meeting.meeting_date >= start_date)
         if end_date:
