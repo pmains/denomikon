@@ -160,11 +160,10 @@ def main():
     for article in articles:
         if post_article(session, article, args.url, dry_run=args.dry_run):
             posted += 1
+            if not args.dry_run:
+                session.commit()  # commit per-artice so DB failure doesnt lose tracking
         else:
             failed += 1
-
-    if not args.dry_run:
-        session.commit()
 
     session.close()
     log.info("Done: %d posted, %d failed", posted, failed)
