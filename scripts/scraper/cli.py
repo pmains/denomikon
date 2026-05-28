@@ -65,9 +65,11 @@ def _print_top_level_help() -> None:
 def _parse_hearings_args(rest):
     p = argparse.ArgumentParser(description="Find upcoming housing hearings", prog="hearings", add_help=False)
     p.add_argument("--sync", action="store_true")
-    p.add_argument("--days", type=int, default=30)
-    p.add_argument("--body", default=None)
-    p.add_argument("--json", action="store_true")
+    p.add_argument("--days", type=int, default=30, help="Days to look ahead (default: 30)")
+    p.add_argument("--jurisdiction", default=None, 
+                   help="Filter to one city: tempe, mesa, phoenix, chandler, etc.")
+    p.add_argument("--body", default=None, help="Filter by body code (e.g. tempe-drc)")
+    p.add_argument("--json", action="store_true", help="JSON output")
     p.add_argument("--start-date")
     p.add_argument("--end-date")
     p.add_argument("--year")

@@ -277,15 +277,16 @@ async def main() -> int:
         
         _p = _argparse.ArgumentParser(prog="hearings", add_help=False)
         _p.add_argument("--days", type=int, default=30)
+        _p.add_argument("--jurisdiction", default=None)
         _p.add_argument("--body", default=None)
         _p.add_argument("--json", action="store_true")
         _hargs, _ = _p.parse_known_args(_sys.argv[_sys.argv.index('hearings')+1:])
         
         finder = HearingFinder()
         items, hearing_meetings = finder.find_housing_hearings(
-            days=_hargs.days, body_filter=_hargs.body
+            days=_hargs.days, jurisdiction=_hargs.jurisdiction, body_filter=_hargs.body
         )
-        return finder.print_report(items, hearing_meetings, _hargs.json)
+        return finder.print_report(items, hearing_meetings, _hargs.json, _hargs.jurisdiction)
 
     if args.init_db:
         from scraper.housing_hearings import HearingFinder
