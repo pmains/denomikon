@@ -23,6 +23,7 @@ def _print_top_level_help() -> None:
     print("  tempe     City of Tempe (Council, DRC, BOA, HPC, etc.)")
     print("  mesa      City of Mesa (Council, PZ, DRB, BOA, HPB, etc. via Legistar)")
     print("  chandler  City of Chandler (Council, PZ, DRC, BOA, HPC via AgendaQuick)")
+    print("  avondale  City of Avondale (Council, P&Z, BOA via CivicClerk)")
     print("  gilbert   Town of Gilbert (Council via OnBase)")
     print("  scottsdale City of Scottsdale (Council via PDF archive)")
     print("  scottsdale-boards Scottsdale P&Z, BOA, DRB, HPC, Bldg Appeals")
@@ -111,7 +112,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "mcacc", "all"):
+    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "avondale", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "mcacc", "all"):
         source = rest.pop(0)
 
     if source == "bos":
@@ -147,6 +148,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     elif source == "peoria":
         args = _parse_mesa_args(rest)
     elif source == "el-mirage":
+        args = _parse_mesa_args(rest)
+    elif source == "avondale":
         args = _parse_mesa_args(rest)
     elif source == "buckeye-granicus":
         args = _parse_mesa_args(rest)
