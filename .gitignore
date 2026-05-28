@@ -57,7 +57,12 @@ sync.sh
 memory/
 docs/
 
-# Dev notes
+# Internal docs — not for public source control
+STYLE.md
+OPS.md
+SCRAPERS.md
+
+# Dev notes & scripts
 DEVELOPMENT_LOG.md
 NOTES.md
 REMEDIATION.md
@@ -65,3 +70,4 @@ seqs.txt
 benchmark_housing_queries.py
 run_app.sh
 bsky.credentials
+scripts/run_daily_sync.sh
