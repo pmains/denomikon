@@ -71,3 +71,4 @@ benchmark_housing_queries.py
 run_app.sh
 bsky.credentials
 scripts/run_daily_sync.sh
+SYNC.md
