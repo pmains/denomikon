@@ -126,7 +126,6 @@
         <a href="/articles/{{ t.slug }}" class="list-group-item list-group-item-action">
           <div class="d-flex justify-content-between">
             <span>{{ t.title[:60] }}{% if t.title|length > 60 %}&hellip;{% endif %}</span>
-            <span class="text-muted ms-2">{{ t.recent_views }} view{% if t.recent_views != 1 %}s{% endif %}</span>
           </div>
         </a>
         {% endfor %}

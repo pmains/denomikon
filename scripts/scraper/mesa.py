@@ -74,8 +74,13 @@ BODY_CODE_MAP = {
     "mesa-eastmark-cfd-2": "mesa-eastmark2",
 }
 
-# Default: only sync City Council meetings initially
-DEFAULT_BODY_SLUGS = ["mesa-city-council"]
+# Default body slugs — include CFD boards for full coverage
+DEFAULT_BODY_SLUGS = [
+    "mesa-city-council",
+    "mesa-cadence-cfd",
+    "mesa-eastmark-cfd-1",
+    "mesa-eastmark-cfd-2",
+]
 
 
 # ── URL patterns ──

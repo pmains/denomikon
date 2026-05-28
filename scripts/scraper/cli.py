@@ -112,7 +112,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "avondale", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "mcacc", "all"):
+    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "avondale", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "mcacc", "phoenix", "all"):
         source = rest.pop(0)
 
     if source == "bos":
@@ -145,6 +145,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         args = _parse_glendale_new_args(rest)
     elif source == "surprise":
         args = _parse_surprise_args(rest)
+    elif source == "phoenix":
+        args = _parse_mesa_args(rest)
     elif source == "peoria":
         args = _parse_mesa_args(rest)
     elif source == "el-mirage":
