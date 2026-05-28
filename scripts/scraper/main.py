@@ -1771,6 +1771,51 @@ async def main() -> int:
         return 0
 
     # ── Buckeye sync (via NovusAgenda) ──
+    if args.source == "buckeye-granicus" and args.sync:
+        import datetime as _dt
+        from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
+        from scraper.buckeye_granicus import (
+            search_buckeye_meetings,
+            BASE_URL, PUBLIC_BODY_CODE,
+        )
+        init_db()
+        year_val = getattr(args, "year", None)
+        year = int(year_val) if year_val else _dt.date.today().year
+        print("Searching Buckeye (Granicus) meetings for %d..." % year)
+        meetings = search_buckeye_meetings(year)
+        if args.limit:
+            meetings = meetings[:args.limit]
+        if not meetings:
+            print("No Buckeye (Granicus) meetings found for %d." % year)
+            return 0
+        print("Found %d Buckeye (Granicus) meeting(s)" % len(meetings))
+        session = get_session()
+        total_items = 0
+        meeting_count = len(meetings)
+        from db import Meeting as MeetingModel
+        from sqlalchemy import select
+        for idx, m in enumerate(meetings, 1):
+            meeting_id = m["meeting_id"]
+            meeting_date = m["meeting_date"]
+            body_code = m.get("body_code", "buckeye-cc")
+            source_url = m.get("source_url", "")
+            meeting_type = m.get("meeting_type", "")
+            meeting_title = m.get("meeting_title", "")
+            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": source_url}
+            existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
+            if existing and existing.sync_status == "complete" and not args.force:
+                print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
+                continue
+            try:
+                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
+                total_items += 0
+                print("  [%d/%d] %s %s: meeting synced" % (idx, meeting_count, meeting_id, meeting_date))
+            except Exception as e:
+                log.error("Failed Buckeye (Granicus) meeting %s: %s", meeting_id, e)
+        session.close()
+        print("Synced %d Buckeye (Granicus) meetings" % meeting_count)
+        return 0
+
     if args.source == "buckeye" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe

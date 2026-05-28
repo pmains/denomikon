@@ -46,13 +46,25 @@ BODY_CODE_MAP: dict[str, int] = {
 
 # Reverse: NovusAgenda numeric committee ID → slug
 _BODY_ID_TO_SLUG: dict[int, str] = {
-    1: "buckeye-city-council",
-    2: "buckeye-planning-and-zoning",
-    3: "buckeye-board-of-adjustment",
-    4: "buckeye-parks-and-rec",
-    5: "buckeye-historic-preservation",
-    6: "buckeye-library-board",
-    7: "buckeye-psprs",
+    1: "buckeye-city-council-regular",
+    2: "buckeye-city-council-workshop",
+    3: "buckeye-city-council-special",
+    4: "buckeye-city-council-executive",
+    5: "buckeye-joint-cfd",
+    6: "buckeye-planning-and-zoning",
+    7: "buckeye-notice-cancellation",
+    8: "buckeye-city-council",
+    9: "buckeye-airport-advisory",
+    10: "buckeye-pollution-control",
+    11: "buckeye-youth-council",
+    12: "buckeye-library-board",
+    13: "buckeye-community-services",
+    14: "buckeye-psprs",
+    15: "buckeye-psprs-fire",
+    16: "buckeye-city-council-retreat",
+    17: "buckeye-pz-cancellation",
+    18: "buckeye-cfd-executive",
+    19: "buckeye-judicial-selection",
 }
 
 # Reverse: NovusAgenda numeric committee ID → body name (as rendered in HTML)
@@ -98,7 +110,7 @@ SLUG_TO_CODE: dict[str, str] = {
 # ── URL patterns ──
 
 BASE_URL = "https://buckeye.novusagenda.com/agendapublic/"
-SEARCH_URL = BASE_URL
+SEARCH_URL = urllib.parse.urljoin(BASE_URL, "Meetings.aspx")
 MEETING_VIEW_URL = urllib.parse.urljoin(BASE_URL, "MeetingView.aspx")
 COVERSHEET_URL = urllib.parse.urljoin(BASE_URL, "CoverSheet.aspx")
 AGENDA_PDF_URL = urllib.parse.urljoin(BASE_URL, "DisplayAgendaPDF.ashx")
