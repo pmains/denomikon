@@ -338,12 +338,18 @@ def search():
     session = get_session()
     tags = session.execute(select(Tag).order_by(Tag.name)).scalars().all()
 
+    articles_truncated = False
+    agenda_truncated = False
+
     if q:
         if scope in ("all", "articles"):
-            articles = search_articles(q)
+            articles, articles_truncated = search_articles(q)
         if scope in ("all", "agendas"):
-            agenda_items = search_agenda_items(q)
+            agenda_items, agenda_truncated = search_agenda_items(q)
 
     session.close()
     return render_template("search.html", q=q, scope=scope,
-                           articles=articles, agenda_items=agenda_items, tags=tags)
+                           articles=articles, agenda_items=agenda_items,
+                           articles_truncated=articles_truncated,
+                           agenda_truncated=agenda_truncated,
+                           tags=tags)

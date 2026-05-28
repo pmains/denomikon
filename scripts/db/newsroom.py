@@ -70,6 +70,7 @@ class Article(Base):
     author_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     author = relationship("AdminUser", backref="articles")
     featured_image = Column(String(512), nullable=False, default="")
+    image_credit = Column(String(256), nullable=True, default=None)
     is_featured = Column(Boolean, nullable=False, default=False)
     priority = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), nullable=False,
@@ -212,10 +213,15 @@ def sync_article_fts(article_id: int):
     session.close()
 
 
-def search_agenda_items(query: str, limit: int = 50) -> list[dict]:
-    """Full-text search across agenda items."""
+def search_agenda_items(query: str, limit: int = 50, _fetch_extra: bool = True) -> tuple[list[dict], bool]:
+    """Full-text search across agenda items.
+
+    Returns (results, truncated) where truncated is True when more
+    results exist beyond the limit.
+    """
     engine = get_engine()
     conn = engine.raw_connection()
+    fetch_limit = limit + 1 if _fetch_extra else limit
     try:
         rows = conn.execute(
             """SELECT f.rowid, a.body, a.meeting_id, a.agenda_item_number,
@@ -227,11 +233,14 @@ def search_agenda_items(query: str, limit: int = 50) -> list[dict]:
                WHERE agenda_items_fts MATCH ?
                ORDER BY rank
                LIMIT ?""",
-            (query, limit),
+            (query, fetch_limit),
         ).fetchall()
     except Exception:
         rows = []
     conn.close()
+
+    truncated = len(rows) > limit
+    rows = rows[:limit]
 
     results = []
     for r in rows:
@@ -240,35 +249,43 @@ def search_agenda_items(query: str, limit: int = 50) -> list[dict]:
             "agenda_item_number": r[3], "title": r[4], "text": r[5][:300],
             "source_url": r[6], "rank": r[7],
         })
-    return results
+    return results, truncated
 
 
-def search_articles(query: str, limit: int = 50) -> list[dict]:
-    """Full-text search across published articles."""
+def search_articles(query: str, limit: int = 50, _fetch_extra: bool = True) -> tuple[list[dict], bool]:
+    """Full-text search across published articles.
+
+    Returns (results, truncated) where truncated is True when more
+    results exist beyond the limit.
+    """
     engine = get_engine()
     conn = engine.raw_connection()
+    fetch_limit = limit + 1 if _fetch_extra else limit
     try:
         rows = conn.execute(
             """SELECT a.id, a.title, a.summary, a.status, a.published_at,
-                      rank
+                      a.slug, rank
                FROM articles_fts f
                JOIN articles a ON a.id = f.rowid
                WHERE articles_fts MATCH ?
                ORDER BY rank
                LIMIT ?""",
-            (query, limit),
+            (query, fetch_limit),
         ).fetchall()
     except Exception:
         rows = []
     conn.close()
 
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+
     results = []
     for r in rows:
         results.append({
             "id": r[0], "title": r[1], "summary": r[2],
-            "status": r[3], "published_at": r[4], "rank": r[5],
+            "status": r[3], "published_at": r[4], "slug": r[5], "rank": r[6],
         })
-    return results
+    return results, truncated
 
 
 def init_newsroom_db():

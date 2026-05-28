@@ -226,6 +226,7 @@ def create_or_get_meeting(session: Session, body: str, meeting_dict: dict) -> Me
         meeting_title=meeting_dict.get("meeting_title", ""),
         meeting_title_raw=meeting_dict.get("meeting_title", ""),
         source_url=meeting_dict.get("source_url", ""),
+        minutes_url=meeting_dict.get("minutes_url", None),
         sync_status="pending",
         jurisdiction_id=jurisdiction_id,
     )
@@ -516,6 +517,8 @@ def replace_meeting_data_safe(
             meeting.meeting_title = meeting_dict["meeting_title"]
         if meeting_dict.get("source_url"):
             meeting.source_url = meeting_dict["source_url"]
+        if meeting_dict.get("minutes_url"):
+            meeting.minutes_url = meeting_dict["minutes_url"]
 
         # Store raw title and normalize fields
         if meeting_dict.get("meeting_title"):

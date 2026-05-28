@@ -346,6 +346,8 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
         is_peoria = body_val.startswith("peoria-")
         # Default badge — overridden per jurisdiction below
         source_badge = "primary"
+        is_avondale = body_val.startswith("avondale-")
+        is_el_mirage = body_val.startswith("el-mirage-")
         is_buckeye = body_val.startswith("buckeye-")
         is_goodyear = body_val.startswith("goodyear-")
         # Derive source label and badge from body value
@@ -423,12 +425,27 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             source = "City Council" if body_val == "surprise-cc" else "Surprise"
             source_badge = "dark"
 
+        elif body_val.startswith("phoenix-"):
+            phx_labels = {
+                "phoenix-cc": "City Council",
+                "phoenix-pc": "Planning Comm",
+                "phoenix-cs": "Community Svcs Sub",
+                "phoenix-ti": "Transportation Sub",
+                "phoenix-ed": "Econ Dev Sub",
+                "phoenix-ps": "Public Safety Sub",
+                "phoenix-bh": "Budget Hearing",
+                "phoenix-boa": "Board of Adj",
+                "phoenix-vpc": "Village Plan Comm",
+            }
+            source = phx_labels.get(body_val, "Phoenix")
+            source_badge = "info"
+
         elif is_buckeye:
             buckeye_labels = {
                 "buckeye-cc": "City Council",
-                "buckeye-pz": "Planning elif is_peoria: Zoning",
+                "buckeye-pz": "Planning & Zoning",
                 "buckeye-boa": "Board of Adj",
-                "buckeye-prc": "Parks elif is_peoria: Rec",
+                "buckeye-prc": "Parks & Rec",
                 "buckeye-hpc": "Hist Preserv",
                 "buckeye-library": "Library Board",
                 "buckeye-psprs": "PSPRS",
@@ -438,8 +455,8 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
         elif is_goodyear:
             goodyear_labels = {
                 "goodyear-cc": "City Council",
-                "goodyear-pz": "Planning elif is_peoria: Zoning",
-                "goodyear-acc": "Arts elif is_peoria: Culture",
+                "goodyear-pz": "Planning & Zoning",
+                "goodyear-acc": "Arts & Culture",
                 "goodyear-wac": "Water Advisory",
                 "goodyear-yc": "Youth Comm",
                 "goodyear-audit": "Audit",
@@ -447,6 +464,23 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
                 "goodyear-psprs-p": "Police PSPRS",
             }
             source = goodyear_labels.get(body_val, "Goodyear")
+            source_badge = "success"
+        elif is_avondale:
+            avondale_labels = {
+                "avondale-cc": "City Council",
+                "avondale-pz": "Planning & Zoning",
+                "avondale-boa": "Board of Adj",
+                "avondale-quorum": "Quorum Notice",
+            }
+            source = avondale_labels.get(body_val, "Avondale")
+            source_badge = "success"
+        elif is_el_mirage:
+            el_mirage_labels = {
+                "el-mirage-cc": "City Council",
+                "el-mirage-pz": "Planning & Zoning",
+                "el-mirage-boa": "Board of Adj",
+            }
+            source = el_mirage_labels.get(body_val, "El Mirage")
             source_badge = "success"
         elif is_peoria:
             peoria_labels = {
@@ -487,46 +521,23 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             source = "IDA" if is_ida else ("TAB" if is_tab else ("BOH" if is_health else ("DRB" if is_drain else ("ADJ" if is_adj else ("PZ" if is_pz else "BOS")))))
             source_badge = "light" if is_ida else ("warning" if is_tab else ("success" if is_health else ("info" if is_drain else ("dark" if is_adj else ("secondary" if is_pz else "primary")))))
         # Resolve jurisdiction name from meeting.jurisdiction_id
-        jur_id = row.jurisdiction_id or 1
-        if jur_id == 2:
-            jur_name = "Tempe"
-            jur_slug = "tempe"
-        elif jur_id == 3:
-            jur_name = "Chandler"
-            jur_slug = "chandler"
-        elif jur_id == 5:
-            jur_name = "Mesa"
-            jur_slug = "mesa"
-        elif jur_id == 6:
-            jur_name = "Gilbert"
-            jur_slug = "gilbert"
-        elif jur_id == 7:
-            jur_name = "Scottsdale"
-            jur_slug = "scottsdale"
-        elif jur_id == 10:
-            jur_name = "Peoria"
-            jur_slug = "peoria"
-        elif jur_id == 11:
-            jur_name = "Glendale"
-            jur_slug = "glendale"
-        elif jur_id == 12:
-            jur_name = "Surprise"
-            jur_slug = "surprise"
-        elif jur_id == 13:
-            jur_name = "Buckeye"
-            jur_slug = "buckeye"
-        elif jur_id == 14:
-            jur_name = "Goodyear"
-            jur_slug = "goodyear"
-        elif jur_id == 11:
-            jur_name = "Glendale"
-            jur_slug = "glendale"
-        elif jur_id == 12:
-            jur_name = "Surprise"
-            jur_slug = "surprise"
-        else:
-            jur_name = "Maricopa County"
-            jur_slug = "maricopa-county"
+        jur_map = {
+            1: ("Maricopa County", "maricopa-county"),
+            2: ("Tempe", "tempe"),
+            3: ("Chandler", "chandler"),
+            4: ("Phoenix", "phoenix"),
+            5: ("Mesa", "mesa"),
+            6: ("Gilbert", "gilbert"),
+            7: ("Scottsdale", "scottsdale"),
+            10: ("Peoria", "peoria"),
+            11: ("Glendale", "glendale"),
+            12: ("Surprise", "surprise"),
+            13: ("Buckeye", "buckeye"),
+            14: ("Avondale", "avondale"),
+            15: ("El Mirage", "el-mirage"),
+            16: ("Goodyear", "goodyear"),
+        }
+        jur_name, jur_slug = jur_map.get(row.jurisdiction_id, ("Maricopa County", "maricopa-county"))
 
         meetings_list.append({
             "body": body_val,
@@ -607,8 +618,8 @@ def meetings():
     )
 
 
-@meetings_bp.route("/meetings/<meeting_id>")
-@meetings_bp.route("/meetings/<body>/<meeting_id>")
+@meetings_bp.route("/meetings/<path:meeting_id>")
+@meetings_bp.route("/meetings/<body>/<path:meeting_id>")
 @_cache(timeout=120)
 def meeting_detail(meeting_id, body=None):
     session = get_session()

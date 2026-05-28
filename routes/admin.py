@@ -90,11 +90,16 @@ def dashboard():
         select(Article).where(Article.status == "archived")
         .order_by(desc(Article.archived_at))
     ).scalars().all()
+    featured = session.execute(
+        select(Article).where(Article.is_featured == True)
+        .order_by(desc(Article.updated_at))
+    ).scalars().all()
     tags = session.execute(select(Tag).order_by(Tag.name)).scalars().all()
     session.close()
     return render_template(
         "admin/dashboard.html",
         drafts=drafts, published=published, archived=archived,
+        featured=featured,
         tags=tags, now=datetime.now(timezone.utc),
     )
 
@@ -585,7 +590,9 @@ def article_new():
             slug=_unique_slug(title),
             body=request.form.get("body", "").strip(),
             featured_image=request.form.get("featured_image", "").strip(),
+            image_credit=request.form.get("image_credit", "").strip() or None,
             status=request.form.get("status", "draft"),
+            is_featured=request.form.get("is_featured") == "on",
             author_id=current_user.id,
         )
 
@@ -626,6 +633,8 @@ def article_new():
         sync_article_fts(article.id)
         session.close()
         flash("Article created.", "success")
+        if request.form.get("action") == "publish":
+            return redirect(url_for("admin.dashboard"))
         return redirect(url_for("admin.article_edit", article_id=article.id))
 
     # GET — pre-fill from suggestion query params
@@ -663,6 +672,8 @@ def article_edit(article_id):
         article.summary = request.form.get("summary", "").strip()
         article.body = request.form.get("body", "").strip()
         article.featured_image = request.form.get("featured_image", "").strip()
+        article.image_credit = request.form.get("image_credit", "").strip() or None
+        article.is_featured = request.form.get("is_featured") == "on"
         article.status = request.form.get("status", article.status)
         article.updated_at = datetime.now(timezone.utc)
 
@@ -703,6 +714,8 @@ def article_edit(article_id):
         sync_article_fts(article.id)
         # Bluesky posting is handled by scripts/bluesky_sync.py after production sync
         flash("Article updated.", "success")
+        if request.form.get("action") == "publish":
+            return redirect(url_for("admin.dashboard"))
         return redirect(url_for("admin.article_edit", article_id=article.id))
 
     tags = session.execute(select(Tag).order_by(Tag.name)).scalars().all()
@@ -775,6 +788,77 @@ def article_set_priority(article_id):
     return redirect(url_for("admin.dashboard"))
 
 
+
+
+@admin_bp.route("/articles/search", methods=["GET"])
+def article_search():
+    """Search articles by keyword (JSON). Used by the featured widget.
+    No @login_required so the fetch works without redirect — the route
+    returns empty results for unauthenticated requests."""
+    q = request.args.get("q", "").strip()
+    if not q or len(q) < 2:
+        return {"results": []}
+    from flask_login import current_user
+    if not current_user.is_authenticated:
+        return {"results": [], "error": "not authenticated"}
+    session = get_session()
+    articles = session.execute(
+        select(Article)
+        .where(
+            or_(
+                Article.title.ilike(f"%{q}%"),
+                Article.summary.ilike(f"%{q}%"),
+            ),
+            Article.status != "archived",
+        )
+        .order_by(Article.updated_at.desc())
+        .limit(20)
+    ).scalars().all()
+    results = []
+    for a in articles:
+        results.append({
+            "id": a.id,
+            "title": a.title[:80],
+            "status": a.status,
+            "is_featured": a.is_featured,
+            "created": a.created_at.strftime("%b %d") if a.created_at else "",
+        })
+    session.close()
+    return {"results": results}
+
+
+@admin_bp.route("/articles/<int:article_id>/feature", methods=["POST"])
+@login_required
+def article_feature_toggle(article_id):
+    """Toggle featured status. Enforces limit of 3 featured articles."""
+    session = get_session()
+    article = session.get(Article, article_id)
+    if not article:
+        session.close()
+        flash("Article not found.", "error")
+        return redirect(url_for("admin.dashboard"))
+
+    if article.is_featured:
+        # Unfeature
+        article.is_featured = False
+        session.commit()
+        flash(f"Removed from featured: {article.title[:60]}", "success")
+    else:
+        # Check limit
+        featured_count = session.execute(
+            select(Article).where(Article.is_featured == True)
+        ).scalars().all()
+        if len(featured_count) >= 3:
+            # Remove the oldest featured
+            oldest = sorted(featured_count, key=lambda x: x.updated_at or x.created_at)[0]
+            oldest.is_featured = False
+            flash(f"Replaced: {oldest.title[:60]} removed from featured.", "info")
+        article.is_featured = True
+        flash(f"Featured: {article.title[:60]}", "success")
+    
+    session.commit()
+    session.close()
+    return redirect(url_for("admin.dashboard"))
 @admin_bp.route("/articles/reorder", methods=["POST"])
 @login_required
 def articles_reorder():

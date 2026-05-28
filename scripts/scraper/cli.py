@@ -23,7 +23,8 @@ def _print_top_level_help() -> None:
     print("  tempe     City of Tempe (Council, DRC, BOA, HPC, etc.)")
     print("  mesa      City of Mesa (Council, PZ, DRB, BOA, HPB, etc. via Legistar)")
     print("  chandler  City of Chandler (Council, PZ, DRC, BOA, HPC via AgendaQuick)")
-    print("  avondale  City of Avondale (Council, P&Z, BOA via CivicClerk)")
+    print("  avondale            City of Avondale (Council, P&Z, BOA, boards via CivicClerk — current)")
+    print("  avondale-granicus   City of Avondale (Council, P&Z, BOA via Granicus — legacy, no items)")
     print("  gilbert   Town of Gilbert (Council via OnBase)")
     print("  scottsdale City of Scottsdale (Council via PDF archive)")
     print("  scottsdale-boards Scottsdale P&Z, BOA, DRB, HPC, Bldg Appeals")
@@ -34,7 +35,8 @@ def _print_top_level_help() -> None:
     print("  el-mirage City of El Mirage (Council, P&Z, YAC, PSPRS via AgendaQuick)")
     print("  goodyear  City of Goodyear (Council, P&Z, boards via AgendaQuick)")
     print("  peoria    City of Peoria (Council, P&Z, BOA, DRB, HPC via NovusAgenda)")
-    print("  surprise  City of Surprise (Council, P&Z, boards via CivicClerk)")
+    print("  surprise              City of Surprise (Council via Granicus, legacy)")
+    print("  surprise-civicclerk   City of Surprise (P&Z, boards via CivicClerk API)")
     print("  all       Sync all Maricopa County boards: BOS, PZ, ADJ, Drain, Health, TAB, IDA")
     print("  mcacc     All remaining Maricopa County boards via AgendaCenter")
     print()
@@ -112,7 +114,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "avondale", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "mcacc", "phoenix", "all"):
+    if rest and rest[0] in ("bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "mcacc", "phoenix", "all"):
         source = rest.pop(0)
 
     if source == "bos":
@@ -145,6 +147,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         args = _parse_glendale_new_args(rest)
     elif source == "surprise":
         args = _parse_surprise_args(rest)
+    elif source == "surprise-civicclerk":
+        args = _parse_surprise_args(rest)
     elif source == "phoenix":
         args = _parse_mesa_args(rest)
     elif source == "peoria":
@@ -152,6 +156,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     elif source == "el-mirage":
         args = _parse_mesa_args(rest)
     elif source == "avondale":
+        args = _parse_surprise_args(rest)
+    elif source == "avondale-granicus":
         args = _parse_mesa_args(rest)
     elif source == "buckeye-granicus":
         args = _parse_mesa_args(rest)

@@ -1422,6 +1422,7 @@ async def main() -> int:
         from scraper.mesa import (
             search_mesa_meetings,
             fetch_agenda_items_async,
+            BODY_CODE_MAP,
             JURISDICTION_ID,
             PUBLIC_BODY_CODE,
         )
@@ -1452,13 +1453,14 @@ async def main() -> int:
             meeting_id = m["meeting_id"]
             meeting_date = m["meeting_date"]
             body_slug = m.get("body_slug", "mesa-city-council")
-            body_code = "mesa-" + body_slug.replace("mesa-", "")
+            # Use BODY_CODE_MAP for correct mapping (slug → code)
+            body_code = BODY_CODE_MAP.get(body_slug, "mesa-cc")
             detail_url = m.get("meeting_detail_url", "")
             # Fall back to agenda_url if no detail URL
             if not detail_url:
                 detail_url = m.get("agenda_url", "")
-            meeting_type = m.get("meeting_type", "")
-            meeting_title = m.get("body_name", "")
+            # Use meeting_title from body_name if meeting_type is empty
+            meeting_type = m.get("meeting_type", "") or m.get("body_name", "")
 
             meeting_dict = {
                 "meeting_id": meeting_id, "meeting_date": meeting_date,
@@ -1646,7 +1648,10 @@ async def main() -> int:
     if args.source == "phoenix" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe
-        from scraper.phoenix import search_phoenix_meetings, PUBLIC_BODY_CODE
+        from scraper.phoenix import (
+            search_phoenix_meetings, fetch_agenda_items_async,
+            PUBLIC_BODY_CODE,
+        )
         init_db()
         year_val = getattr(args, "year", None)
         year = int(year_val) if year_val else _dt.date.today().year
@@ -1658,6 +1663,12 @@ async def main() -> int:
             print("No Phoenix meetings found for %d." % year)
             return 0
         print("Found %d Phoenix meeting(s)" % len(meetings))
+        # Filter out non-meeting items
+        skip_types = {"general information packet", "subcommittee general information packet"}
+        meetings = [m for m in meetings if m.get("meeting_type", "").lower() not in skip_types]
+        if not meetings:
+            print("No real meetings after filtering.")
+            return 0
         session = get_session()
         total_items = 0
         meeting_count = len(meetings)
@@ -1667,22 +1678,39 @@ async def main() -> int:
             meeting_id = m["meeting_id"]
             meeting_date = m["meeting_date"]
             body_code = m.get("body_code", "phoenix-cc")
-            source_url = m.get("source_url", "")
+            detail_url = m.get("meeting_detail_url", "") or m.get("source_url", "")
             meeting_type = m.get("meeting_type", "")
             meeting_title = m.get("meeting_title", "")
-            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": source_url}
+            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": detail_url}
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
             if existing and existing.sync_status == "complete" and not args.force:
-                print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
+                print("  [%d/%d] %s %s: already synced, %d items" % (idx, meeting_count, meeting_id, meeting_date, existing.item_count_actual or 0))
+                total_items += existing.item_count_actual or 0
                 continue
             try:
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
-                total_items += 0
-                print("  [%d/%d] %s %s: meeting synced" % (idx, meeting_count, meeting_id, meeting_date))
+                items = []
+                if detail_url and "MeetingDetail.aspx" in detail_url:
+                    try:
+                        from scraper.phoenix import parse_agenda_items_from_html, fetch_page
+                        html = fetch_page(detail_url)
+                        items = parse_agenda_items_from_html(html, meeting_id, body_code)
+                        # Add required fields for persist
+                        for it in items:
+                            an = (it.get("agenda_item_number", "") or "").strip()
+                            it["agenda_item_id"] = body_code + "-" + meeting_id + "_" + an
+                            it["source_body"] = body_code
+                            it["source_url"] = detail_url
+                        if items:
+                            print(f"  Parsed {len(items)} agenda items")
+                    except Exception as pe:
+                        log.debug("Item extraction failed for %s: %s", meeting_id, pe)
+                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, items)
+                total_items += len(items)
+                print("  [%d/%d] %s %s: %d items synced" % (idx, meeting_count, meeting_id, meeting_date, len(items)))
             except Exception as e:
                 log.error("Failed Phoenix meeting %s: %s", meeting_id, e)
         session.close()
-        print("Synced %d Phoenix meetings" % meeting_count)
+        print("Synced %d Phoenix items across %d meeting(s)" % (total_items, meeting_count))
         return 0
 
     if args.source == "peoria" and args.sync:
@@ -1812,22 +1840,115 @@ async def main() -> int:
         print("Synced %d El Mirage items across %d meeting(s)" % (total_items, meeting_count))
         return 0
 
-    # ── Buckeye sync (via NovusAgenda) ──
+    # ── Avondale sync (via CivicClerk — current) ──
     if args.source == "avondale" and args.sync:
+        import datetime as _dt
+        from db import get_session, init_db, replace_meeting_data_safe
+        from scraper.civicclerk import CivicClerkConfig, search_meetings, fetch_and_parse_agenda
+
+        avondale_config = CivicClerkConfig(
+            subdomain="avondaleaz",
+            body_map={
+                "City Council": ("avondale-cc", "avondale-cc", "City Council"),
+                "City Council Subcommittee": ("avondale-cc", "avondale-cc", "City Council Subcommittee"),
+                "Planning Commission": ("avondale-pz", "avondale-pz", "Planning Commission"),
+                "Board of Adjustment": ("avondale-boa", "avondale-boa", "Board of Adjustment"),
+                "Judicial Advisory Board": ("avondale-judicial", "avondale-judicial", "Judicial Advisory Board"),
+                "Art Committee": ("avondale-arts", "avondale-arts", "Art Committee"),
+                "Sustainability Commission": ("avondale-sustainability", "avondale-sustainability", "Sustainability Commission"),
+                "Public Safety Personnel Retirement System": ("avondale-psprs", "avondale-psprs", "PSPRS"),
+                "Alamar (Lakin) CFD Board": ("avondale-cfd", "avondale-cfd", "CFD Board"),
+                "Audit Committee": ("avondale-audit", "avondale-audit", "Audit Committee"),
+                "Parks, Recreation & Libraries Advisory Board": ("avondale-parks", "avondale-parks", "Parks, Recreation & Libraries"),
+                "Neighborhood & Family Services Commission": ("avondale-neighborhood", "avondale-neighborhood", "Neighborhood & Family Services"),
+                "Employee Benefit Trust Board": ("avondale-benefits", "avondale-benefits", "Employee Benefit Trust"),
+                "Risk Management Trust Fund Board": ("avondale-risk", "avondale-risk", "Risk Management Trust"),
+                "Possible Quorum": ("avondale-cc", "avondale-cc", "Possible Quorum"),
+            },
+            default_body="avondale-cc",
+        )
+
+        init_db()
+
+        body_slugs_str = getattr(args, "bodies", None) or "all"
+        if body_slugs_str == "all":
+            body_slugs = None
+        else:
+            body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
+
+        year_val = getattr(args, "year", None)
+        year = int(year_val) if year_val else _dt.date.today().year
+        start_date = getattr(args, "start_date", None) or f"{year-1}-01-01"
+        end_date = getattr(args, "end_date", None) or f"{year}-12-31"
+
+        print("Searching Avondale CivicClerk meetings from %s to %s..." % (start_date, end_date))
+        meetings = search_meetings(avondale_config, start_date=start_date)
+        if body_slugs:
+            meetings = [m for m in meetings if m["body_code"] in body_slugs]
+        if not meetings:
+            print("No Avondale CivicClerk meetings found.")
+            return 0
+        print("Found %d Avondale CivicClerk meeting(s)" % len(meetings))
+
+        session = get_session()
+        total_items = 0
+        meeting_count = len(meetings)
+        from db import Meeting as MeetingModel
+        from sqlalchemy import select
+
+        for idx, m in enumerate(meetings, 1):
+            meeting_id = str(m.get("event_id", m["meeting_id"]))
+            meeting_date = m["meeting_date"]
+            body_code = m.get("body_code", "avondale-cc")
+            meeting_type = m.get("meeting_type", "")
+            meeting_title = m.get("meeting_title", "")
+            source_url = m.get("source_url", "")
+            agenda_url = m.get("agenda_url", "")
+
+            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": source_url}
+
+            existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
+            if existing and existing.sync_status == "complete" and not args.force:
+                print("  [%d/%d] %s %s: already synced, %d items" % (idx, meeting_count, meeting_id, meeting_date, existing.item_count_actual or 0))
+                total_items += existing.item_count_actual or 0
+                continue
+
+            try:
+                items = []
+                if agenda_url:
+                    items = fetch_and_parse_agenda(agenda_url, meeting_id, body_code)
+                    for item in items:
+                        an = item.get("agenda_item_number", "") or ""
+                        item["agenda_item_id"] = f"{body_code}-{meeting_id}_{an}"
+                        item["source_body"] = body_code
+                        item["source_url"] = agenda_url
+                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, items)
+                total_items += len(items)
+                print("  [%d/%d] %s %s: %d items synced" % (idx, meeting_count, meeting_id, meeting_date, len(items)))
+            except Exception as e:
+                log.error("Failed Avondale meeting %s: %s", meeting_id, e)
+
+        session.close()
+        ts = _dt.datetime.now().strftime("%H:%M:%S")
+        print("%s Synced %d Avondale CivicClerk items across %d meeting(s)" % (ts, total_items, meeting_count))
+        return 0
+
+    # ── Avondale Granicus sync (legacy, no items) ──
+    if args.source == "avondale-granicus" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
         from scraper.avondale import search_avondale_meetings, PUBLIC_BODY_CODE
         init_db()
         year_val = getattr(args, "year", None)
         year = int(year_val) if year_val else _dt.date.today().year
-        print("Searching Avondale meetings for %d..." % year)
+        print("Searching Avondale (Granicus legacy) meetings for %d..." % year)
         meetings = search_avondale_meetings(year)
         if args.limit:
             meetings = meetings[:args.limit]
         if not meetings:
-            print("No Avondale meetings found for %d." % year)
+            print("No Avondale (Granicus legacy) meetings found for %d." % year)
             return 0
-        print("Found %d Avondale meeting(s)" % len(meetings))
+        print("Found %d Avondale (Granicus legacy) meeting(s)" % len(meetings))
         session = get_session()
         total_items = 0
         meeting_count = len(meetings)
@@ -1850,23 +1971,23 @@ async def main() -> int:
                 total_items += 0
                 print("  [%d/%d] %s %s: meeting synced" % (idx, meeting_count, meeting_id, meeting_date))
             except Exception as e:
-                log.error("Failed Avondale meeting %s: %s", meeting_id, e)
+                log.error("Failed Avondale (Granicus legacy) meeting %s: %s", meeting_id, e)
         session.close()
-        print("Synced %d Avondale meetings" % meeting_count)
+        print("Synced %d Avondale (Granicus legacy) meetings (no items)" % meeting_count)
         return 0
 
     if args.source == "buckeye-granicus" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
         from scraper.buckeye_granicus import (
-            search_buckeye_meetings,
-            BASE_URL, PUBLIC_BODY_CODE,
+            search_buckeye_meetings, fetch_and_parse_agenda,
+            BASE_URL, SOURCE_INSTANCE_URL, SOURCE_SYSTEM,
         )
         init_db()
         year_val = getattr(args, "year", None)
         year = int(year_val) if year_val else _dt.date.today().year
         print("Searching Buckeye (Granicus) meetings for %d..." % year)
-        meetings = search_buckeye_meetings(year)
+        meetings = search_buckeye_meetings(year=year, use_html=True)
         if args.limit:
             meetings = meetings[:args.limit]
         if not meetings:
@@ -1879,21 +2000,41 @@ async def main() -> int:
         from db import Meeting as MeetingModel
         from sqlalchemy import select
         for idx, m in enumerate(meetings, 1):
-            meeting_id = m["meeting_id"]
+            meeting_id = str(m.get("event_id", m["meeting_id"]))
             meeting_date = m["meeting_date"]
             body_code = m.get("body_code", "buckeye-cc")
-            source_url = m.get("source_url", "")
+            source_url = m.get("agenda_url", "") or m.get("source_url", "")
             meeting_type = m.get("meeting_type", "")
             meeting_title = m.get("meeting_title", "")
-            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": source_url}
+            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": source_url, "source_system": SOURCE_SYSTEM}
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
             if existing and existing.sync_status == "complete" and not args.force:
-                print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
+                print("  [%d/%d] %s %s: already synced, %d items" % (idx, meeting_count, meeting_id, meeting_date, existing.item_count_actual or 0))
+                if existing.item_count_actual:
+                    total_items += existing.item_count_actual
                 continue
             try:
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
-                total_items += 0
-                print("  [%d/%d] %s %s: meeting synced" % (idx, meeting_count, meeting_id, meeting_date))
+                items = []
+                if m.get("packet_url"):
+                    try:
+                        from scraper.buckeye_granicus import fetch_and_parse_agenda
+                        raw_items = fetch_and_parse_agenda(m)
+                        for it in raw_items:
+                            an = (it.get("agenda_item_number", "") or "").strip()
+                            it["agenda_item_id"] = body_code + "-" + meeting_id + "_" + an
+                            it["meeting_id"] = meeting_id
+                            it["meeting_date"] = meeting_date
+                            it["meeting_type"] = meeting_type
+                            it["source_body"] = body_code
+                            it["source_url"] = source_url
+                        items = raw_items
+                        if items:
+                            print(f"  Parsed {len(items)} agenda items from packet")
+                    except Exception as pe:
+                        log.debug("Packet parsing failed for %s: %s", meeting_id, pe)
+                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, items)
+                total_items += len(items)
+                print("  [%d/%d] %s %s: %d items synced" % (idx, meeting_count, meeting_id, meeting_date, len(items)))
             except Exception as e:
                 log.error("Failed Buckeye (Granicus) meeting %s: %s", meeting_id, e)
         session.close()
@@ -2007,6 +2148,59 @@ async def main() -> int:
                 log.error("Failed Surprise meeting %s: %s", meeting_id, e)
         session.close()
         print("Synced %d Surprise items across %d meeting(s)" % (total_items, meeting_count))
+        return 0
+
+    if args.source == "surprise-civicclerk" and args.sync:
+        import datetime as _dt
+        from db import get_session, init_db, replace_meeting_data_safe
+        from scraper.surprise_civicclerk import search_meetings, fetch_and_parse_agenda, DEFAULT_BODY_SLUGS
+        init_db()
+        body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
+        body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
+        year_val = getattr(args, "year", None)
+        year = int(year_val) if year_val else _dt.date.today().year
+        start_date = f"{year}-01-01"
+        print("Searching Surprise CivicClerk meetings from %s..." % start_date)
+        meetings = search_meetings(start_date=start_date, body_slugs=body_slugs)
+        if not meetings:
+            print("No Surprise CivicClerk meetings found.")
+            return 0
+        print("Found %d Surprise CivicClerk meeting(s)" % len(meetings))
+        session = get_session()
+        total_items = 0
+        meeting_count = len(meetings)
+        from db import Meeting as MeetingModel
+        from sqlalchemy import select
+        for idx, m in enumerate(meetings, 1):
+            meeting_id = str(m.get("event_id", m["meeting_id"]))
+            meeting_date = m["meeting_date"]
+            body_code = m.get("body_code", "surprise-pz")
+            meeting_type = m.get("meeting_type", "")
+            meeting_title = m.get("meeting_title", "")
+            source_url = m.get("source_url", "")
+            agenda_url = m.get("agenda_url", "")
+            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": source_url}
+            existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
+            if existing and existing.sync_status == "complete" and not args.force:
+                print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
+                total_items += existing.item_count_actual or 0
+                continue
+            try:
+                items = []
+                if agenda_url:
+                    items = fetch_and_parse_agenda(agenda_url, meeting_id)
+                    for item in items:
+                        an = item.get("agenda_item_number", "") or ""
+                        item["agenda_item_id"] = f"{body_code}-{meeting_id}_{an}"
+                        item["source_body"] = body_code
+                        item["source_url"] = agenda_url
+                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, items)
+                total_items += len(items)
+                print("  [%d/%d] %s %s: %d items synced" % (idx, meeting_count, meeting_id, meeting_date, len(items)))
+            except Exception as e:
+                log.error("Failed Surprise CivicClerk meeting %s: %s", meeting_id, e)
+        session.close()
+        print("Synced %d Surprise CivicClerk items across %d meeting(s)" % (total_items, meeting_count))
         return 0
 
     if args.source in ("pz", "adj", "drain", "health", "tab", "ida") and args.sync:

@@ -47,7 +47,12 @@
   {% endif %}
 
   {% if article.featured_image %}
-  <img src="{{ article.featured_image }}" alt="" style="float:right;max-width:45%;max-height:350px;width:auto;height:auto;margin:0 0 0.75rem 1rem;border-radius:8px;border:2px solid #e8651a;">
+  <figure style="float:right;max-width:45%;margin:0 0 0.75rem 1rem;">
+    <img src="{{ article.featured_image }}" alt="{{ article.title }}" style="max-height:350px;width:auto;height:auto;border-radius:8px;border:2px solid #e8651a;">
+    {% if article.image_credit %}
+    <figcaption style="font-size:0.75rem;color:#666;margin-top:4px;text-align:right;">{{ article.image_credit }}</figcaption>
+    {% endif %}
+  </figure>
   {% endif %}
   {% if article.summary %}
   <div class="lead mb-4">{{ article.summary }}</div>

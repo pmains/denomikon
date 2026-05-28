@@ -154,6 +154,8 @@ class Meeting(Base):
     supporting_doc_count = Column(Integer, nullable=False, default=0)
     items_extracted = Column(Boolean, nullable=False, default=False)
     supporting_docs_extracted = Column(Boolean, nullable=False, default=False)
+    minutes_url = Column(String(512), nullable=True, default=None)
+    votes_extracted = Column(Boolean, nullable=False, default=False)
     jurisdiction_id = Column(Integer, nullable=True, default=None, index=True)
     public_body_id = Column(Integer, nullable=True, default=None, index=True)
     source_system = Column(String(64), nullable=True, default=None)

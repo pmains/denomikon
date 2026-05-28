@@ -9,16 +9,19 @@
         <select name="jurisdiction" id="jurisdiction" class="form-select form-select-sm" onchange="filterSourceOptions(); this.form.submit();">
             <option value="" {% if not filter_jurisdiction %}selected{% endif %}>All</option>
             <option value="maricopa-county" {% if filter_jurisdiction == 'maricopa-county' %}selected{% endif %}>Maricopa County</option>
-            <option value="tempe" {% if filter_jurisdiction == 'tempe' %}selected{% endif %}>City of Tempe</option>
-            <option value="mesa" {% if filter_jurisdiction == 'mesa' %}selected{% endif %}>City of Mesa</option>
-            <option value="chandler" {% if filter_jurisdiction == 'chandler' %}selected{% endif %}>City of Chandler</option>
-            <option value="gilbert" {% if filter_jurisdiction == 'gilbert' %}selected{% endif %}>Town of Gilbert</option>
-            <option value="scottsdale" {% if filter_jurisdiction == 'scottsdale' %}selected{% endif %}>City of Scottsdale</option>
-            <option value="peoria" {% if filter_jurisdiction == 'peoria' %}selected{% endif %}>City of Peoria</option>
-            <option value="glendale" {% if filter_jurisdiction == 'glendale' %}selected{% endif %}>City of Glendale</option>
-            <option value="surprise" {% if filter_jurisdiction == 'surprise' %}selected{% endif %}>City of Surprise</option>
+            <option value="avondale" {% if filter_jurisdiction == 'avondale' %}selected{% endif %}>City of Avondale</option>
             <option value="buckeye" {% if filter_jurisdiction == 'buckeye' %}selected{% endif %}>City of Buckeye</option>
+            <option value="chandler" {% if filter_jurisdiction == 'chandler' %}selected{% endif %}>City of Chandler</option>
+            <option value="el-mirage" {% if filter_jurisdiction == 'el-mirage' %}selected{% endif %}>City of El Mirage</option>
+            <option value="glendale" {% if filter_jurisdiction == 'glendale' %}selected{% endif %}>City of Glendale</option>
             <option value="goodyear" {% if filter_jurisdiction == 'goodyear' %}selected{% endif %}>City of Goodyear</option>
+            <option value="mesa" {% if filter_jurisdiction == 'mesa' %}selected{% endif %}>City of Mesa</option>
+            <option value="peoria" {% if filter_jurisdiction == 'peoria' %}selected{% endif %}>City of Peoria</option>
+            <option value="phoenix" {% if filter_jurisdiction == 'phoenix' %}selected{% endif %}>City of Phoenix</option>
+            <option value="scottsdale" {% if filter_jurisdiction == 'scottsdale' %}selected{% endif %}>City of Scottsdale</option>
+            <option value="surprise" {% if filter_jurisdiction == 'surprise' %}selected{% endif %}>City of Surprise</option>
+            <option value="tempe" {% if filter_jurisdiction == 'tempe' %}selected{% endif %}>City of Tempe</option>
+            <option value="gilbert" {% if filter_jurisdiction == 'gilbert' %}selected{% endif %}>Town of Gilbert</option>
         </select>
     </div>
     <div class="col-md-2">
@@ -127,15 +130,6 @@
             </optgroup>
             <optgroup label="City of Buckeye">
             <option value="buckeye-cc" {% if filter_body == 'buckeye-cc' %}selected{% endif %}>City Council</option>
-            <option value="buckeye-pz" {% if filter_body == 'buckeye-pz' %}selected{% endif %}>Planning <optgroup label="City of Surprise">amp; Zoning</option>
-            <option value="buckeye-boa" {% if filter_body == 'buckeye-boa' %}selected{% endif %}>Board of Adjustment</option>
-            <option value="buckeye-prc" {% if filter_body == 'buckeye-prc' %}selected{% endif %}>Parks <optgroup label="City of Surprise">amp; Rec</option>
-            <option value="buckeye-hpc" {% if filter_body == 'buckeye-hpc' %}selected{% endif %}>Historic Preservation</option>
-            <option value="buckeye-library" {% if filter_body == 'buckeye-library' %}selected{% endif %}>Library Board</option>
-            <option value="buckeye-psprs" {% if filter_body == 'buckeye-psprs' %}selected{% endif %}>PSPRS</option>
-            </optgroup>
-            <optgroup label="City of Buckeye">
-            <option value="buckeye-cc" {% if filter_body == 'buckeye-cc' %}selected{% endif %}>City Council</option>
             <option value="buckeye-pz" {% if filter_body == 'buckeye-pz' %}selected{% endif %}>Planning &amp; Zoning</option>
             <option value="buckeye-boa" {% if filter_body == 'buckeye-boa' %}selected{% endif %}>Board of Adjustment</option>
             <option value="buckeye-prc" {% if filter_body == 'buckeye-prc' %}selected{% endif %}>Parks &amp; Rec</option>
@@ -155,15 +149,22 @@
             </optgroup>
             <optgroup label="City of Goodyear">
             <option value="goodyear-cc" {% if filter_body == 'goodyear-cc' %}selected{% endif %}>City Council</option>
-            <option value="goodyear-pz" {% if filter_body == 'goodyear-pz' %}selected{% endif %}>Planning <optgroup label="City of Surprise">amp; Zoning</option>
-            <option value="goodyear-acc" {% if filter_body == 'goodyear-acc' %}selected{% endif %}>Arts <optgroup label="City of Surprise">amp; Culture</option>
+            <option value="goodyear-pz" {% if filter_body == 'goodyear-pz' %}selected{% endif %}>Planning &amp; Zoning</option>
+            <option value="goodyear-acc" {% if filter_body == 'goodyear-acc' %}selected{% endif %}>Arts &amp; Culture</option>
             <option value="goodyear-wac" {% if filter_body == 'goodyear-wac' %}selected{% endif %}>Water Advisory</option>
             <option value="goodyear-yc" {% if filter_body == 'goodyear-yc' %}selected{% endif %}>Youth Comm</option>
             <option value="goodyear-audit" {% if filter_body == 'goodyear-audit' %}selected{% endif %}>Audit</option>
             </optgroup>
+                        <optgroup label="City of Phoenix">
+            <option value="phoenix-cc" {% if filter_body == 'phoenix-cc' %}selected{% endif %}>City Council</option>
+            <option value="phoenix-pc" {% if filter_body == 'phoenix-pc' %}selected{% endif %}>Planning Commission</option>
+            <option value="phoenix-cs" {% if filter_body == 'phoenix-cs' %}selected{% endif %}>Community Services Sub</option>
+            <option value="phoenix-ti" {% if filter_body == 'phoenix-ti' %}selected{% endif %}>Transportation Sub</option>
+            <option value="phoenix-ed" {% if filter_body == 'phoenix-ed' %}selected{% endif %}>Economic Dev Sub</option>
+            <option value="phoenix-ps" {% if filter_body == 'phoenix-ps' %}selected{% endif %}>Public Safety Sub</option>
+            </optgroup>
             <optgroup label="City of Surprise">
             <option value="surprise-cc" {% if filter_body == 'surprise-cc' %}selected{% endif %}>City Council</option>
-            </optgroup>
             </optgroup>
         </select>
     </div>
@@ -217,6 +218,9 @@ var JUR_TO_LABEL = {
     "surprise": "City of Surprise",
     "buckeye": "City of Buckeye",
     "goodyear": "City of Goodyear",
+    "phoenix": "City of Phoenix",
+    "avondale": "City of Avondale",
+    "el-mirage": "City of El Mirage",
 };
 
 function filterSourceOptions() {

@@ -5,7 +5,8 @@ Usage:
     cd /path/to/maricopa-agendas
     .venv/bin/python app.py
 
-Opens at http://127.0.0.1:5000/meetings
+Opens at http://127.0.0.1:5001/meetings (port 5000 is used by OpenClaw)
+    FLASK_PORT=9000 python app.py  # override port
 """
 
 import os

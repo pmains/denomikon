@@ -1,7 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Admin Dashboard — Poliscopic{% endblock %}
 {% block content %}
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js">
+<script>
+
+
+</script>
 <div class="d-flex justify-content-between align-items-start mb-3">
   <h1>Admin Dashboard</h1>
   <div>
@@ -29,6 +33,9 @@
   <li class="nav-item" role="presentation">
     <button class="nav-link" id="archived-tab" data-bs-toggle="tab" data-bs-target="#archived" type="button" role="tab">Archived ({{ archived|length }})</button>
   </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" id="featured-tab" data-bs-toggle="tab" data-bs-target="#featured" type="button" role="tab">Featured ({{ featured|length }}/3)</button>
+  </li>
 </ul>
 
 <div class="tab-content">
@@ -42,6 +49,7 @@
               <div class="d-flex align-items-center gap-2">
                 <span class="drag-handle" style="cursor:grab;font-size:16px;color:#aaa" title="Drag to reorder">⠿</span>
                 <div>
+                  {% if article.is_featured %}<span class="badge bg-warning text-dark me-1" title="Featured">★</span>{% endif %}
                   <a href="/admin/articles/{{ article.id }}/edit" class="fw-bold text-decoration-none">{{ article.title[:80] }}{% if article.title|length > 80 %}…{% endif %}</a>
                   <small class="text-muted ms-2">{{ article.created_at.strftime('%b %d') }}</small>
                   {% if article.tags %}
@@ -85,6 +93,61 @@
         });
       })();
       </script>
+<script>
+// Featured articles search widget
+var searchTimer = null;
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchInput = document.getElementById('feature-search');
+  var searchResults = document.getElementById('feature-search-results');
+  if (!searchInput) return;
+
+  searchInput.addEventListener('input', function() {
+    clearTimeout(searchTimer);
+    var q = this.value.trim();
+    if (q.length < 2) {
+      searchResults.innerHTML = '';
+      return;
+    }
+    searchTimer = setTimeout(function() {
+      fetch('/admin/articles/search?q=' + encodeURIComponent(q), {
+        credentials: 'same-origin'
+      })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          searchResults.innerHTML = '';
+          if (!data.results || data.results.length === 0) {
+            searchResults.innerHTML = '<a class="list-group-item text-muted small">No results</a>';
+            return;
+          }
+          data.results.forEach(function(a) {
+            var form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '/admin/articles/' + a.id + '/feature';
+            form.style.display = 'block';
+            var btn = document.createElement('button');
+            btn.type = 'submit';
+            btn.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center py-2';
+            btn.style.border = 'none';
+            btn.style.width = '100%';
+            btn.style.textAlign = 'left';
+            btn.style.cursor = 'pointer';
+            if (a.is_featured) {
+              btn.innerHTML = '<span>' + a.title + ' <span class="badge bg-warning text-dark">\u2605 Featured</span></span>';
+            } else {
+              btn.innerHTML = '<span>' + a.title + '</span><span class="text-primary small">Feature +</span>';
+            }
+            form.appendChild(btn);
+            searchResults.appendChild(form);
+          });
+        })
+        .catch(function(err) {
+          searchResults.innerHTML = '<a class="list-group-item text-muted small">Search error</a>';
+        });
+    }, 300);
+  });
+});
+</script>
     {% else %}
       <p class="text-muted">No drafts yet. <a href="/admin/suggestions">Check AI suggestions</a> to get started.</p>
     {% endif %}
@@ -131,5 +194,34 @@
       <p class="text-muted">No archived articles.</p>
     {% endif %}
   </div>
+
+  <div class="tab-pane fade" id="featured" role="tabpanel">
+    <div class="row">
+      <div class="col-md-6">
+        <h6>Featured Articles <small class="text-muted">(max 3)</small></h6>
+        <div id="featured-list">
+          {% for article in featured %}
+          <div class="card mb-2">
+            <div class="card-body py-2 d-flex justify-content-between align-items-center">
+              <span>{% if article.featured_image %}<img src="{{ article.featured_image }}" style="height:30px;width:45px;object-fit:cover;border-radius:3px" class="me-2">{% endif %}{{ article.title[:60] }}</span>
+              <form method="POST" action="/admin/articles/{{ article.id }}/feature" style="display:inline">
+                <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove from featured">✕</button>
+              </form>
+            </div>
+          </div>
+          {% else %}
+          <p class="text-muted small">No featured articles. Search below to add up to three.</p>
+          {% endfor %}
+        </div>
+        {% if featured|length < 3 %}
+        <div class="mt-3">
+          <input type="text" id="feature-search" class="form-control form-control-sm" placeholder="Search articles by keyword..." autocomplete="off">
+          <div id="feature-search-results" class="list-group mt-1" style="max-height:300px;overflow-y:auto"></div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
 </div>
 {% endblock %}

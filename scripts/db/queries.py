@@ -18,12 +18,34 @@ from db.core import get_session
 from db.votes import _normalize_vote_value
 
 def _resolve_jurisdiction_id(session: Session, body: str) -> Optional[int]:
-    """Resolve a meeting's jurisdiction_id from its public body code."""
+    """Resolve a meeting's jurisdiction_id from its public body code.
+
+    First tries an exact body_code match. If no match, falls back to
+    matching by body code prefix (e.g. ``phoenix-cs`` → prefix ``phoenix``).
+    This handles scrapers that create meetings with body codes that don't
+    have a corresponding public_bodies row (e.g. Phoenix subcommittees,
+    Gilbert task forces, surprise-legistar slugs).
+    """
+    from sqlalchemy import func as sa_func
+
     pb = session.execute(
         select(PublicBody).where(PublicBody.body_code == body)
     ).scalar_one_or_none()
     if pb:
         return pb.jurisdiction_id
+
+    # Fall back: extract prefix (e.g. "phoenix" from "phoenix-cs")
+    # and find any public body with the same prefix
+    prefix = body.split("-")[0] if "-" in body else body
+    if prefix:
+        pb = session.execute(
+            select(PublicBody).where(
+                PublicBody.body_code.like(prefix + "-%")
+            ).limit(1)
+        ).scalar_one_or_none()
+        if pb:
+            return pb.jurisdiction_id
+
     return None
 
 def get_meetings_by_date_range(

@@ -20,6 +20,9 @@
 
   {% if articles %}
   <h6>Articles ({{ articles|length }})</h6>
+  {% if articles_truncated %}
+  <p class="text-muted small">Showing the first {{ articles|length }} — try a more specific search for narrower results.</p>
+  {% endif %}
   {% for article in articles %}
   <div class="card mb-2">
     <div class="card-body py-2">
@@ -32,6 +35,9 @@
 
   {% if agenda_items %}
   <h6 class="mt-3">Agenda Items ({{ agenda_items|length }})</h6>
+  {% if agenda_truncated %}
+  <p class="text-muted small">Showing the first {{ agenda_items|length }} — try a more specific search for narrower results.</p>
+  {% endif %}
   {% for item in agenda_items %}
   <div class="card mb-2">
     <div class="card-body py-2">
