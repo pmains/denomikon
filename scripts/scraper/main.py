@@ -1141,7 +1141,7 @@ async def main() -> int:
         for idx, m in enumerate(meetings, 1):
             meeting_id = m["meeting_id"]
             meeting_date = m["meeting_date"]
-            body_code = PUBLIC_BODY_CODE
+            body_code = m.get("body_code", PUBLIC_BODY_CODE)
             agenda_url = m["agenda_url"]
             meeting_type = m.get("meeting_type", "")
             meeting_title = m.get("meeting_title", "")

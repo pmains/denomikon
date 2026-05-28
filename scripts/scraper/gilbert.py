@@ -27,6 +27,20 @@ SEARCH_URL = f"{BASE_URL}/Meetings/Search"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
 
 # OnBase meeting type IDs for Gilbert
+# 101=Regular/Special, 102=Study Session, 103=Subcommittee, 105=Water Resources MPC,
+# 106=Public Facilities MPC, 107=Redevelopment Commission
+ALL_TYPE_IDS = [101, 102, 103, 105, 106, 107]
+
+# Map meeting type names to body slugs/codes
+TYPE_NAME_MAP = {
+    "Council Regular/Special Meeting": ("gilbert-city-council", "gilbert-tc", "Regular Meeting"),
+    "Council Study Session": ("gilbert-city-council", "gilbert-tc", "Study Session"),
+    "Council Subcommittee": ("gilbert-city-council", "gilbert-tc", "Subcommittee"),
+    "Water Resources Municipal Property Corporation": ("gilbert-water-resources", "gilbert-water", "Water Resources MPC"),
+    "Public Facilities Municipal Property Corporation": ("gilbert-public-facilities", "gilbert-pf", "Public Facilities MPC"),
+    "Redevelopment Commission": ("gilbert-redevelopment", "gilbert-red", "Redevelopment Commission"),
+}
+
 COUNCIL_TYPE_IDS = [101, 102, 103]
 
 BODY_MAP: dict[str, str] = {
@@ -47,8 +61,19 @@ def fetch_page(url: str, timeout: int = 30) -> str:
         raise
 
 
+def _gilbert_type_to_body(type_name: str) -> tuple[str, str, str]:
+    """Map Gilbert meeting type name to (slug, code, meeting_type)."""
+    entry = TYPE_NAME_MAP.get(type_name)
+    if entry:
+        return entry
+    return "gilbert-city-council", "gilbert-tc", type_name
+
+
 def search_gilbert_meetings(start_date: str, end_date: str) -> list[dict]:
-    """Search for Gilbert Council meetings via embedded JSON.
+    """Search for Gilbert meetings via embedded JSON.
+
+    Searches all known meeting type IDs (Council, MPC, Redevelopment).
+    Maps meeting type names to the correct body slug and code.
 
     Parameters
     ----------
@@ -59,7 +84,7 @@ def search_gilbert_meetings(start_date: str, end_date: str) -> list[dict]:
     """
     url = (
         f"{SEARCH_URL}?dropid=11"
-        f"&mtids={urllib.parse.quote(','.join(str(t) for t in COUNCIL_TYPE_IDS))}"
+        f"&mtids={urllib.parse.quote(','.join(str(t) for t in ALL_TYPE_IDS))}"
         f"&dropsv={urllib.parse.quote(start_date)}"
         f"&dropev={urllib.parse.quote(end_date)}"
     )
@@ -111,12 +136,11 @@ def _parse_meetings(raw_meetings: list) -> list[dict]:
         if not mid:
             continue
         name = mt.get("Name", "")
-        meeting_type = mt.get("MeetingTypeName", "")
+        type_name = mt.get("MeetingTypeName", "")
         time_str = mt.get("TimeString", "")
-        # Parse date from "M/D/YYYY H:MM:SS AM/PM"
         date_part = time_str.split()[0] if time_str else ""
 
-        body_code = BODY_MAP.get(meeting_type, PUBLIC_BODY_CODE)
+        slug, code, meeting_type = _gilbert_type_to_body(type_name)
 
         meetings.append({
             "meeting_id": mid,
@@ -124,9 +148,10 @@ def _parse_meetings(raw_meetings: list) -> list[dict]:
             "meeting_time": " ".join(time_str.split()[1:]) if time_str else "",
             "meeting_title": name,
             "meeting_type": meeting_type,
-            "body": body_code,
-            "body_code": body_code,
-            "body_name": meeting_type,
+            "body": code,
+            "body_code": code,
+            "body_slug": slug,
+            "body_name": type_name,
             "agenda_url": f"{BASE_URL}/Meetings/ViewMeetingAgenda?meetingId={mid}&type=agenda",
         })
     return meetings
