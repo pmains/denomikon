@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Housing Construction — Poliscopic</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+               background: #f5f5f5; color: #333; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        h1 { font-size: 1.5rem; margin-bottom: 4px; color: #1a1a2e; }
+        .subtitle { color: #666; font-size: .9rem; margin-bottom: 20px; }
+        .source-note { color: #999; font-size: .8rem; margin-bottom: 20px; }
+        .source-note a { color: #2a6eb0; }
+
+        /* Tabs */
+        .tabs { display: flex; gap: 0; border-bottom: 2px solid #ddd; margin-bottom: 20px; }
+        .tab { padding: 10px 24px; cursor: pointer; border: none; background: none;
+               font-size: .95rem; color: #666; border-bottom: 3px solid transparent;
+               margin-bottom: -2px; transition: all .15s; }
+        .tab:hover { color: #333; }
+        .tab.active { color: #1a1a2e; border-bottom-color: #2a6eb0; font-weight: 600; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        /* Controls */
+        .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+                    margin-bottom: 16px; }
+        .controls label { font-size: .85rem; color: #555; }
+        .controls select, .controls input { padding: 6px 10px; border: 1px solid #ccc;
+                      border-radius: 4px; font-size: .85rem; }
+        .controls button { padding: 6px 16px; background: #2a6eb0; color: white;
+                          border: none; border-radius: 4px; cursor: pointer; font-size: .85rem; }
+        .controls button:hover { background: #1f5a94; }
+
+        /* Map */
+        #map { height: 500px; border-radius: 8px; border: 1px solid #ddd; }
+        .leaflet-popup-content { font-size: .85rem; line-height: 1.4; }
+
+        /* Chart */
+        .chart-wrapper { position: relative; height: 400px; }
+
+        /* Table */
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+        th, td { padding: 8px 12px; text-align: right; border-bottom: 1px solid #eee; }
+        th { background: #f8f9fa; font-weight: 600; color: #555;
+             position: sticky; top: 0; cursor: pointer; user-select: none; }
+        th:hover { background: #eef; }
+        th.sort-asc::after { content: " ▲"; font-size: .7rem; }
+        th.sort-desc::after { content: " ▼"; font-size: .7rem; }
+        td:first-child, th:first-child { text-align: left; }
+        td.num { font-variant-numeric: tabular-nums; }
+        .total-row { font-weight: 600; background: #f0f4f8; }
+
+        /* Loading */
+        .loading { text-align: center; padding: 60px; color: #999; }
+
+        @media (max-width: 768px) {
+            .controls { flex-direction: column; align-items: stretch; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>🏠 Housing Construction in Maricopa County</h1>
+    <p class="subtitle">Completed housing units by jurisdiction and year, from Maricopa County Assessor parcel data.</p>
+    <p class="source-note">
+        Source: <a href="https://mcassessor.maricopa.gov/page/data_sales/" target="_blank">Maricopa County Assessor</a>
+        (Apartment Master + Residential Master). Updated annually.
+    </p>
+
+    <div class="tabs">
+        <button class="tab active" data-tab="map">🗺️ Map</button>
+        <button class="tab" data-tab="chart">📈 Chart</button>
+        <button class="tab" data-tab="table">📊 Table</button>
+    </div>
+
+    <!-- MAP TAB -->
+    <div class="tab-content active" id="tab-map">
+        <div class="controls">
+            <label>Year:
+                <select id="map-year"></select>
+            </label>
+            <label>Show:
+                <select id="map-metric">
+                    <option value="total">Total units</option>
+                    <option value="apartment">Apartments</option>
+                    <option value="sf">Single-family</option>
+                    <option value="per_capita">Per 1,000 residents</option>
+                </select>
+            </label>
+        </div>
+        <div id="map"></div>
+    </div>
+
+    <!-- CHART TAB -->
+    <div class="tab-content" id="tab-chart">
+        <div class="controls">
+            <label>Jurisdiction:
+                <select id="chart-city">
+                    <option value="all">All (county total)</option>
+                </select>
+            </label>
+            <label>Type:
+                <select id="chart-type">
+                    <option value="total">Total units</option>
+                    <option value="apartment">Apartments</option>
+                    <option value="sf">Single-family</option>
+                    <option value="per_capita">Per 1,000 residents</option>
+                </select>
+            </label>
+        </div>
+        <div class="chart-wrapper">
+            <canvas id="chart-canvas"></canvas>
+        </div>
+    </div>
+
+    <!-- TABLE TAB -->
+    <div class="tab-content" id="tab-table">
+        <div class="controls">
+            <label>Year:
+                <select id="table-year"></select>
+            </label>
+        </div>
+        <div class="table-wrap">
+            <table id="data-table">
+                <thead><tr id="table-head"></tr></thead>
+                <tbody id="table-body"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+const CITIES = {{ city_json|safe }};
+let map = null;
+let chart = null;
+
+// ── Tab switching ──
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab, .tab-content').forEach(el => el.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+        if (tab.dataset.tab === 'map' && !map) initMap();
+        if (tab.dataset.tab === 'chart' && !chart) initChart();
+        if (tab.dataset.tab === 'table') renderTable();
+    });
+});
+
+// ── Year populator ──
+function populateYears() {
+    const years = [];
+    for (let y = 2025; y >= 2000; y--) years.push(y);
+    ['map-year', 'table-year'].forEach(id => {
+        const sel = document.getElementById(id);
+        if (!sel) return;
+        years.forEach(y => {
+            const opt = document.createElement('option');
+            opt.value = y; opt.textContent = y;
+            if (y === 2024) opt.selected = true;
+            sel.appendChild(opt);
+        });
+    });
+}
+populateYears();
+
+// ── Map ──
+function initMap() {
+    map = L.map('map').setView([33.4, -112.0], 10);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap',
+        maxZoom: 12,
+    }).addTo(map);
+    loadMap();
+    document.getElementById('map-year').addEventListener('change', loadMap);
+    document.getElementById('map-metric').addEventListener('change', loadMap);
+}
+
+function loadMap() {
+    const year = document.getElementById('map-year').value;
+    const metric = document.getElementById('map-metric').value;
+    fetch(`/housing/api/cities?year=${year}`)
+        .then(r => r.json())
+        .then(data => {
+            if (!map) return;
+            map.eachLayer(l => { if (l._isCircleMarker) map.removeLayer(l); });
+            const values = data.map(c => c[metric] || c.total_units);
+            const maxVal = Math.max(...values, 1);
+            data.forEach(city => {
+                const val = city[metric] || city.total_units || 0;
+                const radius = Math.sqrt(val / maxVal) * 50 + 5;
+                const popLabel = metric === 'per_capita' ? '/1K residents' : 'units';
+                L.circleMarker([city.lat, city.lng], {
+                    radius: Math.min(radius, 60), color: '#2a6eb0',
+                    fillColor: '#2a6eb0', fillOpacity: 0.5, weight: 1,
+                }).addTo(map).bindPopup(`
+                    <b>${city.city_name}</b><br>
+                    ${city.total_units} total units<br>
+                    ${city.apartment_units} apt · ${city.sf_units} SF<br>
+                    ${city.per_capita}/1K residents
+                `);
+            });
+        });
+}
+
+// ── Chart ──
+function initChart() {
+    // Populate city dropdown
+    const sel = document.getElementById('chart-city');
+    Object.keys(CITIES).sort().forEach(k => {
+        const opt = document.createElement('option');
+        opt.value = k; opt.textContent = CITIES[k].name;
+        sel.appendChild(opt);
+    });
+    loadChart();
+    document.getElementById('chart-city').addEventListener('change', loadChart);
+    document.getElementById('chart-type').addEventListener('change', loadChart);
+}
+
+function loadChart() {
+    const city = document.getElementById('chart-city').value;
+    const type = document.getElementById('chart-type').value;
+    const isCounty = city === 'all';
+    const endpoint = isCounty ? '/housing/api/summary' : `/housing/api/data`;
+
+    fetch(endpoint)
+        .then(r => r.json())
+        .then(data => {
+            let labels, values, label;
+            if (isCounty) {
+                labels = data.map(d => d.year);
+                if (type === 'per_capita') {
+                    values = data.map(d => d.per_capita);
+                    label = 'Units per 1,000 residents';
+                } else if (type === 'apartment') {
+                    values = data.map(d => d.apartment);
+                    label = 'Apartment units';
+                } else if (type === 'sf') {
+                    values = data.map(d => d.sf);
+                    label = 'Single-family units';
+                } else {
+                    values = data.map(d => d.total);
+                    label = 'Total units';
+                }
+            } else {
+                const cityData = data.filter(d => d.city === city);
+                labels = cityData.map(d => d.year);
+                if (type === 'apartment') {
+                    values = cityData.filter(d => d.type === 'apartment').map(d => d.units);
+                } else if (type === 'sf') {
+                    values = cityData.filter(d => d.type === 'sf').map(d => d.units);
+                } else if (type === 'per_capita') {
+                    const pop = CITIES[city]?.population || 100000;
+                    const byYear = {};
+                    cityData.forEach(d => { byYear[d.year] = (byYear[d.year] || 0) + d.units; });
+                    values = labels.map(y => Math.round((byYear[y] || 0) / pop * 1000 * 100) / 100);
+                    label = 'Units per 1,000 residents';
+                } else {
+                    const byYear = {};
+                    cityData.forEach(d => { byYear[d.year] = (byYear[d.year] || 0) + d.units; });
+                    values = labels.map(y => byYear[y] || 0);
+                    label = 'Total units';
+                }
+                label = CITIES[city]?.name + ' — ' + (label || 'units');
+            }
+            if (chart) chart.destroy();
+            const ctx = document.getElementById('chart-canvas').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: label || 'Units',
+                        data: values,
+                        backgroundColor: '#2a6eb088',
+                        borderColor: '#2a6eb0',
+                        borderWidth: 1,
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { callbacks: { label: ctx =>
+                            `${ctx.parsed.y.toLocaleString()} ${type === 'per_capita' ? '/1K' : 'units'}` }
+                        }
+                    },
+                    scales: {
+                        x: { title: { display: true, text: 'Year' } },
+                        y: { beginAtZero: true,
+                             title: { display: true, text: type === 'per_capita' ? 'Per 1,000 residents' : 'Units' },
+                             ticks: { callback: v => v.toLocaleString() } }
+                    }
+                }
+            });
+        });
+}
+
+// ── Table ──
+function renderTable() {
+    const year = document.getElementById('table-year').value;
+    const thead = document.getElementById('table-head');
+    const tbody = document.getElementById('table-body');
+    thead.innerHTML = '<th>Jurisdiction</th><th class="sort-desc" onclick="sortTable(1)">Total</th><th onclick="sortTable(2)">Apartments</th><th onclick="sortTable(3)">SF Homes</th><th onclick="sortTable(4)">Per Capita</th>';
+    tbody.innerHTML = '<tr><td colspan="5" class="loading">Loading...</td></tr>';
+
+    fetch(`/housing/api/cities?year=${year}`)
+        .then(r => r.json())
+        .then(data => {
+            let html = '';
+            let totalUnits = 0, totalApt = 0, totalSf = 0;
+            data.forEach(c => {
+                totalUnits += c.total_units;
+                totalApt += c.apartment_units;
+                totalSf += c.sf_units;
+                html += `<tr>
+                    <td>${c.city_name}</td>
+                    <td class="num">${c.total_units.toLocaleString()}</td>
+                    <td class="num">${c.apartment_units.toLocaleString()}</td>
+                    <td class="num">${c.sf_units.toLocaleString()}</td>
+                    <td class="num">${c.per_capita}</td>
+                </tr>`;
+            });
+            html += `<tr class="total-row">
+                <td>Maricopa County</td>
+                <td class="num">${totalUnits.toLocaleString()}</td>
+                <td class="num">${totalApt.toLocaleString()}</td>
+                <td class="num">${totalSf.toLocaleString()}</td>
+                <td class="num">${(totalUnits / 4700000 * 1000).toFixed(2)}</td>
+            </tr>`;
+            tbody.innerHTML = html;
+        });
+}
+
+document.getElementById('table-year').addEventListener('change', renderTable);
+
+// ── Table sorting ──
+let sortDir = {};
+function sortTable(col) {
+    const tbody = document.getElementById('table-body');
+    const rows = Array.from(tbody.querySelectorAll('tr:not(.total-row)'));
+    sortDir[col] = sortDir[col] === 'asc' ? 'desc' : 'asc';
+    const dir = sortDir[col] === 'asc' ? 1 : -1;
+    rows.sort((a, b) => {
+        const va = parseFloat(a.cells[col].textContent.replace(/,/g, '')) || 0;
+        const vb = parseFloat(b.cells[col].textContent.replace(/,/g, '')) || 0;
+        return (va - vb) * dir;
+    });
+    rows.forEach(r => tbody.appendChild(r));
+    document.querySelectorAll('#table-head th').forEach((th, i) => {
+        th.className = i === col ? (dir === 1 ? 'sort-asc' : 'sort-desc') : '';
+    });
+}
+</script>
+</body>
+</html>
