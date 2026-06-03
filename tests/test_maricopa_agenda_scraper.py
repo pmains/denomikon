@@ -1,6 +1,7 @@
 import asyncio
 import csv
 import importlib.util
+from sqlalchemy import select
 import re
 import sys
 import tempfile
@@ -932,6 +933,8 @@ class PZStaffReportRegressionTests(unittest.TestCase):
         from scripts.db import get_session, get_engine, Base, Meeting, AgendaItem, SupportingDocument
         from sqlalchemy import create_engine, inspect
 
+        import db.core as _dc
+        _saved_db_url = _dc.DATABASE_URL
         import tempfile
         _tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
         _tmp.close()
@@ -988,7 +991,7 @@ class PZStaffReportRegressionTests(unittest.TestCase):
 
             # Verify body was set on supporting doc
             sd = session.execute(
-                db.select(SupportingDocument).where(
+                select(SupportingDocument).where(
                     SupportingDocument.body == "pz",
                     SupportingDocument.meeting_id == "9999",
                 )
@@ -1004,12 +1007,15 @@ class PZStaffReportRegressionTests(unittest.TestCase):
         finally:
             import os as _os
             try:
+                _dc.set_database_url(_saved_db_url)
                 _os.unlink(_tmp.name)
             except Exception:
                 pass
 
     def test_persist_meeting_body_scope_isolation(self):
         """persist_meeting with different body values should not interfere."""
+        import db.core as _dc
+        _saved_db_url = _dc.DATABASE_URL
         import tempfile
         _tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
         _tmp.close()
@@ -1047,7 +1053,7 @@ class PZStaffReportRegressionTests(unittest.TestCase):
 
             # Check BOS doc exists
             bos_doc = session.execute(
-                db_mod.select(SdModel).where(
+                select(SdModel).where(
                     SdModel.body == "bos", SdModel.meeting_id == "9999"
                 )
             ).scalar_one_or_none()
@@ -1056,7 +1062,7 @@ class PZStaffReportRegressionTests(unittest.TestCase):
 
             # PZ meeting with same meeting_id should have NO docs
             pz_doc = session.execute(
-                db_mod.select(SdModel).where(
+                select(SdModel).where(
                     SdModel.body == "pz", SdModel.meeting_id == "9999"
                 )
             ).scalar_one_or_none()
@@ -1066,6 +1072,7 @@ class PZStaffReportRegressionTests(unittest.TestCase):
         finally:
             import os as _os
             try:
+                _dc.set_database_url(_saved_db_url)
                 _os.unlink(_tmp.name)
             except Exception:
                 pass
@@ -1159,6 +1166,8 @@ class PZParserRegressionTests(unittest.TestCase):
         Regression: persist_meeting must deduplicate agenda items by
         agenda_item_id to avoid UNIQUE constraint violations.
         """
+        import db.core as _dc
+        _saved_db_url = _dc.DATABASE_URL
         import tempfile
         _tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
         _tmp.close()
@@ -1219,6 +1228,7 @@ class PZParserRegressionTests(unittest.TestCase):
         finally:
             import os as _os
             try:
+                _dc.set_database_url(_saved_db_url)
                 _os.unlink(_tmp.name)
             except Exception:
                 pass
@@ -1353,6 +1363,8 @@ class PZParserRegressionTests(unittest.TestCase):
         constraint. Two items in the same meeting can reference the same
         AgendaItem.id value.
         """
+        import db.core as _dc
+        _saved_db_url = _dc.DATABASE_URL
         import tempfile
         _tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
         _tmp.close()
@@ -1403,6 +1415,7 @@ class PZParserRegressionTests(unittest.TestCase):
         finally:
             import os as _os
             try:
+                _dc.set_database_url(_saved_db_url)
                 _os.unlink(_tmp.name)
             except Exception:
                 pass

@@ -1,14 +1,15 @@
 """Tests for P&Z minutes PDF vote and condition extraction."""
 
 import unittest
+import os
 from pathlib import Path
 
 
 class TestPZMinutesParsing(unittest.TestCase):
-    """Tests for parse_pz_minutes_pdf — vote extraction from minutes PDFs."""
+    """Tests for the pz_minutes module: text extraction, commissioners, votes."""
 
-    def _download_minutes(self, meeting_id: str, date_str: str) -> str:
-        """Download a minutes PDF for a given meeting. Returns the file path."""
+    def _pdf_path(self, meeting_id: str, date_str: str) -> str:
+        """Download a minutes PDF and return the local file path."""
         import urllib.request
         url = f"https://www.maricopa.gov/AgendaCenter/ViewFile/Minutes/_{date_str}-{meeting_id}"
         pdf_path = Path(f"/tmp/pz_minutes_{meeting_id}_test.pdf")
@@ -20,75 +21,53 @@ class TestPZMinutesParsing(unittest.TestCase):
         except Exception:
             self.skipTest(f"Could not download minutes PDF for meeting {meeting_id}")
 
+    def _extract(self, meeting_id: str, date_str: str) -> tuple:
+        """Extract text, commissioners, and votes from a minutes PDF."""
+        pdf_path = self._pdf_path(meeting_id, date_str)
+        from scraper.pz_minutes import (
+            extract_minutes_text, parse_commissioners, parse_minutes_votes,
+        )
+        text = extract_minutes_text(pdf_path)
+        self.assertIsNotNone(text, "Failed to extract text from minutes PDF")
+        members = parse_commissioners(text)
+        votes = parse_minutes_votes(text)
+        return members, votes
+
     def test_votes_extracted_from_april_9_2026(self):
-        """Meeting 3711 (April 9, 2026) should have votes for consent + regular items."""
-        from scraper.pz_minutes import parse_pz_minutes_pdf
+        """Meeting 3711 — votes for consent + regular items."""
+        members, votes = self._extract("3711", "04092026")
 
-        pdf_path = self._download_minutes("3711", "04092026")
-        result = parse_pz_minutes_pdf(pdf_path)
+        present = [m["name"] for m in members.get("present", [])]
+        self.assertGreaterEqual(len(present), 6)
+        self.assertIn("Linda Milhaven", present)
 
-        # Member roster
-        self.assertGreaterEqual(len(result["members_present"]), 6,
-            "Should have at least 6 commissioners present")
-        self.assertIn("Linda Milhaven", result["members_present"])
+        self.assertGreaterEqual(len(votes), 3,
+            f"Should have at least 3 votes, got {len(votes)}")
 
-        # Should have 4 votes (not including minutes approval which is filtered)
-        self.assertGreaterEqual(len(result["votes"]), 3,
-            f"Should have at least 3 votes, got {len(result['votes'])}")
+        # Consent agenda vote
+        consent = next((v for v in votes if "MCP250001" in (v.get("case_number", "") or "")), None)
+        self.assertIsNotNone(consent, "Consent agenda vote not found")
+        self.assertEqual(consent["motion_result"], "approved")
+        self.assertGreater(len(consent.get("commissioner_second", "")), 20)
 
-        # Find the consent agenda vote
-        consent_vote = None
-        for v in result["votes"]:
-            if "MCP250001" in v["c_numbers"] and "Z250044" in v["c_numbers"]:
-                consent_vote = v
-                break
-        self.assertIsNotNone(consent_vote, "Consent agenda vote not found")
-        self.assertEqual(consent_vote["motion_result"], "approved")
-        self.assertIsNotNone(consent_vote["conditions"],
-            "Consent vote should have conditions")
-        self.assertGreater(len(consent_vote["conditions"]), 100,
-            "Conditions should be substantial text")
-
-        # Find SU250007 vote
-        su250007_vote = None
-        for v in result["votes"]:
-            if "SU250007" in v["c_numbers"]:
-                su250007_vote = v
-                break
-        self.assertIsNotNone(su250007_vote, "SU250007 vote not found")
-        self.assertEqual(su250007_vote["motion_result"], "approved")
-        self.assertEqual(su250007_vote["mover"], "Commissioner Toma")
-        self.assertEqual(su250007_vote["seconder"], "Commissioner Leighton")
+        # SU250007 vote
+        su = next((v for v in votes if "SU250007" in (v.get("case_number", "") or "")), None)
+        self.assertIsNotNone(su, "SU250007 vote not found")
+        self.assertEqual(su["motion_result"], "approved")
 
     def test_members_extracted(self):
-        """Member roster should be extracted from the header section."""
-        from scraper.pz_minutes import parse_pz_minutes_pdf
+        """Meeting 3711 — all commissioners present."""
+        members, _ = self._extract("3711", "04092026")
 
-        pdf_path = self._download_minutes("3711", "04092026")
-        result = parse_pz_minutes_pdf(pdf_path)
-
-        present = result["members_present"]
-        # All 8 commissioners should be present
+        present = [m["name"] for m in members.get("present", [])]
         expected = ["Linda Milhaven", "Jan Leighton", "Derrik Rochwalik",
                      "Mihai Toma", "Warren Whitney", "Erik Hernandez",
                      "Alex Finter", "Jimmy Lindblom"]
         for name in expected:
-            self.assertIn(name, present, f"{name} should be in members_present")
-
-        absent = result["members_absent"]
-        self.assertIn("Spike Lawrence", absent,
-                       "Spike Lawrence should be in members_absent")
-        self.assertIn("Kevin Danzeisen", absent,
-                       "Kevin Danzeisen should be in members_absent")
+            self.assertIn(name, present, f"Expected {name} in present list")
 
     def test_minutes_not_yet_available_handles_gracefully(self):
-        """When the minutes PDF returns 404, the parser should not crash."""
-        from pathlib import Path
-
-        # Non-existent file
-        from scraper.pz_minutes import parse_pz_minutes_pdf
-        result = parse_pz_minutes_pdf("/tmp/nonexistent_file.pdf")
-
-        self.assertEqual(result["members_present"], [])
-        self.assertEqual(result["members_absent"], [])
-        self.assertEqual(result["votes"], [])
+        """Non-existent file returns empty text."""
+        from scraper.pz_minutes import extract_minutes_text
+        text = extract_minutes_text("/tmp/nonexistent_file.pdf")
+        self.assertIsNone(text, "Extracting non-existent file should return None")

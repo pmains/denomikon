@@ -86,7 +86,7 @@ def _cache(timeout=60, query_string=False):
 
 def create_app():
     """Create and configure the Flask application."""
-    from flask import Flask, request
+    from flask import Flask, render_template, request
 
     app = Flask(__name__,
                  template_folder=str(_here / "templates"),
@@ -207,5 +207,9 @@ def create_app():
         def _admin_disabled(_path=None):
             from flask import abort
             abort(404)
+
+    @app.route("/about")
+    def about():
+        return render_template("about.html")
 
     return app

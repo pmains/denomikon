@@ -60,7 +60,7 @@ def _get_pz_member_stats(session, person_id, start_date=None, end_date=None):
     ).join(
         AgendaItemVote, AgendaItemVote.id == MemberVote.agenda_item_vote_id,
     ).join(
-        MeetingModel, and_(MeetingModel.meeting_id == AgendaItemVote.meeting_id, MeetingModel.body == AgendaItemVote.body),
+        MeetingModel, and_(MeetingModel.id == AgendaItemVote.meeting_db_id),
     ).where(
         MemberVote.member_id == person_id,
         MemberVote.body == "pz",
@@ -79,7 +79,7 @@ def _get_pz_member_stats(session, person_id, start_date=None, end_date=None):
     split_q = select(func.count(AgendaItemVote.id.distinct())).join(
         MemberVote, MemberVote.agenda_item_vote_id == AgendaItemVote.id,
     ).join(
-        MeetingModel, and_(MeetingModel.meeting_id == AgendaItemVote.meeting_id, MeetingModel.body == AgendaItemVote.body),
+        MeetingModel, and_(MeetingModel.id == AgendaItemVote.meeting_db_id),
     ).where(
         MemberVote.member_id == person_id,
         MemberVote.body == "pz",
@@ -101,7 +101,7 @@ def _get_pz_member_stats(session, person_id, start_date=None, end_date=None):
         dissent_q = dissent_q.join(
             AgendaItemVote, AgendaItemVote.id == MemberVote.agenda_item_vote_id
         ).join(
-            MeetingModel, and_(MeetingModel.meeting_id == AgendaItemVote.meeting_id, MeetingModel.body == AgendaItemVote.body),
+            MeetingModel, and_(MeetingModel.id == AgendaItemVote.meeting_db_id),
         )
         dissent_q = dissent_q.where(MeetingModel.meeting_date >= start_date)
         dissent_q = dissent_q.where(MeetingModel.meeting_date <= end_date)
@@ -137,10 +137,10 @@ def _get_pz_split_votes(session, person_id, start_date=None, end_date=None):
     ).join(
         AgendaItemVote, AgendaItemVote.id == MemberVote.agenda_item_vote_id,
     ).join(
-        MeetingModel, and_(MeetingModel.meeting_id == AgendaItemVote.meeting_id, MeetingModel.body == AgendaItemVote.body),
+        MeetingModel, and_(MeetingModel.id == AgendaItemVote.meeting_db_id),
     ).outerjoin(
         AgendaItem,
-        (and_(AgendaItem.meeting_id == AgendaItemVote.meeting_id, AgendaItem.body == AgendaItemVote.body))
+        (and_(AgendaItem.meeting_db_id == AgendaItemVote.meeting_db_id, AgendaItem.body == AgendaItemVote.body))
         & (AgendaItem.agenda_item_number == AgendaItemVote.agenda_item_number),
     ).where(
         MemberVote.member_id == person_id,
@@ -187,7 +187,7 @@ def _get_pz_swing_votes(session, person_id, start_date=None, end_date=None):
     ).join(
         AgendaItemVote, AgendaItemVote.id == MemberVote.agenda_item_vote_id,
     ).join(
-        MeetingModel, and_(MeetingModel.meeting_id == AgendaItemVote.meeting_id, MeetingModel.body == AgendaItemVote.body),
+        MeetingModel, and_(MeetingModel.id == AgendaItemVote.meeting_db_id),
     ).where(
         MemberVote.member_id == person_id,
         MemberVote.body == "pz",
@@ -253,9 +253,9 @@ def _get_pz_swing_votes(session, person_id, start_date=None, end_date=None):
                 m.meeting_type
             FROM agenda_item_votes aiv
             LEFT JOIN agenda_items ai
-                ON ai.meeting_id = aiv.meeting_id AND ai.body = aiv.body
+                ON ai.meeting_db_id = aiv.meeting_db_id AND ai.body = aiv.body
                 AND ai.agenda_item_number = aiv.agenda_item_number
-            LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id AND m.body = aiv.body
+            LEFT JOIN meetings m ON m.id = aiv.meeting_db_id AND m.body = aiv.body
             WHERE aiv.id IN ({ids_str})
             ORDER BY m.meeting_date, aiv.agenda_item_number
         """)
@@ -300,10 +300,10 @@ def _get_pz_full_voting_record(session, person_id, start_date=None, end_date=Non
     ).join(
         AgendaItemVote, AgendaItemVote.id == MemberVote.agenda_item_vote_id,
     ).join(
-        MeetingModel, and_(MeetingModel.meeting_id == AgendaItemVote.meeting_id, MeetingModel.body == AgendaItemVote.body),
+        MeetingModel, and_(MeetingModel.id == AgendaItemVote.meeting_db_id),
     ).outerjoin(
         AgendaItem,
-        (and_(AgendaItem.meeting_id == AgendaItemVote.meeting_id, AgendaItem.body == AgendaItemVote.body))
+        (and_(AgendaItem.meeting_db_id == AgendaItemVote.meeting_db_id, AgendaItem.body == AgendaItemVote.body))
         & (AgendaItem.agenda_item_number == AgendaItemVote.agenda_item_number),
     ).where(
         MemberVote.member_id == person_id,
@@ -351,7 +351,7 @@ def _get_active_pz_commissioners(session, start_date=None, end_date=None):
     )
     q = q.join(MemberVote, MemberVote.member_id == Person.id)
     q = q.join(AgendaItemVote, AgendaItemVote.id == MemberVote.agenda_item_vote_id)
-    q = q.join(MeetingModel, and_(and_(MeetingModel.meeting_id == AgendaItemVote.meeting_id, MeetingModel.body == AgendaItemVote.body), MeetingModel.body == AgendaItemVote.body))
+    q = q.join(MeetingModel, MeetingModel.id == AgendaItemVote.meeting_db_id)
     q = q.where(MemberVote.body == "pz")
     if start_date:
         q = q.where(MeetingModel.meeting_date >= start_date)
@@ -374,7 +374,8 @@ def _get_pz_voting_alignment(session, person_id, other_ids,
     # Get this person's substantive votes
     q = select(MemberVote.agenda_item_vote_id, MemberVote.vote)
     q = q.join(AgendaItemVote, AgendaItemVote.id == MemberVote.agenda_item_vote_id)
-    q = q.join(MeetingModel, and_(and_(MeetingModel.meeting_id == AgendaItemVote.meeting_id, MeetingModel.body == AgendaItemVote.body), MeetingModel.body == AgendaItemVote.body))
+    q = q.join(MeetingModel, MeetingModel.id == AgendaItemVote.meeting_db_id)
+    q = q.where(MeetingModel.body == "pz")
     q = q.where(MemberVote.member_id == person_id, MemberVote.body == "pz")
     if start_date:
         q = q.where(MeetingModel.meeting_date >= start_date)
@@ -482,9 +483,9 @@ def _get_pz_body_split_votes(session, start_date=None, end_date=None):
                aiv.c_number, aiv.motion_result, ai.agenda_item_title,
                m.meeting_date, m.meeting_type
         FROM agenda_item_votes aiv
-        LEFT JOIN agenda_items ai ON ai.meeting_id = aiv.meeting_id AND ai.body = aiv.body
+        LEFT JOIN agenda_items ai ON ai.meeting_db_id = aiv.meeting_db_id AND ai.body = aiv.body
             AND ai.agenda_item_number = aiv.agenda_item_number
-        LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id AND m.body = aiv.body
+        LEFT JOIN meetings m ON m.id = aiv.meeting_db_id AND m.body = aiv.body
         WHERE {" AND ".join(where_parts)}
         ORDER BY m.meeting_date DESC, aiv.agenda_item_number
     """), params).all()
@@ -880,9 +881,9 @@ def body_analytics(jurisdiction_slug, body_code):
                 m.meeting_type
             FROM agenda_item_votes aiv
             LEFT JOIN agenda_items ai
-                ON ai.meeting_id = aiv.meeting_id AND ai.body = aiv.body
+                ON ai.meeting_db_id = aiv.meeting_db_id AND ai.body = aiv.body
                 AND ai.agenda_item_number = aiv.agenda_item_number
-            LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id AND m.body = aiv.body
+            LEFT JOIN meetings m ON m.id = aiv.meeting_db_id AND m.body = aiv.body
             WHERE {where_sql}
             ORDER BY m.meeting_date DESC, aiv.agenda_item_number
         """), params).all()
@@ -1035,7 +1036,7 @@ def member_detail(jurisdiction_slug, body_code, slug):
             select(func.count())
             .select_from(SupervisorVote)
             .join(AgendaItemVote, AgendaItemVote.id == SupervisorVote.agenda_item_vote_id)
-            .join(Meeting, and_(Meeting.meeting_id == AgendaItemVote.meeting_id, Meeting.body == AgendaItemVote.body))
+            .join(Meeting, and_(Meeting.id == AgendaItemVote.meeting_db_id))
             .where(SupervisorVote.supervisor_id == sup.id, AgendaItemVote.body == body_code)
         )
         if start_date:
@@ -1145,7 +1146,7 @@ def debug_inferred_abstentions():
             FROM supervisor_votes sv
             JOIN agenda_item_votes aiv ON aiv.id = sv.agenda_item_vote_id
             JOIN persons sup ON sup.id = sv.supervisor_id
-            LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id AND m.body = aiv.body
+            LEFT JOIN meetings m ON m.id = aiv.meeting_db_id AND m.body = aiv.body
             WHERE sv.raw_vote_text LIKE :prefix
               AND aiv.body = :body
             ORDER BY aiv.meeting_id, aiv.agenda_item_number

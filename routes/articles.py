@@ -15,6 +15,21 @@ def _code_to_name(code: str) -> str:
     """Safely convert a body code to a human-readable name."""
     if not code:
         return code
+
+    # Tempe subcommittees — full names
+    _sub_names = {
+        "tempe-animal-welfare-subcommittee": "Animal Welfare Subcommittee",
+        "tempe-community-engagement-subcommittee": "Community Engagement Subcommittee",
+        "tempe-drink-spiking-subcommittee": "Drink Spiking Subcommittee",
+        "tempe-mixed-use-space-subcommittee": "Mixed-Use Space Subcommittee",
+        "tempe-mobility-safety-subcommittee": "Mobility Safety Subcommittee",
+        "tempe-town-lake-subcommittee": "Town Lake Subcommittee",
+        "tempe-term-limits-subcommittee": "Term Limits Subcommittee",
+        "tempe-advocacy-review-subcommittee": "Advocacy Review Subcommittee",
+    }
+    if code in _sub_names:
+        return f"Tempe {_sub_names[code]}"
+
     # Maricopa County boards
     _mc_names = {
         "bos": "Maricopa County Board of Supervisors",
@@ -62,14 +77,23 @@ def _code_to_name(code: str) -> str:
         suffix = parts[-1].upper()
         if suffix == "CC":
             return f"{city} City Council"
-        if suffix == "PZ":
-            return f"{city} Planning & Zoning"
-        if suffix == "DRC" or suffix == "DRB":
+        if suffix in ("PZ", "PC"):
+            label = "Planning Commission" if suffix == "PC" else "Planning & Zoning"
+            return f"{city} {label}"
+        if suffix in ("DRC", "DRB"):
             return f"{city} Development Review Commission"
         if suffix == "BOA":
             return f"{city} Board of Adjustment"
         if suffix == "HPC":
             return f"{city} Historic Preservation Commission"
+        if suffix == "HA":
+            return f"{city} Housing Authority"
+        if suffix == "JRC":
+            return f"{city} Joint Review Committee"
+        if suffix == "RIO":
+            return f"{city} Rio Salado CFD"
+        if suffix == "RMT":
+            return f"{city} Risk Management Trust"
         if suffix == "TC":
             return f"{city} Town Council"
         return f"{city} {suffix}"
@@ -169,6 +193,20 @@ def front_page():
         "tempe-cc": "Tempe City Council",
         "tempe-drc": "Tempe Development Review Commission",
         "tempe-pz": "Tempe Planning & Zoning Commission",
+        "tempe-boa": "Tempe Board of Adjustment",
+        "tempe-hpc": "Tempe Historic Preservation Commission",
+        "tempe-ha": "Tempe Housing Authority",
+        "tempe-jrc": "Tempe Joint Review Committee",
+        "tempe-rio": "Tempe Rio Salado CFD",
+        "tempe-rmt": "Tempe Risk Management Trust",
+        "tempe-animal-welfare-subcommittee": "Tempe Animal Welfare Subcommittee",
+        "tempe-community-engagement-subcommittee": "Tempe Community Engagement Subcommittee",
+        "tempe-drink-spiking-subcommittee": "Tempe Drink Spiking Subcommittee",
+        "tempe-mixed-use-space-subcommittee": "Tempe Mixed-Use Space Subcommittee",
+        "tempe-mobility-safety-subcommittee": "Tempe Mobility Safety Subcommittee",
+        "tempe-town-lake-subcommittee": "Tempe Town Lake Subcommittee",
+        "tempe-term-limits-subcommittee": "Tempe Term Limits Subcommittee",
+        "tempe-advocacy-review-subcommittee": "Tempe Advocacy Review Subcommittee",
         # Mesa
         "mesa-cc": "Mesa City Council",
         "mesa-pz": "Mesa Planning & Zoning Board",
@@ -207,6 +245,44 @@ def front_page():
         "chandler-air": "Chandler Airport Commission",
         # Scottsdale
         "scottsdale-cc": "Scottsdale City Council",
+        "scottsdale-pc": "Scottsdale Planning Commission",
+        "scottsdale-boa": "Scottsdale Board of Adjustment",
+        "scottsdale-drb": "Scottsdale Development Review Board",
+        "scottsdale-hpc": "Scottsdale Historic Preservation Commission",
+        "scottsdale-baba": "Scottsdale Building Appeals Board",
+        # Gilbert
+        "gilbert-tc": "Gilbert Town Council",
+        # Peoria
+        "peoria-pz": "Peoria Planning & Zoning Commission",
+        "peoria-boa": "Peoria Board of Adjustment",
+        "peoria-sub": "Peoria Subcommittee",
+        # Glendale
+        "glendale-cc": "Glendale City Council",
+        "glendale-pc": "Glendale Planning Commission",
+        "glendale-boa": "Glendale Board of Adjustment",
+        # Surprise
+        "surprise-cc": "Surprise City Council",
+        "surprise-pz": "Surprise Planning & Zoning",
+        # Phoenix
+        "phoenix-cc": "Phoenix City Council",
+        "phoenix-pc": "Phoenix Planning Commission",
+        "phoenix-village-planning": "Phoenix Village Planning Committees",
+        "phoenix-historic-preservation": "Phoenix Historic Preservation Commission",
+        "phoenix-zoning-adjustment": "Phoenix Board of Zoning Adjustment",
+        "phoenix-human-services": "Phoenix Human Services Commission",
+        "phoenix-human-relations": "Phoenix Human Relations Commission",
+        "phoenix-environmental-quality": "Phoenix Environmental Quality Commission",
+        "phoenix-disability-issues": "Phoenix Disability Issues Commission",
+        "phoenix-womens-commission": "Phoenix Women's Commission",
+        "phoenix-heritage-commission": "Phoenix Heritage Commission",
+        "phoenix-license-appeal": "Phoenix License Appeal Board",
+        "phoenix-fire-pension": "Phoenix Fire Pension Board",
+        "phoenix-police-pension": "Phoenix Police Pension Board",
+        "phoenix-copers-board": "Phoenix COPERS Board",
+        "phoenix-cs": "Phoenix Community Services Subcommittee",
+        "phoenix-ti": "Phoenix Transportation & Infrastructure Subcommittee",
+        "phoenix-ed": "Phoenix Economic Development Subcommittee",
+        "phoenix-ps": "Phoenix Public Safety Subcommittee",
         # Gilbert
         "glendale-cc": "Glendale City Council",
         "peoria-cc": "Peoria City Council",

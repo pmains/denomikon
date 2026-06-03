@@ -40,39 +40,11 @@ from db import (
 )
 from sqlalchemy import select, func, inspect as sa_inspect
 
-# Create a temp file and switch the module-level DATABASE_URL to it.
-# This NEVER touches os.environ, so no other process can accidentally
-# pick up the test path.
-_test_db_path = tempfile.mktemp(suffix=".sqlite")
-set_database_url(f"sqlite:///{_test_db_path}")
-init_db()
+# conftest.py sets POLISCOPIC_DB_TIER=test which creates a temp DB
+# automatically. init_db() is called in setUpClass of each test class.
 
 
-def _reset_db_engine():
-    """Dispose and reset the DB engine to a FRESH temp database.
-
-    Creates a new temp file and switches DATABASE_URL to it, then runs
-    init_db() to set up the schema.  This guarantees destructive operations
-    like Meeting.__table__.delete() never touch the production database."""
-    global _test_db_path
-    import db.core as _dc
-    import tempfile
-    import os as _os
-    import db as _db
-    if _dc._engine:
-        _dc._engine.dispose()
-    _dc._engine = None
-    _dc._SessionLocal = None
-    # Fresh temp database — never reuse a path that another module
-    # might have set DATABASE_URL to.
-    if _test_db_path:
-        try:
-            _os.unlink(_test_db_path)
-        except FileNotFoundError:
-            pass
-    _test_db_path = tempfile.mktemp(suffix=".sqlite")
-    set_database_url(f"sqlite:///{_test_db_path}")
-    _db.init_db()
+# _reset_db_engine is no longer needed — conftest handles test tier isolation.
 
 
 @integration_test
@@ -103,7 +75,7 @@ class TestInitDbIdempotent(unittest.TestCase):
 class TestPersistMeeting(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        _reset_db_engine()
+        init_db()
 
     def setUp(self):
         self.session = get_session()
@@ -563,7 +535,6 @@ class TestPersistVotes(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        _reset_db_engine()
         init_db()
 
     def setUp(self):
@@ -573,11 +544,11 @@ class TestPersistVotes(unittest.TestCase):
         # Ensure supervisor records exist
         from db import Supervisor
         existing = self.s.execute(
-            select(Supervisor).where(Supervisor.normalized_name == "test one")
+            select(Supervisor).where(Supervisor.normalized_name == "john taylor")
         ).scalar_one_or_none()
         if not existing:
-            self.s.add(Supervisor(name="Test One", normalized_name="test one"))
-            self.s.add(Supervisor(name="Test Two", normalized_name="test two"))
+            self.s.add(Supervisor(name="John Taylor", normalized_name="john taylor"))
+            self.s.add(Supervisor(name="Jane Poston", normalized_name="jane poston"))
             self.s.commit()
         else:
             self.s.commit()
@@ -592,15 +563,15 @@ class TestPersistVotes(unittest.TestCase):
             "motion_result": "approved",
             "vote_text": "Test vote",
             "supervisor_votes": [
-                {"name": "Test One", "vote": "yes"},
-                {"name": "Test Two", "vote": "yes"},
+                {"name": "John Taylor", "vote": "yes"},
+                {"name": "Jane Poston", "vote": "yes"},
             ]
         }]
 
     def _make_supervisors(self):
         return [
-            {"name": "Test One", "normalized_name": "test one", "district": "1"},
-            {"name": "Test Two", "normalized_name": "test two", "district": "2"},
+            {"name": "John Taylor", "normalized_name": "john taylor", "district": "1"},
+            {"name": "Jane Poston", "normalized_name": "jane poston", "district": "2"},
         ]
 
     def test_persist_votes_twice_same_meeting(self):

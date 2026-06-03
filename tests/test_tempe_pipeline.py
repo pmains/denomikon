@@ -280,18 +280,23 @@ class TestVotePersistence(unittest.TestCase):
     """Verify that parsed vote data can be persisted via persist_votes()."""
 
     def setUp(self):
-        from db import set_database_url, get_session, init_db
-        import tempfile
-        self._tmp_db = tempfile.mktemp(suffix=".sqlite")
-        set_database_url(f"sqlite:///{self._tmp_db}")
+        from db import init_db, get_session, AgendaItem, Meeting, AgendaItemVote, SupportingDocument, SupervisorVote, MeetingSupervisor
+        import db.core as _dc
+        self._saved_db_url = _dc.DATABASE_URL
         init_db()
+        # Truncate tables for clean state
+        s = get_session()
+        for tbl in [AgendaItemVote.__table__, AgendaItem.__table__, Meeting.__table__, SupportingDocument.__table__, SupervisorVote.__table__, MeetingSupervisor.__table__]:
+            s.execute(tbl.delete())
+        s.commit()
+        s.close()
 
     def tearDown(self):
         from db import get_session
+        import db.core as _dc
         s = get_session()
         s.close()
-        if os.path.exists(self._tmp_db):
-            os.unlink(self._tmp_db)
+        _dc.set_database_url(self._saved_db_url)
 
     def _ensure_agenda_item(self, session, body, meeting_id, item_number, sort_order=0):
         """Create an AgendaItem row so persist_votes can find it."""
@@ -358,18 +363,23 @@ class TestVotePersistenceReplacesOnResync(unittest.TestCase):
     """Re-running persist_votes should replace old votes, not duplicate."""
 
     def setUp(self):
-        from db import set_database_url, get_session, init_db
-        import tempfile
-        self._tmp_db = tempfile.mktemp(suffix=".sqlite")
-        set_database_url(f"sqlite:///{self._tmp_db}")
+        from db import init_db, get_session, AgendaItem, Meeting, AgendaItemVote, SupportingDocument, SupervisorVote, MeetingSupervisor
+        import db.core as _dc
+        self._saved_db_url = _dc.DATABASE_URL
         init_db()
+        # Truncate tables for clean state
+        s = get_session()
+        for tbl in [AgendaItemVote.__table__, AgendaItem.__table__, Meeting.__table__, SupportingDocument.__table__, SupervisorVote.__table__, MeetingSupervisor.__table__]:
+            s.execute(tbl.delete())
+        s.commit()
+        s.close()
 
     def tearDown(self):
         from db import get_session
+        import db.core as _dc
         s = get_session()
         s.close()
-        if os.path.exists(self._tmp_db):
-            os.unlink(self._tmp_db)
+        _dc.set_database_url(self._saved_db_url)
 
     def test_resync_replaces_votes(self):
         from scraper.tempe_summary import parse_summary_text
@@ -456,19 +466,18 @@ class TestSortOrderInDatabase(unittest.TestCase):
     """
 
     def setUp(self):
-        from db import set_database_url, get_session, init_db
-        import tempfile
-        self._tmp_db = tempfile.mktemp(suffix=".sqlite")
-        set_database_url(f"sqlite:///{self._tmp_db}")
+        from db import init_db, get_session
+        import db.core as _dc
+        self._saved_db_url = _dc.DATABASE_URL
         init_db()
         self._populate_test_data()
 
     def tearDown(self):
         from db import get_session
+        import db.core as _dc
         s = get_session()
         s.close()
-        if os.path.exists(self._tmp_db):
-            os.unlink(self._tmp_db)
+        _dc.set_database_url(self._saved_db_url)
 
     def _populate_test_data(self):
         from db import get_session, AgendaItem
@@ -552,19 +561,19 @@ class TestSupportingDocumentBackfill(unittest.TestCase):
     """Packet and Summary links should be stored as meeting-level docs."""
 
     def setUp(self):
-        from db import set_database_url, get_session, init_db
+        from db import init_db, get_session
         from scraper.tempe import search_tempe_meetings
-        import tempfile
-        self._tmp_db = tempfile.mktemp(suffix=".sqlite")
-        set_database_url(f"sqlite:///{self._tmp_db}")
+        import db.core as _dc
+        self._saved_db_url = _dc.DATABASE_URL
         init_db()
 
     def tearDown(self):
         from db import get_session
+        import db.core as _dc
         s = get_session()
         s.close()
-        if os.path.exists(self._tmp_db):
-            os.unlink(self._tmp_db)
+        s.close()
+        _dc.set_database_url(self._saved_db_url)
 
     def test_meeting_doc_isolation(self):
         """Docs with agenda_item_number='0' should be classed as meeting-level."""

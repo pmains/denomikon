@@ -19,20 +19,12 @@ from sqlalchemy import create_engine, select, text as sa_text
 from sqlalchemy.orm import Session
 
 
-def _load_db():
-    """Load the db module with a fresh in-memory SQLite engine."""
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-    # Force reload
-    for mod in list(sys.modules.keys()):
-        if 'db' in mod and mod != 'db':
-            del sys.modules[mod]
-    if 'db' in sys.modules:
-        del sys.modules['db']
-    import db
-    return db
-
-
-db = _load_db()
+# Import db normally — the tests create their own in-memory engines
+# and never rely on db.core.get_engine() or db.core.DATABASE_URL,
+# so there's no need to force-reload the module (which would destroy
+# the shared test database URL that conftest.py set up).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import db
 
 
 class TestPublicBodyMemberTable(unittest.TestCase):

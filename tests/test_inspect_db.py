@@ -4,6 +4,8 @@ import os
 import sys
 import tempfile
 import unittest
+import pytest
+import pytest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -11,36 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_tiers import integration_test
 
 # Import db BEFORE touching DATABASE_URL so the module-level constant is
-# the production default.  We'll switch to a temp database via
-# set_database_url() before each class — see _make_fresh_db().
+# conftest.py sets POLISCOPIC_DB_TIER=test which handles temp DB creation.
+# init_db() is called in setUpClass to set up schema.
 import db as _db_mod
 from db import (
     init_db, get_session, Meeting, AgendaItem, SupportingDocument,
-    set_database_url,
 )
-
-_test_db_path = None  # set by _make_fresh_db()
-
-
-def _make_fresh_db():
-    """Create a new temp database, delete old one, reset engine.
-
-    Uses set_database_url() to safely switch the module-level
-    DATABASE_URL constant — never touches os.environ, so the
-    production database path is never accidentally overwritten.
-    """
-    global _test_db_path
-    import os as _os
-    # Delete old DB file
-    if _test_db_path:
-        try:
-            _os.unlink(_test_db_path)
-        except FileNotFoundError:
-            pass
-    # Create new temp file and switch the database URL
-    _test_db_path = tempfile.mktemp(suffix=".sqlite")
-    set_database_url(f"sqlite:///{_test_db_path}")
-    init_db()
 
 
 def _capture_output(argv: list[str]) -> str:
@@ -63,12 +41,18 @@ def _populate_db():
     from sqlalchemy import select, func as sa_func
 
     session = get_session()
+    # Delete old data first, then re-populate — other tests may have
+    # left stale records with the same meeting_ids.
     existing = session.execute(
         select(Meeting).where(Meeting.meeting_id == "4667")
     ).scalar_one_or_none()
     if existing:
-        session.close()
-        return
+        # Delete old records to get a clean state
+        from sqlalchemy import delete as sa_delete
+        session.execute(sa_delete(SupportingDocument).where(SupportingDocument.body == "bos"))
+        session.execute(sa_delete(AgendaItem).where(AgendaItem.body == "bos"))
+        session.execute(sa_delete(Meeting).where(Meeting.body == "bos"))
+        session.commit()
 
     for mid, date, mtype, title in [
         ("4667", "2026-04-22", "Formal", "Formal Meeting"),
@@ -114,15 +98,28 @@ def _populate_db():
 
 @integration_test
 class TestInspectDbMeetings(unittest.TestCase):
+    """Tests for inspect_db CLI."""
     @classmethod
     def setUpClass(cls):
-        _make_fresh_db()
-        _populate_db()
+        # Force a fresh engine — another module may have left a stale
+        # engine connected to a deleted temp file.
+        import db.core as _dc
+        if _dc._engine:
+            _dc._engine.dispose()
+            _dc._engine = None
+            _dc._SessionLocal = None
+        init_db()
+        # Truncate test tables — other modules may have left stale data
+        s = get_session()
+        for tbl in [SupportingDocument.__table__, AgendaItem.__table__, Meeting.__table__]:
+            s.execute(tbl.delete())
+        s.commit()
+        s.close()
 
-    @classmethod
-    def tearDownClass(cls):
-        """Reset the engine for downstream tests."""
-        set_database_url(_db_mod.DATABASE_URL)
+    def setUp(self):
+        # Ensure schema + data exists — other test modules may swap the DB file
+        init_db()
+        _populate_db()
 
     def test_meetings_output(self):
         out = _capture_output(["meetings"])

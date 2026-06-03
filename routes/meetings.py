@@ -11,7 +11,7 @@ from db import (
     get_session, Meeting, AgendaItem, SupportingDocument,
     AgendaItemVote, SupervisorVote, Supervisor, MeetingSupervisor,
     PZItemDetail, BodyMembership, Person, _enhance_member_for_template,
-    Case, CaseEvent, Jurisdiction,
+    Case, CaseEvent, Jurisdiction, PublicBody,
 )
 from routes import SYNC_STATUS_BADGES, _cache
 
@@ -55,6 +55,15 @@ def get_distinct_meeting_types(body=None, jurisdiction=None):
             "tempe-rio": "tempe-rio", "rio salado": "tempe-rio",
             "tempe-rmt": "tempe-rmt", "risk management trust": "tempe-rmt",
             "tempe-jrc": "tempe-jrc", "joint review committee": "tempe-jrc",
+            # Tempe subcommittees
+            "tempe-animal-welfare-subcommittee": "tempe-animal-welfare-subcommittee",
+            "tempe-community-engagement-subcommittee": "tempe-community-engagement-subcommittee",
+            "tempe-drink-spiking-subcommittee": "tempe-drink-spiking-subcommittee",
+            "tempe-mixed-use-space-subcommittee": "tempe-mixed-use-space-subcommittee",
+            "tempe-mobility-safety-subcommittee": "tempe-mobility-safety-subcommittee",
+            "tempe-town-lake-subcommittee": "tempe-town-lake-subcommittee",
+            "tempe-term-limits-subcommittee": "tempe-term-limits-subcommittee",
+            "tempe-advocacy-review-subcommittee": "tempe-advocacy-review-subcommittee",
             # Mesa bodies (Legistar)
             "mesa-cc": "mesa-cc", "mesa city council": "mesa-cc",
             "mesa-pz": "mesa-pz", "mesa planning": "mesa-pz", "mesa planning zoning": "mesa-pz", "mesa-planning-zoning": "mesa-pz",
@@ -125,6 +134,32 @@ def get_distinct_meeting_types(body=None, jurisdiction=None):
     return [r for r in rows if r]
 
 
+def _strip_jurisdiction(body_name: str) -> str:
+    """Strip the jurisdiction prefix from a body name.
+
+    Examples:
+        "Avondale City Council" → "City Council"
+        "Maricopa County Board of Supervisors" → "Board of Supervisors"
+        "Chandler Planning & Zoning Commission" → "Planning & Zoning Commission"
+        "Industrial Development Authority" → unchanged (no jurisdiction prefix)
+    """
+    if not body_name:
+        return ""
+    # Known jurisdiction name prefixes (longest first to match greedily)
+    jurisdiction_names = [
+        "Maricopa County", "Paradise Valley", "Queen Creek", "El Mirage",
+        # Single-word city names — strip only if followed by a space and another word
+        "Avondale", "Buckeye", "Chandler", "Gilbert", "Glendale",
+        "Goodyear", "Mesa", "Peoria", "Phoenix", "Scottsdale",
+        "Surprise", "Tempe",
+    ]
+    for jur in jurisdiction_names:
+        prefix = jur + " "
+        if body_name.startswith(prefix):
+            return body_name[len(prefix):]
+    return body_name
+
+
 def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_date=None, page=1, per_page=25, jurisdiction=None, hide_upcoming=False):
     """Query meetings with optional filters and pagination. Returns (meetings_list, total_count, page, total_pages)."""
     session = get_session()
@@ -142,7 +177,12 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
         Meeting.jurisdiction_id,
         func.coalesce(Meeting.item_count_actual, 0).label("item_count"),
         func.coalesce(Meeting.supporting_doc_count, 0).label("doc_count"),
-    )
+        PublicBody.name.label("body_name"),
+        PublicBody.body_type,
+    ).outerjoin(PublicBody, or_(
+        PublicBody.id == Meeting.public_body_id,
+        PublicBody.body_code == Meeting.body,
+    ))
 
     # Normalize body code (now also handles tempe-* and mesa-* codes)
     if body and body.lower() != "all":
@@ -163,6 +203,15 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             "tempe-rio": "tempe-rio", "rio salado": "tempe-rio",
             "tempe-rmt": "tempe-rmt", "risk management trust": "tempe-rmt",
             "tempe-jrc": "tempe-jrc", "joint review committee": "tempe-jrc",
+            # Tempe subcommittees
+            "tempe-animal-welfare-subcommittee": "tempe-animal-welfare-subcommittee",
+            "tempe-community-engagement-subcommittee": "tempe-community-engagement-subcommittee",
+            "tempe-drink-spiking-subcommittee": "tempe-drink-spiking-subcommittee",
+            "tempe-mixed-use-space-subcommittee": "tempe-mixed-use-space-subcommittee",
+            "tempe-mobility-safety-subcommittee": "tempe-mobility-safety-subcommittee",
+            "tempe-town-lake-subcommittee": "tempe-town-lake-subcommittee",
+            "tempe-term-limits-subcommittee": "tempe-term-limits-subcommittee",
+            "tempe-advocacy-review-subcommittee": "tempe-advocacy-review-subcommittee",
             # Mesa bodies (Legistar)
             "mesa-cc": "mesa-cc", "mesa city council": "mesa-cc",
             "mesa-pz": "mesa-pz", "mesa planning": "mesa-pz", "mesa planning zoning": "mesa-pz", "mesa-planning-zoning": "mesa-pz",
@@ -266,260 +315,29 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
     q = q.offset((page - 1) * per_page).limit(per_page)
     rows = session.execute(q).all()
 
-    # ── Consistent source badge color scheme ──
-    # Blue (primary)      = City Councils, primary legislative bodies
-    # Orange (secondary)  = P&Z, DRC, BOA, HPC — land use / development
-    # Teal (success)      = Health, housing, community services
-    # Yellow (warning)    = Transportation, infrastructure, flood control
-    # Brick red (danger)  = Fiscal, pension, audit, enforcement
-    # Medium blue (info)  = Culture, museums, parks, stadiums, misc boards
-    _BODY_BADGE = {
-        # Maricopa County
-        "bos": "primary",
-        "pz": "secondary", "adj": "secondary",
-        "health": "success", "tab": "warning", "ida": "danger", "drain": "info",
-        # Tempe
-        "tempe-cc": "primary",
-        "tempe-drc": "secondary", "tempe-boa": "secondary", "tempe-hpc": "secondary",
-        "tempe-ha": "success", "tempe-rio": "warning",
-        "tempe-rmt": "danger", "tempe-jrc": "info",
-        # Mesa
-        "mesa-cc": "primary", "mesa-city-council": "primary",
-        "mesa-pz": "secondary", "mesa-drb": "secondary",
-        "mesa-boa": "secondary", "mesa-hpb": "secondary",
-        "mesa-cadence": "info", "mesa-eastmark1": "info", "mesa-eastmark2": "info",
-        # Chandler
-        "chandler-cc": "primary",
-        "chandler-pz": "secondary", "chandler-drc": "secondary",
-        "chandler-boa": "secondary", "chandler-hpc": "secondary",
-        "chandler-ida": "danger",
-        "chandler-prb": "info", "chandler-lb": "info",
-        "chandler-mf": "info", "chandler-cf": "info", "chandler-arts": "info",
-        "chandler-tc": "warning",
-        "chandler-mvc": "info", "chandler-hhsc": "success", "chandler-hrc": "info",
-        "chandler-dvc": "info", "chandler-pha": "success",
-        "chandler-nac": "info", "chandler-yc": "info", "chandler-pdc": "info",
-        "chandler-eda": "info", "chandler-psprs-f": "danger", "chandler-psprs-p": "danger",
-        "chandler-hcc": "success", "chandler-cpr": "info",
-        "chandler-hct": "danger", "chandler-wct": "danger", "chandler-air": "warning",
-        # Scottsdale
-        "scottsdale-cc": "primary",
-        "scottsdale-pc": "secondary", "scottsdale-boa": "secondary",
-        "scottsdale-drb": "secondary", "scottsdale-hpc": "secondary",
-        "scottsdale-baba": "secondary",
-        # Glendale
-        "glendale-cc": "primary",
-        # Gilbert
-        "gilbert-tc": "primary",
-        # Peoria
-        "peoria-cc": "primary", "peoria-pz": "secondary",
-        "peoria-boa": "secondary",
-        # Surprise
-        "surprise-cc": "primary",
-        # MCACC boards
-        "mc-audit": "danger", "mc-benefit-trust": "danger",
-        "mc-community-action": "success", "mc-cdac": "info",
-        "mc-eed-policy": "success", "mc-flood-advisory": "warning",
-        "mc-home": "success", "mc-mclepc": "warning",
-        "mc-mcao-psprs": "danger", "mc-mcso-corp": "danger",
-        "mc-mcso-psprs": "danger", "mc-merit": "danger",
-        "mc-psfc": "danger", "mc-risk-trust": "danger",
-        "mc-smart-savings": "danger", "mc-stadium": "info",
-        "mc-trp": "warning", "mc-air-pollution": "info",
-        "mc-bcab": "secondary", "mc-flood-stakeholder": "warning",
+    # ── Badge color scheme by body_type ──
+    # Colors come from public_bodies.body_type classification,
+    # not from per-jurisdiction elif trees.
+    _BODY_TYPE_BADGE = {
+        "primary": "primary",            # City Council, BOS, Town Council
+        "land_use": "secondary",          # P&Z, DRC, BOA, HPC
+        "community_services": "success",  # Health, housing, human services
+        "fiscal_oversight": "danger",     # Audit, PSPRS, risk, benefits
+        "culture_recreation": "info",     # Arts, museums, parks, libraries
+        "infrastructure": "warning",      # Transportation, flood, water, airport
+        "advisory_general": "dark",       # Neighborhood, economic dev, misc
     }
 
     meetings_list = []
     for row in rows:
         body_val = row.body or "bos"
-        is_pz = body_val == "pz"
-        is_adj = body_val == "adj"
-        is_drain = body_val == "drain"
-        is_health = body_val == "health"
-        is_tab = body_val == "tab"
-        is_ida = body_val == "ida"
-        is_tempe = body_val.startswith("tempe-")
-        is_mesa = body_val.startswith("mesa-")
-        is_chandler = body_val.startswith("chandler-")
-        is_gilbert = body_val.startswith("gilbert-")
-        is_scottsdale = body_val.startswith("scottsdale-")
-        is_peoria = body_val.startswith("peoria-")
-        # Default badge — overridden per jurisdiction below
-        source_badge = "primary"
-        is_avondale = body_val.startswith("avondale-")
-        is_el_mirage = body_val.startswith("el-mirage-")
-        is_buckeye = body_val.startswith("buckeye-")
-        is_goodyear = body_val.startswith("goodyear-")
-        # Derive source label and badge from body value
-        if is_tempe:
-            source_labels = {
-                "tempe-cc": "City Council",
-                "tempe-drc": "Dev Review",
-                "tempe-boa": "Board of Adj",
-                "tempe-hpc": "Hist Preserv",
-                "tempe-ha": "Housing Auth",
-                "tempe-rio": "Rio Salado",
-                "tempe-rmt": "Risk Mgmt",
-                "tempe-jrc": "Joint Review",
-            }
-            source = source_labels.get(body_val, "Tempe")
-            source_badge = "info"
-        elif is_mesa:
-            source_labels = {
-                "mesa-cc": "City Council",
-                "mesa-pz": "Planning & Zoning",
-                "mesa-drb": "Design Review",
-                "mesa-boa": "Board of Adj",
-                "mesa-hpb": "Hist Preserv",
-                "mesa-cadence": "Cadence CFD",
-                "mesa-eastmark1": "Eastmark CFD 1",
-                "mesa-eastmark2": "Eastmark CFD 2",
-            }
-            source = source_labels.get(body_val, "Mesa")
-            source_badge = "warning"
-        elif is_chandler:
-            source_labels = {
-                "chandler-cc": "City Council",
-                "chandler-pz": "Planning & Zoning",
-                "chandler-drc": "Dev Review",
-                "chandler-boa": "Board of Adj",
-                "chandler-hpc": "Hist Preserv",
-                "chandler-ida": "Ind Dev Auth",
-                "chandler-prb": "Parks & Rec",
-                "chandler-lb": "Library Board",
-                "chandler-mf": "Museum Fndtn",
-                "chandler-cf": "Cultural Fndtn",
-                "chandler-arts": "Arts Comm",
-                "chandler-tc": "Transpo Comm",
-                "chandler-mvc": "Mil & Vet",
-                "chandler-hhsc": "Housing & HS",
-                "chandler-hrc": "Human Rel",
-                "chandler-dvc": "Dom Violence",
-                "chandler-pha": "Pub Housing",
-                "chandler-nac": "Neighbor Adv",
-                "chandler-yc": "Youth Comm",
-                "chandler-pdc": "Disabilities",
-                "chandler-eda": "Econ Dev",
-                "chandler-psprs-f": "PSPRS Fire",
-                "chandler-psprs-p": "PSPRS Police",
-                "chandler-hcc": "Housing Corp",
-                "chandler-cpr": "Citizens Rev",
-                "chandler-hct": "Health Trust",
-                "chandler-wct": "Workers Comp",
-                "chandler-air": "Airport Comm",
-            }
-            source = source_labels.get(body_val, "Chandler")
-            source_badge = "success"
-        elif is_gilbert:
-            source = "Town Council" if body_val == "gilbert-tc" else "Gilbert"
-            source_badge = "dark"
-        elif body_val.startswith("glendale-"):
-            glendale_labels = {
-                "glendale-cc": "City Council",
-                "glendale-pc": "Planning Comm",
-                "glendale-boa": "Board of Adj",
-            }
-            source = glendale_labels.get(body_val, "Glendale")
-            source_badge = "info"
-        elif body_val.startswith("surprise-"):
-            source = "City Council" if body_val == "surprise-cc" else "Surprise"
-            source_badge = "dark"
+        body_type = row.body_type or "advisory_general"
 
-        elif body_val.startswith("phoenix-"):
-            phx_labels = {
-                "phoenix-cc": "City Council",
-                "phoenix-pc": "Planning Comm",
-                "phoenix-cs": "Community Svcs Sub",
-                "phoenix-ti": "Transportation Sub",
-                "phoenix-ed": "Econ Dev Sub",
-                "phoenix-ps": "Public Safety Sub",
-                "phoenix-bh": "Budget Hearing",
-                "phoenix-boa": "Board of Adj",
-                "phoenix-vpc": "Village Plan Comm",
-            }
-            source = phx_labels.get(body_val, "Phoenix")
-            source_badge = "info"
+        # Badge text: full body name with jurisdiction stripped (shown in separate column)
+        body_name = row.body_name or row.meeting_type or body_val
+        source = _strip_jurisdiction(body_name)
+        source_badge = _BODY_TYPE_BADGE.get(body_type, "dark")
 
-        elif is_buckeye:
-            buckeye_labels = {
-                "buckeye-cc": "City Council",
-                "buckeye-pz": "Planning & Zoning",
-                "buckeye-boa": "Board of Adj",
-                "buckeye-prc": "Parks & Rec",
-                "buckeye-hpc": "Hist Preserv",
-                "buckeye-library": "Library Board",
-                "buckeye-psprs": "PSPRS",
-            }
-            source = buckeye_labels.get(body_val, "Buckeye")
-            source_badge = "dark"
-        elif is_goodyear:
-            goodyear_labels = {
-                "goodyear-cc": "City Council",
-                "goodyear-pz": "Planning & Zoning",
-                "goodyear-acc": "Arts & Culture",
-                "goodyear-wac": "Water Advisory",
-                "goodyear-yc": "Youth Comm",
-                "goodyear-audit": "Audit",
-                "goodyear-psprs-f": "Fire PSPRS",
-                "goodyear-psprs-p": "Police PSPRS",
-            }
-            source = goodyear_labels.get(body_val, "Goodyear")
-            source_badge = "success"
-        elif is_avondale:
-            avondale_labels = {
-                "avondale-cc": "City Council",
-                "avondale-pz": "Planning & Zoning",
-                "avondale-boa": "Board of Adj",
-                "avondale-quorum": "Quorum Notice",
-            }
-            source = avondale_labels.get(body_val, "Avondale")
-            source_badge = "success"
-        elif is_el_mirage:
-            el_mirage_labels = {
-                "el-mirage-cc": "City Council",
-                "el-mirage-pz": "Planning & Zoning",
-                "el-mirage-boa": "Board of Adj",
-            }
-            source = el_mirage_labels.get(body_val, "El Mirage")
-            source_badge = "success"
-        elif is_peoria:
-            peoria_labels = {
-                "peoria-cc": "City Council",
-                "peoria-pz": "Planning & Zoning",
-                "peoria-boa": "Board of Adj",
-                "peoria-sub": "Subcommittee",
-            }
-            source = peoria_labels.get(body_val, "Peoria")
-            source_badge = "warning"
-
-        elif body_val.startswith("scottsdale-"):
-            scottsdale_labels = {
-                "scottsdale-cc": "City Council",
-                "scottsdale-pc": "Planning Comm",
-                "scottsdale-boa": "Board of Adj",
-                "scottsdale-drb": "Dev Review",
-                "scottsdale-hpc": "Hist Preserv",
-                "scottsdale-baba": "Bldg Appeals",
-            }
-            source = scottsdale_labels.get(body_val, "Scottsdale")
-            source_badge = "info"
-        elif body_val.startswith("mc-"):
-            mc_labels = {
-                "mc-audit": "Audit", "mc-benefit-trust": "Benefits",
-                "mc-community-action": "Comm Action", "mc-cdac": "CDAC",
-                "mc-eed-policy": "EED Policy", "mc-flood-advisory": "Flood Adv",
-                "mc-home": "HOME", "mc-mclepc": "MCLEPC",
-                "mc-mcao-psprs": "MCAO PSPRS", "mc-mcso-corp": "MCSO CORP",
-                "mc-mcso-psprs": "MCSO PSPRS", "mc-merit": "Merit",
-                "mc-psfc": "PSFC", "mc-risk-trust": "Risk Trust",
-                "mc-smart-savings": "Savings", "mc-stadium": "Stadium",
-                "mc-trp": "TRP", "mc-air-pollution": "Air Pollution",
-                "mc-bcab": "BCAB", "mc-flood-stakeholder": "Flood Stake",
-            }
-            source = mc_labels.get(body_val, "Maricopa")
-        else:
-            source = "IDA" if is_ida else ("TAB" if is_tab else ("BOH" if is_health else ("DRB" if is_drain else ("ADJ" if is_adj else ("PZ" if is_pz else "BOS")))))
-            source_badge = "light" if is_ida else ("warning" if is_tab else ("success" if is_health else ("info" if is_drain else ("dark" if is_adj else ("secondary" if is_pz else "primary")))))
         # Resolve jurisdiction name from meeting.jurisdiction_id
         jur_map = {
             1: ("Maricopa County", "maricopa-county"),
@@ -548,7 +366,7 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             "jurisdiction": jur_name,
             "jurisdiction_slug": jur_slug,
             "source": source,
-            "source_badge": _BODY_BADGE.get(body_val, source_badge),
+            "source_badge": source_badge,
             "sync_status": row.sync_status or "pending",
             "badge_class": SYNC_STATUS_BADGES.get((row.sync_status or "").lower(), "secondary"),
             "item_count": row.item_count,
@@ -620,7 +438,7 @@ def meetings():
 
 @meetings_bp.route("/meetings/<path:meeting_id>")
 @meetings_bp.route("/meetings/<body>/<path:meeting_id>")
-@_cache(timeout=120)
+@_cache(timeout=120, query_string=True)
 def meeting_detail(meeting_id, body=None):
     session = get_session()
 
@@ -635,6 +453,7 @@ def meeting_detail(meeting_id, body=None):
         return render_template("meeting_detail.html", meeting_id=meeting_id, meeting=None)
 
     meeting_body_val = meeting.body or "bos"
+    meeting_pk = meeting.id
 
     # Try to construct a minutes URL from the source URL
     # AgendaCenter: replace Agenda with Minutes, strip ?html=true
@@ -652,8 +471,7 @@ def meeting_detail(meeting_id, body=None):
     items = session.execute(
         select(AgendaItem)
         .where(
-            AgendaItem.body == meeting_body_val,
-            AgendaItem.meeting_id == meeting_id,
+            AgendaItem.meeting_db_id == meeting_pk,
         )
         .order_by(AgendaItem.sort_order.asc().nulls_last(), AgendaItem.agenda_item_number)
     ).scalars().all()
@@ -664,24 +482,34 @@ def meeting_detail(meeting_id, body=None):
     docs = session.execute(
         select(SupportingDocument)
         .where(
-            SupportingDocument.body == meeting_body_val,
-            SupportingDocument.meeting_id == meeting_id,
+            SupportingDocument.meeting_db_id == meeting_pk,
         )
         .order_by(SupportingDocument.agenda_item_number, SupportingDocument.id)
     ).scalars().all()
+    # Build a lookup: agenda_item_number -> list of item PKs that share that number
+    num_to_item_ids: dict[str, list[int]] = {}
+    for ai in items:
+        key = str(ai.agenda_item_number) if ai.agenda_item_number is not None else ""
+        if key:
+            num_to_item_ids.setdefault(key, []).append(ai.id)
     for d in docs:
         if not d.agenda_item_number or d.agenda_item_number == "0" or d.agenda_item_number == 0:
             meeting_docs.append(d)
         else:
-            docs_by_item.setdefault(d.agenda_item_number, []).append(d)
+            # Assign to the last item with this number (sub-items appear after parent)
+            ids = num_to_item_ids.get(str(d.agenda_item_number), [])
+            if ids:
+                target_id = ids[-1]  # last item with this number
+                docs_by_item.setdefault(target_id, []).append(d)
+            else:
+                meeting_docs.append(d)
 
     # --- Batch-load votes per item ---
     votes_by_item: dict[int, dict] = {}
     item_votes = session.execute(
         select(AgendaItemVote)
         .where(
-            AgendaItemVote.body == meeting_body_val,
-            AgendaItemVote.meeting_id == meeting_id,
+            AgendaItemVote.meeting_db_id == meeting_pk,
         )
     ).scalars().all()
 
@@ -732,8 +560,7 @@ def meeting_detail(meeting_id, body=None):
     if is_pz:
         detail_rows = session.execute(
             select(PZItemDetail).where(
-                PZItemDetail.body == meeting_body_val,
-                PZItemDetail.meeting_id == meeting_id,
+                PZItemDetail.meeting_db_id == meeting_pk,
             )
         ).scalars().all()
         for d in detail_rows:
@@ -779,6 +606,9 @@ def meeting_detail(meeting_id, body=None):
 
     badge = SYNC_STATUS_BADGES.get((meeting.sync_status or "").lower(), "secondary")
 
+    # Item-specific deep link
+    scroll_item = request.args.get("item", "").strip()
+
     return render_template(
         "meeting_detail.html",
         meeting=meeting,
@@ -796,6 +626,7 @@ def meeting_detail(meeting_id, body=None):
         related_pz=related_pz,
         related_bos=related_bos,
         minutes_url=minutes_url,
+        scroll_item=scroll_item,
     )
 
 
@@ -817,8 +648,9 @@ def c_number_revisions(c_number_base):
             Meeting.meeting_date,
             Meeting.meeting_type,
             Meeting.meeting_body,
+            Meeting.body,
         )
-        .join(Meeting, and_(Meeting.meeting_id == AgendaItem.meeting_id, Meeting.body == AgendaItem.body))
+        .join(Meeting, Meeting.id == AgendaItem.meeting_db_id)
         .where(
             or_(
                 AgendaItem.c_number_base == c_number_base,
@@ -911,7 +743,7 @@ def get_related_case_events(case_number):
         return []
     events = session.execute(
         select(CaseEvent, Meeting.meeting_date, Meeting.meeting_type, Meeting.meeting_title)
-        .outerjoin(Meeting, and_(Meeting.meeting_id == CaseEvent.meeting_id, Meeting.body == CaseEvent.body))
+        .outerjoin(Meeting, Meeting.id == CaseEvent.meeting_db_id)
         .where(CaseEvent.case_id == case.id)
         .order_by(CaseEvent.event_date)
     ).all()

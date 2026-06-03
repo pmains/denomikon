@@ -14,7 +14,7 @@ from sqlalchemy.orm import joinedload
 from db.core import get_session
 from db.newsroom import (
     Article, ArticleSource, Tag, article_tags, AdminUser, Notification,
-    MediaImage, sync_article_fts, search_agenda_items,
+    MediaImage, SkeetDraft, sync_article_fts, search_agenda_items,
 )
 
 
@@ -31,10 +31,17 @@ from db import get_session as get_db_session
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 
 
+_STOP_WORDS = {"a", "an", "the", "and", "or", "of", "for", "in", "to",
+                   "with", "on", "at", "by", "is", "its", "are",
+                   "was", "were", "be", "been", "being"}
+
+
 def _slugify(text: str) -> str:
     s = text.lower().strip()
     s = re.sub(r"[^\w\s-]", "", s)
-    s = re.sub(r"[\s_]+", "-", s)
+    # Remove stop words
+    words = [w for w in s.split() if w not in _STOP_WORDS]
+    s = "-".join(words)
     s = re.sub(r"-+", "-", s)
     return s[:200]
 
@@ -78,30 +85,112 @@ def _unique_slug(text: str, exclude_id: int | None = None, date_prefix: str | No
 @login_required
 def dashboard():
     session = get_session()
+    drafts_count = session.execute(
+        select(func.count(Article.id)).where(Article.status == "draft")
+    ).scalar() or 0
+    published_count = session.execute(
+        select(func.count(Article.id)).where(Article.status == "published")
+    ).scalar() or 0
+    archived_count = session.execute(
+        select(func.count(Article.id)).where(Article.status == "archived")
+    ).scalar() or 0
+    featured_count = session.execute(
+        select(func.count(Article.id)).where(Article.is_featured == True)
+    ).scalar() or 0
+    skeet_count = session.execute(
+        select(func.count(SkeetDraft.id))
+    ).scalar() or 0
+    session.close()
+    return render_template(
+        "admin/dashboard.html",
+        drafts_count=drafts_count, published_count=published_count,
+        archived_count=archived_count, featured_count=featured_count,
+        skeet_count=skeet_count,
+    )
+
+
+@admin_bp.route("/drafts")
+@login_required
+def drafts_list():
+    session = get_session()
     drafts = session.execute(
         select(Article).where(Article.status == "draft")
         .order_by(desc(Article.priority), desc(Article.updated_at))
     ).scalars().all()
+    counts = _get_all_counts(session)
+    session.close()
+    return render_template("admin/drafts.html", drafts=drafts, counts=counts)
+
+
+@admin_bp.route("/published")
+@login_required
+def published_list():
+    session = get_session()
     published = session.execute(
         select(Article).where(Article.status == "published")
         .order_by(desc(Article.published_at))
     ).scalars().all()
+    counts = _get_all_counts(session)
+    session.close()
+    return render_template("admin/published.html", published=published, counts=counts)
+
+
+@admin_bp.route("/archived")
+@login_required
+def archived_list():
+    session = get_session()
     archived = session.execute(
         select(Article).where(Article.status == "archived")
         .order_by(desc(Article.archived_at))
     ).scalars().all()
+    counts = _get_all_counts(session)
+    session.close()
+    return render_template("admin/archived.html", archived=archived, counts=counts)
+
+
+@admin_bp.route("/featured")
+@login_required
+def featured_list():
+    session = get_session()
     featured = session.execute(
         select(Article).where(Article.is_featured == True)
         .order_by(desc(Article.updated_at))
     ).scalars().all()
     tags = session.execute(select(Tag).order_by(Tag.name)).scalars().all()
+    counts = _get_all_counts(session)
     session.close()
-    return render_template(
-        "admin/dashboard.html",
-        drafts=drafts, published=published, archived=archived,
-        featured=featured,
-        tags=tags, now=datetime.now(timezone.utc),
-    )
+    return render_template("admin/featured.html",
+        featured=featured, tags=tags, counts=counts, now=datetime.now(timezone.utc))
+
+
+@admin_bp.route("/bluesky")
+@login_required
+def bluesky_list():
+    from sqlalchemy.orm import joinedload
+    session = get_session()
+    skeet_drafts = session.execute(
+        select(SkeetDraft)
+        .options(joinedload(SkeetDraft.article))
+        .order_by(desc(SkeetDraft.created_at))
+        .limit(100)
+    ).unique().scalars().all()
+    for d in skeet_drafts:
+        _ = d.article
+    counts = _get_all_counts(session)
+    session.close()
+    return render_template("admin/bluesky.html",
+        skeet_drafts=list(skeet_drafts), counts=counts)
+
+
+def _get_all_counts(session):
+    """Return a dict of counts for all admin sections."""
+    return {
+        "drafts": session.execute(select(func.count(Article.id)).where(Article.status == "draft")).scalar() or 0,
+        "published": session.execute(select(func.count(Article.id)).where(Article.status == "published")).scalar() or 0,
+        "archived": session.execute(select(func.count(Article.id)).where(Article.status == "archived")).scalar() or 0,
+        "featured": session.execute(select(func.count(Article.id)).where(Article.is_featured == True)).scalar() or 0,
+        "bluesky": session.execute(select(func.count(SkeetDraft.id))).scalar() or 0,
+    }
 
 
 # ── Narrative angle templates for each topic ──
@@ -372,7 +461,7 @@ def suggestions():
         items = session.execute(
             select(AgendaItem, Meeting.meeting_date, Meeting.body)
             .join(Meeting, and_(
-                Meeting.meeting_id == AgendaItem.meeting_id,
+                Meeting.id == AgendaItem.meeting_db_id,
                 Meeting.body == AgendaItem.body,
             ))
             .where(and_(*_filters))
@@ -448,7 +537,7 @@ def suggestions():
         signal_items = session.execute(
             select(AgendaItem, Meeting.meeting_date, Meeting.body)
             .join(Meeting, and_(
-                Meeting.meeting_id == AgendaItem.meeting_id,
+                Meeting.id == AgendaItem.meeting_db_id,
                 Meeting.body == AgendaItem.body,
             ))
             .where(and_(*_signal_filter))
@@ -506,7 +595,7 @@ def suggestions():
             hv_items = session.execute(
                 select(AgendaItem, Meeting.meeting_date, Meeting.body)
                 .join(Meeting, and_(
-                    Meeting.meeting_id == AgendaItem.meeting_id,
+                    Meeting.id == AgendaItem.meeting_db_id,
                     Meeting.body == AgendaItem.body,
                 ))
                 .where(and_(*hv_filter))
@@ -564,12 +653,13 @@ def _post_article_to_bluesky(article):
     """Post an article to Bluesky if it's published and has a slug."""
     if article.status != "published" or not article.slug:
         return
-    from social import post_to_bluesky
+    from social import post_to_bluesky, _fetch_image_bytes
     # Determine the full URL
     from flask import url_for
     base_url = "https://poliscopic.com"
     article_url = f"{base_url}/articles/{article.slug}"
-    post_to_bluesky(article.title, article.summary, article_url)
+    image_bytes = _fetch_image_bytes(article.featured_image) if article.featured_image else None
+    post_to_bluesky(article.title, article.summary, article_url, image_bytes=image_bytes)
 
 # ── Article CRUD ──
 
@@ -858,6 +948,9 @@ def article_feature_toggle(article_id):
     
     session.commit()
     session.close()
+    redirect_to = request.form.get("redirect", "")
+    if redirect_to:
+        return redirect(redirect_to)
     return redirect(url_for("admin.dashboard"))
 @admin_bp.route("/articles/reorder", methods=["POST"])
 @login_required
@@ -915,7 +1008,7 @@ def draft_from_suggestion():
     from sqlalchemy import and_
     item = session.execute(
         select(AgendaItem)
-        .join(Meeting, and_(Meeting.meeting_id == AgendaItem.meeting_id,
+        .join(Meeting, and_(Meeting.id == AgendaItem.meeting_db_id,
                            Meeting.body == AgendaItem.body))
         .where(AgendaItem.body == body_code)
         .where(AgendaItem.meeting_id == meeting_id)
@@ -1375,3 +1468,172 @@ def article_style_check(article_id):
         "all_passed": score == total,
         "checks": results,
     })
+
+
+# ── Skeet Drafts ──
+
+@admin_bp.route("/skeet-drafts")
+@login_required
+def skeet_drafts_list():
+    """Redirect to the unified /admin/bluesky page."""
+    return redirect(url_for("admin.bluesky_list"))
+
+
+@admin_bp.route("/skeet-drafts/create/<int:article_id>", methods=["POST"])
+@login_required
+def skeet_draft_create(article_id):
+    """Auto-generate a skeet draft for an article."""
+    session = get_session()
+    article = session.get(Article, article_id)
+    if not article:
+        session.close()
+        flash("Article not found.", "error")
+        return redirect(url_for("admin.dashboard"))
+
+    # Check if draft already exists
+    existing = session.execute(
+        select(SkeetDraft).where(
+            SkeetDraft.article_id == article_id,
+            SkeetDraft.status.in_(["draft", "approved"]),
+        )
+    ).scalar_one_or_none()
+    if existing:
+        session.close()
+        flash("Skeet draft already exists for this article.", "info")
+        return redirect(url_for("admin.article_edit", article_id=article_id))
+
+    # Generate draft text from the article
+    import textwrap
+    draft_text = article.title[:256]
+    if article.summary:
+        remaining = 300 - len(draft_text) - 3
+        if remaining > 20:
+            draft_text += "\n\n" + article.summary[:remaining]
+
+    draft = SkeetDraft(
+        article_id=article.id,
+        draft_text=draft_text,
+        status="draft",
+        image_path=article.featured_image or "",
+    )
+    session.add(draft)
+    session.commit()
+    session.close()
+    flash("Skeet draft created.", "success")
+    return redirect(url_for("admin.skeet_drafts_list"))
+
+
+@admin_bp.route("/skeet-drafts/<int:draft_id>/edit", methods=["POST"])
+@login_required
+def skeet_draft_edit(draft_id):
+    """Update draft text, image, or status."""
+    session = get_session()
+    draft = session.get(SkeetDraft, draft_id)
+    if not draft:
+        session.close()
+        flash("Draft not found.", "error")
+        return redirect(url_for("admin.skeet_drafts_list"))
+
+    text = request.form.get("draft_text", "").strip()
+    if text:
+        draft.draft_text = text[:300]
+    image_path = request.form.get("image_path", "").strip()
+    if image_path:
+        draft.image_path = image_path
+
+    action = request.form.get("action", "")
+    if action == "approve":
+        draft.status = "approved"
+    elif action == "skip":
+        draft.status = "skipped"
+    elif action == "draft":
+        draft.status = "draft"
+
+    draft.updated_at = datetime.now(timezone.utc)
+    session.commit()
+    session.close()
+    flash("Skeet draft updated.", "success")
+    return redirect(url_for("admin.skeet_drafts_list"))
+
+
+@admin_bp.route("/skeet-drafts/<int:draft_id>/delete", methods=["POST"])
+@login_required
+def skeet_draft_delete(draft_id):
+    """Delete a skeet draft."""
+    session = get_session()
+    draft = session.get(SkeetDraft, draft_id)
+    if draft:
+        session.delete(draft)
+        session.commit()
+    session.close()
+    flash("Skeet draft deleted.", "success")
+    return redirect(url_for("admin.skeet_drafts_list"))
+
+
+@admin_bp.route("/skeet-drafts/<int:draft_id>/post", methods=["POST"])
+@login_required
+def skeet_draft_post(draft_id):
+    """Post an approved skeet draft to Bluesky immediately."""
+    session = get_session()
+    draft = session.get(SkeetDraft, draft_id)
+    if not draft:
+        session.close()
+        flash("Draft not found.", "error")
+        return redirect(url_for("admin.skeet_drafts_list"))
+
+    article = session.get(Article, draft.article_id)
+    if not article:
+        session.close()
+        flash("Article not found.", "error")
+        return redirect(url_for("admin.skeet_drafts_list"))
+
+    if draft.status not in ("approved", "draft"):
+        session.close()
+        flash("Only approved drafts can be posted.", "error")
+        return redirect(url_for("admin.skeet_drafts_list"))
+
+    from flask import url_for
+    base_url = "https://poliscopic.com"
+    article_url = f"{base_url}/articles/{article.slug}"
+
+    # Fetch image for the link card
+    image_bytes = None
+    if draft.image_path:
+        try:
+            import urllib.request
+            if draft.image_path.startswith(("http://", "https://")):
+                with urllib.request.urlopen(draft.image_path, timeout=15) as resp:
+                    image_bytes = resp.read()
+            else:
+                import os as _os
+                local_path = _os.path.join(
+                    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                    "static", draft.image_path.lstrip("/"),
+                )
+                if _os.path.exists(local_path):
+                    with open(local_path, "rb") as f:
+                        image_bytes = f.read()
+        except Exception as e:
+            log.warning("Image fetch failed for skeet draft %d: %s", draft_id, e)
+
+    from social import post_to_bluesky as _do_post
+    uri = _do_post(
+        title=article.title,
+        summary=article.summary,
+        url=article_url,
+        image_bytes=image_bytes,
+        draft_text=draft.draft_text,
+    )
+
+    if uri:
+        draft.status = "posted"
+        draft.bluesky_post_uri = uri
+        draft.posted_at = datetime.now(timezone.utc)
+        session.commit()
+        session.close()
+        flash("Posted to Bluesky!", "success")
+    else:
+        session.close()
+        flash("Failed to post to Bluesky.", "error")
+
+    return redirect(url_for("admin.skeet_drafts_list"))

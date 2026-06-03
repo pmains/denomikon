@@ -19,7 +19,6 @@ from db import (
     init_db,
     get_session,
     Permit,
-    set_database_url,
 )
 from scraper.tempe_permits import (
     _parse_arcgis_date,
@@ -32,27 +31,10 @@ from scraper.tempe_permits import (
     MAX_RECORD_COUNT,
     SOURCE_SYSTEM,
 )
+# conftest.py sets POLISCOPIC_DB_TIER=test which handles temp DB creation.
+# Use init_db() in setUp/setUpClass — conftest manages the database lifecycle.
+
 from sqlalchemy import func, select
-
-# Temp database
-_test_db_path = tempfile.mktemp(suffix=".sqlite")
-set_database_url(f"sqlite:///{_test_db_path}")
-init_db()
-
-
-def _reset_db_engine():
-    """Dispose and reset the DB engine so the next get_engine() creates
-    a fresh connection to the module-level temp database URL.
-
-    Also restores DATABASE_URL to the module-level temp path in case
-    other test modules (e.g. test_sync_data_integrity) overwrote it."""
-    import db.core as _dc
-    if _dc._engine:
-        _dc._engine.dispose()
-    _dc._engine = None
-    _dc._SessionLocal = None
-    if _test_db_path:
-        set_database_url(f"sqlite:///{_test_db_path}")
 
 
 # ── ArcGIS date parsing ────────────────────────────────────────────────────
@@ -469,8 +451,6 @@ class TestDatabaseUpsert(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        _reset_db_engine()
-        set_database_url(f"sqlite:///{_test_db_path}")
         init_db()
 
     def setUp(self):
@@ -588,8 +568,6 @@ class TestPermitFilterAggregation(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        _reset_db_engine()
-        set_database_url(f"sqlite:///{_test_db_path}")
         init_db()
 
     def setUp(self):
