@@ -1,0 +1,22 @@
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <ul class="nav nav-tabs flex-grow-1" id="adminTabs" role="tablist">
+    <li class="nav-item"><a class="nav-link {{ 'active' if request.path == '/admin/drafts' }}" href="/admin/drafts">Drafts ({{ counts.drafts }})</a></li>
+    <li class="nav-item"><a class="nav-link {{ 'active' if request.path == '/admin/published' }}" href="/admin/published">Published ({{ counts.published }})</a></li>
+    <li class="nav-item"><a class="nav-link {{ 'active' if request.path == '/admin/archived' }}" href="/admin/archived">Archived ({{ counts.archived }})</a></li>
+    <li class="nav-item"><a class="nav-link {{ 'active' if request.path == '/admin/featured' }}" href="/admin/featured">Featured ({{ counts.featured }}/3)</a></li>
+    <li class="nav-item"><a class="nav-link {{ 'active' if request.path == '/admin/bluesky' }}" href="/admin/bluesky">Bluesky ({{ counts.bluesky }})</a></li>
+  </ul>
+  <div class="flex-shrink-0 ms-2">
+    <a href="/admin/suggestions" class="btn btn-outline-primary btn-sm">AI Suggestions</a>
+    <a href="/admin/articles/new" class="btn btn-primary btn-sm">New Article</a>
+    <a href="/admin/tags" class="btn btn-outline-secondary btn-sm">Manage Tags</a>
+  </div>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    {% for category, message in messages %}
+      <div class="alert alert-{{ 'danger' if category == 'error' else 'success' }}">{{ message }}</div>
+    {% endfor %}
+  {% endif %}
+{% endwith %}

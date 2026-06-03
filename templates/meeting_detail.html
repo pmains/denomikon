@@ -2,7 +2,7 @@
 {% block title %}Meeting {{ meeting_id }} — Poliscopic Meetings{% endblock %}
 {% block content %}
 
-<a href="/meetings" class="btn btn-outline-secondary btn-sm mb-3">&larr; Back to meetings</a>
+<a href="/meetings" class="btn btn-outline-secondary btn-sm my-3">&larr; Back to meetings</a>
 
 {% if meeting %}
 
@@ -95,15 +95,15 @@
 {% if items %}
 <div class="accordion" id="agendaAccordion">
     {% for item in items %}
-    {% set item_docs = docs_by_item.get(item.agenda_item_number, []) %}
-    {% set item_key = item.agenda_item_number|string if item.agenda_item_number is not none else '' %}
-    {% set item_vote = votes_by_item.get(item_key, {}) %}
-    <div class="accordion-item" id="item-{{ item.agenda_item_number }}">
-        <h2 class="accordion-header" id="heading{{ item.agenda_item_number }}">
+    {% set item_docs = docs_by_item.get(item.id, []) %}
+    {% set item_vote = votes_by_item.get(item.agenda_item_number|string if item.agenda_item_number is not none else '', {}) %}
+    <div class="accordion-item" id="item-{{ item.agenda_item_number }}" data-item-number="{{ item.agenda_item_number }}">
+        <h2 class="accordion-header" id="heading{{ item.id }}">
             <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
-                    data-bs-target="#collapse{{ item.agenda_item_number }}"
-                    aria-expanded="false" aria-controls="collapse{{ item.agenda_item_number }}">
+                    data-bs-target="#collapse{{ item.id }}"
+                    aria-expanded="false" aria-controls="collapse{{ item.id }}">
                 <span class="fw-bold me-2">{{ item.agenda_item_number }}.</span>
+                <a href="?item={{ item.agenda_item_number }}" class="text-decoration-none text-muted small me-2" title="Link to this item">¶</a>
                 <span class="flex-grow-1">{{ item.agenda_item_title }}</span>
                 {% if item.agenda_category in ('Consent', 'Non-Consent') %}
                 <span class="badge bg-secondary text-white ms-2 me-1 small">{{ item.agenda_category }}</span>
@@ -122,8 +122,8 @@
                 {% endif %}
             </button>
         </h2>
-        <div id="collapse{{ item.agenda_item_number }}" class="accordion-collapse collapse"
-             aria-labelledby="heading{{ item.agenda_item_number }}" data-bs-parent="#agendaAccordion">
+        <div id="collapse{{ item.id }}" class="accordion-collapse collapse"
+             aria-labelledby="heading{{ item.id }}" data-bs-parent="#agendaAccordion">
             <div class="accordion-body">
 
                 {# PZ item detail fields from agenda PDF #}
@@ -344,4 +344,28 @@
 {% endif %}
 
 <p class="text-muted small mt-3">{{ items|length }} item(s)</p>
+{% endblock %}
+
+{% block extra_js %}
+{% if scroll_item %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var el = document.querySelector('[data-item-number="{{ scroll_item }}"]');
+    if (el) {
+        var btn = el.querySelector('[data-bs-toggle="collapse"]');
+        if (btn) {
+            btn.classList.remove('collapsed');
+            btn.setAttribute('aria-expanded', 'true');
+            var target = document.querySelector(btn.getAttribute('data-bs-target'));
+            if (target) {
+                target.classList.add('show');
+            }
+        }
+        setTimeout(function() {
+            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 150);
+    }
+});
+</script>
+{% endif %}
 {% endblock %}

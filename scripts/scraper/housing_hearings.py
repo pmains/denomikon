@@ -113,7 +113,7 @@ class HearingFinder:
                    ai.agenda_item_number, ai.agenda_item_title,
                    SUBSTR(ai.agenda_item_text, 1, 500) as excerpt
             FROM meetings m
-            JOIN agenda_items ai ON m.meeting_id = ai.meeting_id AND m.body = ai.source_body
+            JOIN agenda_items ai ON m.id = ai.meeting_db_id
             WHERE m.meeting_date >= :today AND m.meeting_date <= :end
               AND ({kw_conds})
               AND LENGTH(ai.agenda_item_title) > 15

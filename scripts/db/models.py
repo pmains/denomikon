@@ -55,6 +55,7 @@ class MeetingSupervisor(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     body = Column(String(16), nullable=False, default="", index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
+    meeting_db_id = Column(Integer, nullable=False, default=0, index=True)
     supervisor_id = Column(Integer, nullable=False, index=True)
     role = Column(String(64), nullable=True, default=None)
     present = Column(Boolean, nullable=True, default=None)
@@ -80,6 +81,7 @@ class AgendaItemVote(Base):
     body = Column(String(16), nullable=False, default="", index=True)
     agenda_item_id = Column(Integer, nullable=False, index=True, unique=True)
     meeting_id = Column(String(32), nullable=False, index=True)
+    meeting_db_id = Column(Integer, nullable=False, default=0, index=True)
     agenda_item_number = Column(String(32), nullable=False, index=True)
     c_number = Column(String(32), nullable=True, default=None, index=True)
     c_number_base = Column(String(48), nullable=True, default=None, index=True)
@@ -202,6 +204,7 @@ class PZItemDetail(Base):
     body = Column(String(16), nullable=False, default="", index=True)
     agenda_item_id = Column(Integer, nullable=True, default=None, index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
+    meeting_db_id = Column(Integer, nullable=False, default=0, index=True)
     agenda_item_number = Column(Integer, nullable=False)
     case_number = Column(String(32), nullable=False, default="", index=True)
     district = Column(String(32), nullable=True, default=None)
@@ -230,6 +233,7 @@ class CaseEvent(Base):
     body = Column(String(16), nullable=False, default="", index=True)
     case_id = Column(Integer, nullable=False, index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
+    meeting_db_id = Column(Integer, nullable=False, default=0, index=True)
     agenda_item_id = Column(Integer, nullable=True, default=None)
     source = Column(String(16), nullable=False, default="")
     event_type = Column(String(32), nullable=False, default="")
@@ -246,6 +250,7 @@ class AgendaItem(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     body = Column(String(16), nullable=False, default="", index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
+    meeting_db_id = Column(Integer, nullable=False, default=0, index=True)
     agenda_item_number = Column(String(32), nullable=False, default="", index=True)
     agenda_item_id = Column(String(128), nullable=False, unique=True)
     agenda_item_title = Column(Text, nullable=False, default="")
@@ -310,6 +315,7 @@ class MeetingAttendance(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     body = Column(String(16), nullable=False, default="", index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
+    meeting_db_id = Column(Integer, nullable=False, default=0, index=True)
     member_id = Column(Integer, nullable=False, index=True)
     attendance_status = Column(
         String(24), nullable=False, default="unknown",
@@ -367,6 +373,7 @@ class ExecutiveSessionParticipant(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     body = Column(String(16), nullable=False, default="", index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
+    meeting_db_id = Column(Integer, nullable=False, default=0, index=True)
     person_name = Column(String(128), nullable=False, index=True)
     normalized_name = Column(String(128), nullable=False, index=True)
     role_or_title = Column(String(128), nullable=True, default=None)
@@ -404,6 +411,7 @@ class SupportingDocument(Base):
     body = Column(String(16), nullable=False, default="", index=True)
     agenda_item_id = Column(Integer, nullable=False, index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
+    meeting_db_id = Column(Integer, nullable=False, default=0, index=True)
     agenda_item_number = Column(String(32), nullable=False, default="", index=True)
     c_number = Column(String(32), nullable=True, default=None, index=True)
     c_number_base = Column(String(48), nullable=True, default=None, index=True)
@@ -483,6 +491,37 @@ class PublicBody(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     __table_args__ = (UniqueConstraint("jurisdiction_id", "slug", name="uq_public_body_slug"),)
+
+    @property
+    def display_name(self) -> str:
+        """Short display name with jurisdiction prefix stripped.
+
+        Since jurisdiction is shown in a separate column, this avoids
+        redundancy like "Avondale City Council" when "City Council" suffices.
+        Computed dynamically — never goes stale if the jurisdiction is renamed.
+        """
+        if not self.name:
+            return self.body_code or ""
+        # Strip known jurisdiction name prefixes
+        for prefix in ["Maricopa County ", "City of ", "Town of "]:
+            if self.name.startswith(prefix):
+                # Strip the city name after the prefix (e.g. "City of Avondale ")
+                # The full name is like "City of Avondale City Council"
+                # Actually most bodies have names like "Avondale City Council"
+                # Try: strip everything up to and including the first space after the prefix
+                pass
+        # Simpler approach: the name is typically "{Jurisdiction} {Body}"
+        # Jurisdiction names are single words (except "Maricopa County", "Paradise Valley", "Queen Creek", "El Mirage")
+        multi_word_jurs = {"Maricopa County", "Paradise Valley", "Queen Creek", "El Mirage"}
+        for jur_name in sorted(multi_word_jurs, key=len, reverse=True):
+            prefix = jur_name + " "
+            if self.name.startswith(prefix):
+                return self.name[len(prefix):]
+        # Single-word jurisdictions: strip first word
+        parts = self.name.split(" ", 1)
+        if len(parts) > 1:
+            return parts[1]
+        return self.name
 
 
 class BodySeat(Base):

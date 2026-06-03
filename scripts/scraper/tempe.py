@@ -46,6 +46,7 @@ MEETING_TYPE_BODY_MAP = {
     113: "tempe-rmt",   # Risk Management Trust Board
     114: "tempe-jrc",   # Joint Review Committee Regular
     115: "tempe-jrc",   # Joint Review Committee Study
+    116: "tempe-aviation-commission",  # Aviation Commission
 }
 
 # Mapping from meeting type ID to our body code
@@ -54,11 +55,12 @@ ONBASE_TYPE_TO_BODY = {
     101: "tempe-cc",
     106: "tempe-cc",
     102: "tempe-cc",
+    116: "tempe-aviation-commission",
 }
 
 
 # Default set of OnBase meeting type IDs to search for all Tempe bodies
-DEFAULT_TYPE_IDS = [109, 101, 106, 102, 104, 105, 110, 111, 112, 107, 108, 113, 114, 115]
+DEFAULT_TYPE_IDS = [109, 101, 106, 102, 104, 105, 110, 111, 112, 107, 108, 113, 114, 115, 116]
 
 # Shortcut names for commonly-used body groups
 BODY_GROUPS = {

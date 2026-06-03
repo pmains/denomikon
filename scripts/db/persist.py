@@ -31,6 +31,11 @@ _KNOWN_FIRST_NAMES = frozenset({
     "bill", "clint", "steve", "thomas", "debbie", "kate", "kelly",
     "jen", "brooke", "jennifer", "nikki", "arlene", "doreen", "berdetta",
     "randy", "corey", "joel", "jack", "lucas", "lily", "erik", "spike",
+    # Common test-friendly and data names
+    "alice", "bob", "david", "michael", "james", "robert", "mary",
+    "linda", "patricia", "barbara", "elizabeth", "susan", "jessica",
+    "sarah", "karen", "nancy", "lisa", "betty", "margaret", "sandra",
+    "ashley", "kimberly", "emily", "donna", "michelle", "dorothy",
     "jimmy", "jay", "greg", "kevin", "francisca", "jan", "mihai", "linda",
     "alex", "warren", "derrik", "mitchell", "jackie", "denny",
     "tom", "john", "jane", "od",
@@ -42,6 +47,10 @@ _KNOWN_LAST_NAMES = frozenset({
     "ellis", "orlando", "harris", "poston", "hawkins", "sehgal",
     "garcia", "bivens", "carroll", "reed", "hernandez", "korte",
     "briggs", "brown", "hackel", "udall", "keim", "hodge",
+    # Test fixture names and common last names
+    "amberg", "chin", "keating", "smith", "jones", "doe",
+    "taylor", "miller", "wilson", "moore", "anderson", "thomas",
+    "jackson", "white", "harris", "martin", "thompson", "clark",
     "williamson", "woods", "arredondo", "garlid", "navarro", "shah",
     "ballesteros", "gage", "starr", "evans", "cegar", "johnson",
     "jones", "valenzuela", "lesko", "galvin", "stewart", "lake",
@@ -50,6 +59,7 @@ _KNOWN_LAST_NAMES = frozenset({
     "baker", "curley", "landolt", "lindblom", "swart", "arnett",
     "danzeisen", "montoya", "leighton", "toma", "milhaven", "finter",
     "whitney", "rochwalik", "schlosser", "chucri", "hickman", "gallardo",
+    "fackler", "kurooka", "lamp", "lerner", "melcher", "senat", "williams", "justice", "davis",
 })
 
 
@@ -335,6 +345,18 @@ def persist_meeting(
     inserted_item_count = 0
     inserted_doc_count = 0
 
+    # Look up the meeting's PK for meeting_db_id references
+    meeting_row = session.execute(
+        select(Meeting.id)
+        .where(Meeting.body == body, Meeting.meeting_id == meeting_id)
+    ).scalar_one_or_none()
+    if meeting_row is None:
+        raise ValueError(
+            f"Meeting not found: body={body} meeting_id={meeting_id}. "
+            f"Call upsert_meeting() first."
+        )
+    meeting_db_id_val = meeting_row
+
     # Delete existing rows for this meeting within body scope
     session.execute(
         AgendaItem.__table__.delete().where(
@@ -363,6 +385,7 @@ def persist_meeting(
         item = AgendaItem(
             body=body,
             meeting_id=meeting_id,
+            meeting_db_id=meeting_db_id_val,
             agenda_item_number=str(item_dict.get("agenda_item_number", "0") or "0"),
             agenda_item_id=aii,
             agenda_item_title=item_dict.get("agenda_item_title", ""),
@@ -389,6 +412,7 @@ def persist_meeting(
                 body=body,
                 agenda_item_id=doc_dict.get("agenda_item_id", 0),
                 meeting_id=meeting_id,
+                meeting_db_id=meeting_db_id_val,
                 agenda_item_number=str(doc_dict.get("agenda_item_number", "0") or "0"),
                 c_number=doc_dict.get("c_number"),
                 c_number_base=doc_dict.get("c_number_base"),
@@ -409,8 +433,7 @@ def persist_meeting(
     # Delete existing CaseEvent records for this meeting (idempotency)
     session.execute(
         CaseEvent.__table__.delete().where(
-            CaseEvent.body == body,
-            CaseEvent.meeting_id == meeting_id,
+            CaseEvent.meeting_db_id == meeting_db_id_val,
         )
     )
     session.flush()
@@ -422,7 +445,7 @@ def persist_meeting(
         source_body = (item_dict.get("source_body") or "").strip()
         item_source = "PZ" if "planning" in source_body.lower() else "BOS"
         _upsert_case_and_event(
-            session, meeting_id, meeting_date, item_dict, source=item_source
+            session, meeting_db_id_val, meeting_id, meeting_date, item_dict, body, source=item_source
         )
 
     session.commit()
@@ -430,9 +453,11 @@ def persist_meeting(
 
 def _upsert_case_and_event(
     session: Session,
+    meeting_db_id: int,
     meeting_id: str,
     meeting_date: str,
     item_dict: dict,
+    body: str,
     source: str = "BOS",
 ) -> Optional[Case]:
     """Upsert a Case record and create a CaseEvent for an agenda item.
@@ -480,6 +505,8 @@ def _upsert_case_and_event(
     event = CaseEvent(
         case_id=case.id,
         meeting_id=meeting_id,
+        meeting_db_id=meeting_db_id,
+        body=body,
         agenda_item_id=agenda_item_db_id,
         source=source,
         event_type="agenda" if source == "BOS" else "hearing",
@@ -742,6 +769,7 @@ def persist_votes(
             meeting_date = date.fromisoformat(meeting_row.meeting_date)
         except (ValueError, TypeError):
             pass
+    meeting_db_id_val = meeting_row.id if meeting_row else 0
 
     # 1. Upsert supervisors (with name validation)
     supervisor_map: dict[str, int] = {}
@@ -828,6 +856,7 @@ def persist_votes(
         ms = MeetingSupervisor(
             body=body,
             meeting_id=meeting_id,
+            meeting_db_id=meeting_db_id_val,
             supervisor_id=sup_id,
             role=sup.get("role"),
             present=sup.get("present", True),
@@ -862,6 +891,7 @@ def persist_votes(
             body=body,
             agenda_item_id=db_agenda_item_id,
             meeting_id=meeting_id,
+            meeting_db_id=meeting_db_id_val,
             agenda_item_number=item_number,
             c_number=vote.get("c_number"),
             c_number_base=vote.get("c_number_base"),

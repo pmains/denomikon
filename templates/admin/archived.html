@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Admin — Archived{% endblock %}
+{% block content %}
+<div class="container-fluid mt-3">
+  <h1>Admin</h1>
+  {% include "admin/_nav.html" %}
+
+  {% if archived %}
+    {% for article in archived %}
+    <div class="card mb-2">
+      <div class="card-body py-2">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            <a href="/admin/articles/{{ article.id }}/edit" class="fw-bold text-decoration-none">{{ article.title[:80] }}{% if article.title|length > 80 %}…{% endif %}</a>
+            <small class="text-muted ms-2">{{ article.archived_at.strftime('%b %d %Y') if article.archived_at else '' }}</small>
+          </div>
+          <div class="d-flex gap-1 flex-shrink-0">
+            <a href="/admin/articles/{{ article.id }}/edit" class="btn btn-sm btn-outline-primary">Edit</a>
+            <form method="POST" action="/admin/articles/{{ article.id }}/delete" style="display:inline" onsubmit="return confirm('Permanently delete?')">
+              <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="text-muted">No archived articles.</p>
+  {% endif %}
+</div>
+{% endblock %}

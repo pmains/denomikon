@@ -48,18 +48,18 @@ HEADERS = {
 # Maps CivicClerk EventCategory id → (slug, code) tuple.
 #
 # Many category IDs map to the same body slug (e.g. Regular Council Meeting,
-# Council Work Session, Special Council Meeting all → "surprise-city-council").
+# Council Work Session, Special Council Meeting all → "surprise-cc").
 # The second tuple element is the short body code for use in tables.
 
 CATEGORY_SLUG_MAP: dict[int, tuple[str, str]] = {
     # City Council meetings (multiple category types → same body)
-    38: ("surprise-city-council", "surprise-cc"),  # Regular City Council Meeting
-    39: ("surprise-city-council", "surprise-cc"),  # Regular City Council Work Session
-    40: ("surprise-city-council", "surprise-cc"),  # Special City Council Meeting
-    41: ("surprise-city-council", "surprise-cc"),  # Special City Council Work Session
+    38: ("surprise-cc", "surprise-cc"),  # Regular City Council Meeting
+    39: ("surprise-cc", "surprise-cc"),  # Regular City Council Work Session
+    40: ("surprise-cc", "surprise-cc"),  # Special City Council Meeting
+    41: ("surprise-cc", "surprise-cc"),  # Special City Council Work Session
     # Planning and Zoning
-    34: ("surprise-planning-zoning", "surprise-pz"),      # P&Z Commission
-    35: ("surprise-planning-zoning", "surprise-pz"),      # P&Z Commission Work Session
+    34: ("surprise-pz", "surprise-pz"),      # P&Z Commission
+    35: ("surprise-pz", "surprise-pz"),      # P&Z Commission Work Session
     # Boards and Commissions
     27: ("surprise-arts-culture", "surprise-arts"),       # Arts and Cultural Advisory Commission
     28: ("surprise-cfd", "surprise-cfd"),                 # CFD Commission
@@ -96,8 +96,8 @@ CATEGORY_SLUG_MAP: dict[int, tuple[str, str]] = {
 
 # Default body slugs to sync when --bodies is not specified
 DEFAULT_BODY_SLUGS = [
-    "surprise-city-council",
-    "surprise-planning-zoning",
+    "surprise-cc",
+    "surprise-pz",
 ]
 
 # File type mapping
@@ -154,12 +154,12 @@ def _resolve_body_from_name(category_name: str) -> tuple[str, str]:
     name_lower = category_name.lower().strip()
     # Direct name lookups
     mapping = {
-        "regular city council meeting": ("surprise-city-council", "surprise-cc"),
-        "regular city council work session": ("surprise-city-council", "surprise-cc"),
-        "special city council meeting": ("surprise-city-council", "surprise-cc"),
-        "special city council work session": ("surprise-city-council", "surprise-cc"),
-        "planning and zoning commission": ("surprise-planning-zoning", "surprise-pz"),
-        "planning and zoning commission work session": ("surprise-planning-zoning", "surprise-pz"),
+        "regular city council meeting": ("surprise-cc", "surprise-cc"),
+        "regular city council work session": ("surprise-cc", "surprise-cc"),
+        "special city council meeting": ("surprise-cc", "surprise-cc"),
+        "special city council work session": ("surprise-cc", "surprise-cc"),
+        "planning and zoning commission": ("surprise-pz", "surprise-pz"),
+        "planning and zoning commission work session": ("surprise-pz", "surprise-pz"),
         "arts and cultural advisory commission": ("surprise-arts-culture", "surprise-arts"),
         "cfd commission meeting": ("surprise-cfd", "surprise-cfd"),
         "parks and recreation commission": ("surprise-parks-recreation", "surprise-parks"),
@@ -233,7 +233,7 @@ def fetch_categories() -> list[dict]:
 def build_body_slug_map() -> dict[str, int]:
     """Build a mapping of body slug → CivicClerk category ID.
 
-    Returns dict like {"surprise-city-council": 38, ...}.
+    Returns dict like {"surprise-cc": 38, ...}.
     Note: some body slugs map to multiple category IDs. This returns
     the first match for each slug.
     """
@@ -255,7 +255,7 @@ def build_body_slug_map() -> dict[str, int]:
 def get_category_ids_for_body_slugs(body_slugs: list[str]) -> list[int]:
     """Resolve body slugs to CivicClerk category IDs for filtering.
 
-    Handles the one-to-many mapping (e.g. "surprise-city-council" maps
+    Handles the one-to-many mapping (e.g. "surprise-cc" maps
     to category IDs 38, 39, 40, 41).
     """
     ids: list[int] = []
@@ -664,7 +664,7 @@ def discover_meetings(
     end_date : str, optional
         End date in YYYY-MM-DD format.
     body_slugs : list of str, optional
-        Body slugs to filter by (e.g. ["surprise-city-council"]).
+        Body slugs to filter by (e.g. ["surprise-cc"]).
         Defaults to ``DEFAULT_BODY_SLUGS``.
     fetch_detail : bool
         Whether to fetch full event detail for each meeting to get
@@ -1122,7 +1122,7 @@ def main():
     meetings = search_surprise_meetings(
         start_date=start,
         end_date=end,
-        body_slugs=["surprise-city-council"],
+        body_slugs=["surprise-cc"],
     )
     log.info("   Found %d meetings", len(meetings))
     for m in meetings[:5]:

@@ -22,6 +22,9 @@
             <option value="surprise" {% if filter_jurisdiction == 'surprise' %}selected{% endif %}>City of Surprise</option>
             <option value="tempe" {% if filter_jurisdiction == 'tempe' %}selected{% endif %}>City of Tempe</option>
             <option value="gilbert" {% if filter_jurisdiction == 'gilbert' %}selected{% endif %}>Town of Gilbert</option>
+            <option value="tucson" {% if filter_jurisdiction == 'tucson' %}selected{% endif %}>City of Tucson</option>
+            <option value="paradise-valley" {% if filter_jurisdiction == 'paradise-valley' %}selected{% endif %}>Town of Paradise Valley</option>
+            <option value="queen-creek" {% if filter_jurisdiction == 'queen-creek' %}selected{% endif %}>Town of Queen Creek</option>
         </select>
     </div>
     <div class="col-md-2">
@@ -59,17 +62,25 @@
             </optgroup>
             <optgroup label="City of Tempe">
             <option value="tempe-cc" {% if filter_body == 'tempe-cc' %}selected{% endif %}>City Council</option>
-            <option value="tempe-drc" {% if filter_body == 'tempe-drc' %}selected{% endif %}>Dev Review Comm</option>
+            <option value="tempe-development-review-commission" {% if filter_body == 'tempe-development-review-commission' %}selected{% endif %}>Dev Review Comm</option>
             <option value="tempe-boa" {% if filter_body == 'tempe-boa' %}selected{% endif %}>Board of Adjustment</option>
             <option value="tempe-hpc" {% if filter_body == 'tempe-hpc' %}selected{% endif %}>Historic Preservation</option>
             <option value="tempe-ha" {% if filter_body == 'tempe-ha' %}selected{% endif %}>Housing Authority</option>
             <option value="tempe-rio" {% if filter_body == 'tempe-rio' %}selected{% endif %}>Rio Salado CFD</option>
             <option value="tempe-rmt" {% if filter_body == 'tempe-rmt' %}selected{% endif %}>Risk Mgmt Trust</option>
             <option value="tempe-jrc" {% if filter_body == 'tempe-jrc' %}selected{% endif %}>Joint Review Comm</option>
+            <option value="tempe-animal-welfare-subcommittee" {% if filter_body == 'tempe-animal-welfare-subcommittee' %}selected{% endif %}>Animal Welfare Subcommittee</option>
+            <option value="tempe-community-engagement-subcommittee" {% if filter_body == 'tempe-community-engagement-subcommittee' %}selected{% endif %}>Community Engagement Subcommittee</option>
+            <option value="tempe-drink-spiking-subcommittee" {% if filter_body == 'tempe-drink-spiking-subcommittee' %}selected{% endif %}>Drink Spiking Subcommittee</option>
+            <option value="tempe-mixed-use-space-subcommittee" {% if filter_body == 'tempe-mixed-use-space-subcommittee' %}selected{% endif %}>Mixed-Use Space Subcommittee</option>
+            <option value="tempe-mobility-safety-subcommittee" {% if filter_body == 'tempe-mobility-safety-subcommittee' %}selected{% endif %}>Mobility Safety Subcommittee</option>
+            <option value="tempe-town-lake-subcommittee" {% if filter_body == 'tempe-town-lake-subcommittee' %}selected{% endif %}>Town Lake Subcommittee</option>
+            <option value="tempe-term-limits-subcommittee" {% if filter_body == 'tempe-term-limits-subcommittee' %}selected{% endif %}>Term Limits Subcommittee</option>
+            <option value="tempe-advocacy-review-subcommittee" {% if filter_body == 'tempe-advocacy-review-subcommittee' %}selected{% endif %}>Advocacy Review Subcommittee</option>
             </optgroup>
             <optgroup label="City of Mesa">
             <option value="mesa-cc" {% if filter_body == 'mesa-cc' %}selected{% endif %}>City Council</option>
-            <option value="mesa-pz" {% if filter_body == 'mesa-pz' %}selected{% endif %}>Planning &amp; Zoning</option>
+            <option value="mesa-planning-zoning" {% if filter_body == 'mesa-planning-zoning' %}selected{% endif %}>Planning &amp; Zoning</option>
             <option value="mesa-drb" {% if filter_body == 'mesa-drb' %}selected{% endif %}>Design Review Board</option>
             <option value="mesa-boa" {% if filter_body == 'mesa-boa' %}selected{% endif %}>Board of Adjustment</option>
             <option value="mesa-hpb" {% if filter_body == 'mesa-hpb' %}selected{% endif %}>Historic Preservation</option>
@@ -79,7 +90,7 @@
             </optgroup>
             <optgroup label="City of Chandler">
             <option value="chandler-cc" {% if filter_body == 'chandler-cc' %}selected{% endif %}>City Council</option>
-            <option value="chandler-pz" {% if filter_body == 'chandler-pz' %}selected{% endif %}>Planning &amp; Zoning</option>
+            <option value="chandler-planning-zoning-commission" {% if filter_body == 'chandler-planning-zoning-commission' %}selected{% endif %}>Planning &amp; Zoning</option>
             <option value="chandler-drc" {% if filter_body == 'chandler-drc' %}selected{% endif %}>Dev Review Comm.</option>
             <option value="chandler-boa" {% if filter_body == 'chandler-boa' %}selected{% endif %}>Board of Adjustment</option>
             <option value="chandler-hpc" {% if filter_body == 'chandler-hpc' %}selected{% endif %}>Historic Preservation</option>
@@ -119,7 +130,7 @@
             <option value="scottsdale-baba" {% if filter_body == 'scottsdale-baba' %}selected{% endif %}>Bldg Appeals Board</option>
             <optgroup label="City of Peoria">
             <option value="peoria-cc" {% if filter_body == 'peoria-cc' %}selected{% endif %}>City Council</option>
-            <option value="peoria-pz" {% if filter_body == 'peoria-pz' %}selected{% endif %}>Planning &amp; Zoning</option>
+            <option value="peoria-planning-zoning" {% if filter_body == 'peoria-planning-zoning' %}selected{% endif %}>Planning &amp; Zoning</option>
             <option value="peoria-boa" {% if filter_body == 'peoria-boa' %}selected{% endif %}>Board of Adjustment</option>
             <option value="peoria-sub" {% if filter_body == 'peoria-sub' %}selected{% endif %}>Subcommittee</option>
             </optgroup>
@@ -127,6 +138,34 @@
             <option value="glendale-cc" {% if filter_body == 'glendale-cc' %}selected{% endif %}>City Council</option>
             <option value="glendale-pc" {% if filter_body == 'glendale-pc' %}selected{% endif %}>Planning Commission</option>
             <option value="glendale-boa" {% if filter_body == 'glendale-boa' %}selected{% endif %}>Board of Adjustment</option>
+            <option value="glendale-hpc" {% if filter_body == 'glendale-hpc' %}selected{% endif %}>Historic Preservation Commission</option>
+            <option value="glendale-ccr" {% if filter_body == 'glendale-ccr' %}selected{% endif %}>Code Review Commission</option>
+            <option value="glendale-psprb" {% if filter_body == 'glendale-psprb' %}selected{% endif %}>PSPRS Board</option>
+            <option value="glendale-ac" {% if filter_body == 'glendale-ac' %}selected{% endif %}>Arts Commission</option>
+            <option value="glendale-cocc" {% if filter_body == 'glendale-cocc' %}selected{% endif %}>Commission on Community &amp; Culture</option>
+            <option value="glendale-cdc" {% if filter_body == 'glendale-cdc' %}selected{% endif %}>Commission on Diverse Cultures</option>
+            <option value="glendale-cmpd" {% if filter_body == 'glendale-cmpd' %}selected{% endif %}>Commission on Persons with Disabilities</option>
+            <option value="glendale-lab" {% if filter_body == 'glendale-lab' %}selected{% endif %}>Library Advisory Board</option>
+            <option value="glendale-parac" {% if filter_body == 'glendale-parac' %}selected{% endif %}>Parks &amp; Rec Advisory Commission</option>
+            <option value="glendale-citoc" {% if filter_body == 'glendale-citoc' %}selected{% endif %}>Transportation Oversight Commission</option>
+            <option value="glendale-ciuac" {% if filter_body == 'glendale-ciuac' %}selected{% endif %}>Utility Advisory Commission</option>
+            <option value="glendale-avac" {% if filter_body == 'glendale-avac' %}selected{% endif %}>Aviation Advisory Commission</option>
+            <option value="glendale-catac" {% if filter_body == 'glendale-catac' %}selected{% endif %}>Active Transportation Advisory Commission</option>
+            <option value="glendale-cbac" {% if filter_body == 'glendale-cbac' %}selected{% endif %}>Bicycle Advisory Commission</option>
+            <option value="glendale-codac" {% if filter_body == 'glendale-codac' %}selected{% endif %}>Community Dev Advisory Committee</option>
+            <option value="glendale-gsc" {% if filter_body == 'glendale-gsc' %}selected{% endif %}>Government Services Committee</option>
+            <option value="glendale-bc" {% if filter_body == 'glendale-bc' %}selected{% endif %}>Bond Committee</option>
+            <option value="glendale-ccc" {% if filter_body == 'glendale-ccc' %}selected{% endif %}>Council Compensation Committee</option>
+            <option value="glendale-pb" {% if filter_body == 'glendale-pb' %}selected{% endif %}>Personnel Board</option>
+            <option value="glendale-ida" {% if filter_body == 'glendale-ida' %}selected{% endif %}>Industrial Dev Authority</option>
+            <option value="glendale-mpc" {% if filter_body == 'glendale-mpc' %}selected{% endif %}>Municipal Property Corp</option>
+            <option value="glendale-rmtfb" {% if filter_body == 'glendale-rmtfb' %}selected{% endif %}>Risk Mgmt Trust Fund Board</option>
+            <option value="glendale-wctfb" {% if filter_body == 'glendale-wctfb' %}selected{% endif %}>Workers' Comp Trust Fund Board</option>
+            <option value="glendale-hrc" {% if filter_body == 'glendale-hrc' %}selected{% endif %}>Human Relations Commission</option>
+            <option value="glendale-jsab" {% if filter_body == 'glendale-jsab' %}selected{% endif %}>Judicial Selection Advisory Board</option>
+            <option value="glendale-ah" {% if filter_body == 'glendale-ah' %}selected{% endif %}>Abatement Hearing Officer</option>
+            <option value="glendale-bcc" {% if filter_body == 'glendale-bcc' %}selected{% endif %}>Business Council</option>
+            <option value="glendale-wvdv" {% if filter_body == 'glendale-wvdv' %}selected{% endif %}>West Valley DV Task Force</option>
             </optgroup>
             <optgroup label="City of Buckeye">
             <option value="buckeye-cc" {% if filter_body == 'buckeye-cc' %}selected{% endif %}>City Council</option>
@@ -139,13 +178,20 @@
             </optgroup>
             <optgroup label="City of Avondale">
             <option value="avondale-cc" {% if filter_body == 'avondale-cc' %}selected{% endif %}>City Council</option>
-            <option value="avondale-pz" {% if filter_body == 'avondale-pz' %}selected{% endif %}>Planning &amp; Zoning</option>
+            <option value="avondale-planning-zoning" {% if filter_body == 'avondale-planning-zoning' %}selected{% endif %}>Planning &amp; Zoning</option>
             <option value="avondale-boa" {% if filter_body == 'avondale-boa' %}selected{% endif %}>Board of Adjustment</option>
             </optgroup>
             <optgroup label="City of El Mirage">
             <option value="el-mirage-cc" {% if filter_body == 'el-mirage-cc' %}selected{% endif %}>City Council</option>
-            <option value="el-mirage-pz" {% if filter_body == 'el-mirage-pz' %}selected{% endif %}>Planning &amp; Zoning</option>
+            <option value="el-mirage-planning-zoning" {% if filter_body == 'el-mirage-planning-zoning' %}selected{% endif %}>Planning &amp; Zoning</option>
             <option value="el-mirage-boa" {% if filter_body == 'el-mirage-boa' %}selected{% endif %}>Board of Adjustment</option>
+            <option value="el-mirage-yac" {% if filter_body == 'el-mirage-yac' %}selected{% endif %}>Youth Advisory Commission</option>
+            <option value="el-mirage-psprs" {% if filter_body == 'el-mirage-psprs' %}selected{% endif %}>PSPRS Board</option>
+            <option value="el-mirage-dusd" {% if filter_body == 'el-mirage-dusd' %}selected{% endif %}>DUSD Subcommittee</option>
+            <option value="el-mirage-er" {% if filter_body == 'el-mirage-er' %}selected{% endif %}>Employee Relations Subcommittee</option>
+            <option value="el-mirage-prtf" {% if filter_body == 'el-mirage-prtf' %}selected{% endif %}>Parks &amp; Rec Task Force</option>
+            <option value="el-mirage-pss" {% if filter_body == 'el-mirage-pss' %}selected{% endif %}>Public Safety Subcommittee</option>
+            <option value="el-mirage-rec" {% if filter_body == 'el-mirage-rec' %}selected{% endif %}>Recreation Subcommittee</option>
             </optgroup>
             <optgroup label="City of Goodyear">
             <option value="goodyear-cc" {% if filter_body == 'goodyear-cc' %}selected{% endif %}>City Council</option>
@@ -155,9 +201,22 @@
             <option value="goodyear-yc" {% if filter_body == 'goodyear-yc' %}selected{% endif %}>Youth Comm</option>
             <option value="goodyear-audit" {% if filter_body == 'goodyear-audit' %}selected{% endif %}>Audit</option>
             </optgroup>
-                        <optgroup label="City of Phoenix">
+            <optgroup label="City of Phoenix">
             <option value="phoenix-cc" {% if filter_body == 'phoenix-cc' %}selected{% endif %}>City Council</option>
             <option value="phoenix-pc" {% if filter_body == 'phoenix-pc' %}selected{% endif %}>Planning Commission</option>
+            <option value="phoenix-village-planning" {% if filter_body == 'phoenix-village-planning' %}selected{% endif %}>Village Planning Committees</option>
+            <option value="phoenix-historic-preservation" {% if filter_body == 'phoenix-historic-preservation' %}selected{% endif %}>Historic Preservation</option>
+            <option value="phoenix-zoning-adjustment" {% if filter_body == 'phoenix-zoning-adjustment' %}selected{% endif %}>Zoning Adjustment</option>
+            <option value="phoenix-human-services" {% if filter_body == 'phoenix-human-services' %}selected{% endif %}>Human Services Comm</option>
+            <option value="phoenix-human-relations" {% if filter_body == 'phoenix-human-relations' %}selected{% endif %}>Human Relations Comm</option>
+            <option value="phoenix-environmental-quality" {% if filter_body == 'phoenix-environmental-quality' %}selected{% endif %}>Environmental Quality</option>
+            <option value="phoenix-disability-issues" {% if filter_body == 'phoenix-disability-issues' %}selected{% endif %}>Disability Issues Comm</option>
+            <option value="phoenix-womens-commission" {% if filter_body == 'phoenix-womens-commission' %}selected{% endif %}>Women's Commission</option>
+            <option value="phoenix-heritage-commission" {% if filter_body == 'phoenix-heritage-commission' %}selected{% endif %}>Heritage Commission</option>
+            <option value="phoenix-license-appeal" {% if filter_body == 'phoenix-license-appeal' %}selected{% endif %}>License Appeal Board</option>
+            <option value="phoenix-fire-pension" {% if filter_body == 'phoenix-fire-pension' %}selected{% endif %}>Fire Pension Board</option>
+            <option value="phoenix-police-pension" {% if filter_body == 'phoenix-police-pension' %}selected{% endif %}>Police Pension Board</option>
+            <option value="phoenix-copers-board" {% if filter_body == 'phoenix-copers-board' %}selected{% endif %}>COPERS Board</option>
             <option value="phoenix-cs" {% if filter_body == 'phoenix-cs' %}selected{% endif %}>Community Services Sub</option>
             <option value="phoenix-ti" {% if filter_body == 'phoenix-ti' %}selected{% endif %}>Transportation Sub</option>
             <option value="phoenix-ed" {% if filter_body == 'phoenix-ed' %}selected{% endif %}>Economic Dev Sub</option>
@@ -165,6 +224,18 @@
             </optgroup>
             <optgroup label="City of Surprise">
             <option value="surprise-cc" {% if filter_body == 'surprise-cc' %}selected{% endif %}>City Council</option>
+            </optgroup>
+            <optgroup label="City of Tucson">
+            <option value="tucson-cc" {% if filter_body == 'tucson-cc' %}selected{% endif %}>City Council</option>
+            <option value="tucson-pc" {% if filter_body == 'tucson-pc' %}selected{% endif %}>Planning Commission</option>
+            <option value="tucson-pha" {% if filter_body == 'tucson-pha' %}selected{% endif %}>Public Housing Authority</option>
+            </optgroup>
+            <optgroup label="Town of Paradise Valley">
+            <option value="paradise-valley-boa" {% if filter_body == 'paradise-valley-boa' %}selected{% endif %}>Board of Adjustment</option>
+            <option value="paradise-valley-pc" {% if filter_body == 'paradise-valley-pc' %}selected{% endif %}>Planning Commission</option>
+            </optgroup>
+            <optgroup label="Town of Queen Creek">
+            <option value="queen-creek-cc" {% if filter_body == 'queen-creek-cc' %}selected{% endif %}>Town Council</option>
             </optgroup>
         </select>
     </div>
@@ -221,6 +292,9 @@ var JUR_TO_LABEL = {
     "phoenix": "City of Phoenix",
     "avondale": "City of Avondale",
     "el-mirage": "City of El Mirage",
+    "tucson": "City of Tucson",
+    "paradise-valley": "Town of Paradise Valley",
+    "queen-creek": "Town of Queen Creek",
 };
 
 function filterSourceOptions() {
@@ -294,7 +368,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 <td>{{ m.meeting_date }}</td>
                 <td>{{ m.meeting_type }}</td>
                 <td><a href="/meetings?jurisdiction={{ m.jurisdiction_slug }}" class="text-decoration-none link-secondary">{{ m.jurisdiction }}</a></td>
-                <td><span class="badge bg-{{ m.source_badge }}{% if m.source == 'IDA' %} text-dark{% endif %}">{{ m.source }}</span></td>
+                <td><span class="badge bg-{{ m.source_badge }}">{{ m.source }}</span></td>
                 <td>
                     <span class="badge bg-{{ m.badge_class }}">{{ m.sync_status }}</span>
                 </td>

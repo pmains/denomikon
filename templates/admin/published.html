@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Admin — Published{% endblock %}
+{% block content %}
+<div class="container-fluid mt-3">
+  <h1>Admin</h1>
+  {% include "admin/_nav.html" %}
+
+  {% if published %}
+    {% for article in published %}
+    <div class="card mb-2">
+      <div class="card-body py-2">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            {% if article.is_featured %}<span class="badge bg-warning text-dark me-1" title="Featured">★</span>{% endif %}
+            <a href="/admin/articles/{{ article.id }}/edit" class="fw-bold text-decoration-none">{{ article.title[:80] }}{% if article.title|length > 80 %}…{% endif %}</a>
+            <small class="text-muted ms-2">{{ article.published_at.strftime('%b %d %Y') if article.published_at else '' }}</small>
+            {% if article.tags %}
+              {% for t in article.tags %}<span class="badge bg-light text-dark ms-1">{{ t.name }}</span>{% endfor %}
+            {% endif %}
+          </div>
+          <div class="d-flex gap-1 flex-shrink-0">
+            <form method="POST" action="/admin/articles/{{ article.id }}/feature" style="display:inline">
+              <button type="submit" class="btn btn-sm btn-outline-warning" title="Toggle featured">★</button>
+            </form>
+            <form method="POST" action="/admin/articles/{{ article.id }}/archive" style="display:inline">
+              <button type="submit" class="btn btn-sm btn-outline-secondary">Archive</button>
+            </form>
+            <form method="POST" action="/admin/skeet-drafts/create/{{ article.id }}" style="display:inline">
+              <button type="submit" class="btn btn-sm btn-outline-info" title="Create Bluesky draft">🦋</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="text-muted">No published articles.</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -196,6 +196,23 @@ MARICOPA_BOS_CONFIG = OnBaseConfig(
     source_instance_url="https://mccobagenda.databankcloud.com/AgendaOnline",
 )
 
+TUCSON_CONFIG = OnBaseConfig(
+    name="Tucson",
+    host="tucsonaz.hylandcloud.com",
+    base_path="/221agendaonline",
+    search_path="/Meetings",
+    search_method="POST",
+    csrf_required=True,
+    meeting_types={
+        "tucson-city-council": [107, 108, 109, 110, 111],
+    },
+    public_body_code="tucson-cc",
+    date_start_field="DateRangeCustomStartDate",
+    date_end_field="DateRangeCustomEndDate",
+    date_range_custom_value="11",
+    source_instance_url="https://tucsonaz.hylandcloud.com/221agendaonline",
+)
+
 
 # ──────────────────────────────────────────────
 #  Meeting listing parsing
@@ -297,6 +314,24 @@ def parse_meetings_from_html(html: str, base_url: str,
                 if qs.get("doctype") == ["3"]:
                     summary_url = a["href"]
                     break
+
+        # If none of the standard doc types matched, check for Minutes Packet (doctype=6)
+        # which is the full minutes packet used by some bodies (e.g. Tempe DRC)
+        if not minutes_url:
+            for a in anchors:
+                text_lower = a["text"].lower()
+                # Match "Minutes Packet" link (documentType=6)
+                if "minutes packet" in text_lower or "minutes" in text_lower:
+                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(a["href"]).query)
+                    if qs.get("documentType") == ["6"]:
+                        minutes_url = a["href"]
+                        break
+            if not minutes_url:
+                for a in anchors:
+                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(a["href"]).query)
+                    if qs.get("documentType") == ["6"]:
+                        minutes_url = a["href"]
+                        break
 
         source_url = agenda_url or meeting_view_url(base_url, mid)
 
@@ -746,20 +781,62 @@ def fetch_item_details_sync(config: OnBaseConfig, meeting_id: int, item_id: int)
         return ""
 
 
-def parse_item_details(html: str, meeting_id: str, body: str, agenda_item_number: str) -> list[dict]:
-    """Parse item detail HTML for supporting document links.
+def parse_item_details(html: str, meeting_id: str, body: str, agenda_item_number: str) -> tuple[list[dict], str]:
+    """Parse item detail HTML for supporting document links and item description.
 
-    Returns a list of dicts with keys:
-        body, meeting_id, agenda_item_number, document_title, document_url,
-        document_type
+    Returns a tuple of (documents, description_text) where:
+        documents: list of dicts with keys body, meeting_id, agenda_item_number,
+                   document_title, document_url, document_type
+        description_text: the full item description text from the AJAX detail
+                          page, or empty string if unavailable
     """
     from scraper.html_utils import _parse_html, _find_all, _find_one, _clean_html_text, _node_text
 
     documents = []
+    description_text = ""
     if not html:
-        return documents
+        return documents, description_text
 
     root = _parse_html(html)
+
+    # Extract item description from the detail HTML.
+    # OnBase renders the item description in a div with class
+    # "agenda-item-description" or similar. Look for the main content
+    # area that contains the full item text.
+    for desc_div in _find_all(root, "div"):
+        cls = desc_div.attrs.get("class", "")
+        if isinstance(cls, str):
+            if "agenda-item-description" in cls or "description" in cls:
+                raw = _clean_html_text(_node_text(desc_div))
+                if raw and len(raw) > 50:
+                    description_text = raw
+                    break
+        elif isinstance(cls, (list, tuple)):
+            if any("agenda-item-description" in c or "description" in c for c in cls):
+                raw = _clean_html_text(_node_text(desc_div))
+                if raw and len(raw) > 50:
+                    description_text = raw
+                    break
+
+    # Fallback: if no structured description found, extract all visible
+    # text from the detail HTML excluding script, style, and navigation.
+    if not description_text:
+        for script in _find_all(root, "script"):
+            script.decompose()
+        for style in _find_all(root, "style"):
+            style.decompose()
+        for nav in _find_all(root, "nav"):
+            nav.decompose()
+        body_tag = _find_one(root, "body") or root
+        raw = _clean_html_text(_node_text(body_tag))
+        # Remove generic OnBase chrome text
+        for boilerplate in ["OnBase Agenda Online", "Hide Media", "Home", "Meetings", "Contact",
+                            "Supporting Documents", "Item not found",
+                            "Copyright © 2015-2026 Hyland Software, Inc."]:
+            raw = raw.replace(boilerplate, "")
+        raw = " ".join(raw.split())
+        if raw and len(raw) > 50:
+            description_text = raw
 
     # Find all download links in the Supporting Documents section
     for a_tag in _find_all(root, "a"):
@@ -780,7 +857,6 @@ def parse_item_details(html: str, meeting_id: str, body: str, agenda_item_number
             from scraper.tempe import TEMPE_CONFIG
             parsed_base = urllib.parse.urlparse(TEMPE_CONFIG.base_url)
             base_path = parsed_base.path.rstrip("/")
-            # Case-insensitive check: href may have different casing than base_path
             if href.lower().startswith(base_path.lower()):
                 href = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
             else:
@@ -802,7 +878,7 @@ def parse_item_details(html: str, meeting_id: str, body: str, agenda_item_number
             "document_type": doc_type,
         })
 
-    return documents
+    return documents, description_text
 
 
 def fetch_agenda_sync(config: OnBaseConfig, meeting_id: int) -> str:

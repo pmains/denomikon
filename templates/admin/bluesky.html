@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Admin — Bluesky Drafts{% endblock %}
+{% block content %}
+<div class="container-fluid mt-3">
+  <h1>Admin</h1>
+  {% include "admin/_nav.html" %}
+
+  {% if skeet_drafts %}
+  <div class="table-responsive">
+    <table class="table table-sm align-middle">
+      <thead class="table-dark">
+        <tr>
+          <th>Status</th>
+          <th>Article</th>
+          <th style="width:40%">Draft Text</th>
+          <th>Image</th>
+          <th>Created</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in skeet_drafts %}
+        <tr class="{% if d.status == 'posted' %}table-success{% elif d.status == 'skipped' %}table-secondary{% elif d.status == 'approved' %}table-info{% endif %}">
+          <td>
+            <span class="badge {% if d.status == 'draft' %}bg-secondary{% elif d.status == 'approved' %}bg-primary{% elif d.status == 'posted' %}bg-success{% elif d.status == 'skipped' %}bg-light text-dark{% endif %}">
+              {{ d.status }}
+            </span>
+          </td>
+          <td>
+            {% if d.article %}
+              <a href="/admin/articles/{{ d.article.id }}/edit" class="text-decoration-none">
+                {{ d.article.title[:60] }}{% if d.article.title|length > 60 %}…{% endif %}
+              </a>
+              <br>
+              <small class="text-muted">
+                <a href="https://poliscopic.com/articles/{{ d.article.slug }}" target="_blank">View</a>
+              </small>
+            {% else %}
+              <em class="text-muted">deleted</em>
+            {% endif %}
+          </td>
+          <td>
+            <form method="POST" action="/admin/skeet-drafts/{{ d.id }}/edit" class="d-flex flex-column gap-1">
+              <textarea name="draft_text" class="form-control form-control-sm" rows="2" maxlength="300" style="font-size:0.85rem">{{ d.draft_text }}</textarea>
+              <small class="text-muted"><span id="char-count-{{ d.id }}">{{ d.draft_text|length }}</span>/300</small>
+              <input type="text" name="image_path" class="form-control form-control-sm" placeholder="Image URL or path" value="{{ d.image_path }}" style="font-size:0.85rem">
+          </td>
+          <td>
+            {% if d.image_path %}
+              <img src="{{ d.image_path }}" alt="card" style="max-width:100px;max-height:56px;border-radius:4px;object-fit:cover">
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+          <td>
+            <small class="text-muted">{{ d.created_at.strftime('%b %d %H:%M') if d.created_at else '' }}</small>
+            {% if d.posted_at %}<br><small class="text-success">posted {{ d.posted_at.strftime('%b %d %H:%M') }}</small>{% endif %}
+          </td>
+          <td>
+            <div class="d-flex flex-wrap gap-1">
+              <button type="submit" name="action" value="draft" class="btn btn-outline-secondary btn-sm" title="Save changes"><i class="bi bi-save"></i></button>
+              <button type="submit" name="action" value="skip" class="btn btn-outline-warning btn-sm" title="Skip"><i class="bi bi-x-lg"></i></button>
+            </form>
+            {% if d.status in ('approved', 'draft') %}
+            <button type="button" class="btn btn-success btn-sm mt-1"
+                    data-action="post"
+                    data-url="/admin/skeet-drafts/{{ d.id }}/post"
+                    onclick="openModal(this)">Post Now</button>
+            {% endif %}
+            <button type="button" class="btn btn-outline-danger btn-sm mt-1"
+                    data-action="delete"
+                    data-url="/admin/skeet-drafts/{{ d.id }}/delete"
+                    onclick="openModal(this)"><i class="bi bi-trash"></i></button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="alert alert-info">
+    No skeet drafts yet. <a href="/admin/articles/new">Write an article</a> first, then create a draft from the Published tab.
+  </div>
+  {% endif %}
+</div>
+
+<!-- Shared action modal -->
+<div class="modal fade" id="actionModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content">
+      <div class="modal-body text-center py-4">
+        <p id="actionModalBody" class="mb-0"></p>
+      </div>
+      <div class="modal-footer justify-content-center border-0 pt-0">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <form id="actionModalForm" method="POST" class="d-inline">
+          <button type="submit" id="actionModalSubmit" class="btn btn-sm"></button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function openModal(btn) {
+  const action = btn.dataset.action;
+  const url = btn.dataset.url;
+  const modal = new bootstrap.Modal(document.getElementById('actionModal'));
+  const form = document.getElementById('actionModalForm');
+  const submitBtn = document.getElementById('actionModalSubmit');
+  const body = document.getElementById('actionModalBody');
+
+  form.action = url;
+
+  if (action === 'delete') {
+    body.textContent = 'Delete this draft?';
+    submitBtn.textContent = 'Delete';
+    submitBtn.className = 'btn btn-danger btn-sm';
+  } else if (action === 'post') {
+    body.textContent = 'Post this draft to Bluesky?';
+    submitBtn.textContent = 'Post';
+    submitBtn.className = 'btn btn-primary btn-sm';
+  }
+
+  modal.show();
+}
+
+// Char counter
+document.querySelectorAll('textarea[name="draft_text"]').forEach(ta => {
+  ta.addEventListener('input', function() {
+    const counter = this.closest('td').querySelector('[id^="char-count-"]');
+    if (counter) counter.textContent = this.value.length;
+  });
+});
+</script>
+{% endblock %}

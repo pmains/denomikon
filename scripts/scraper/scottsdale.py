@@ -242,6 +242,40 @@ def parse_agenda_items(pdf_bytes: bytes, meeting_id: str) -> list[dict]:
     return items
 
 
+def extract_supporting_docs(pdf_bytes: bytes) -> list[dict]:
+    """Extract supporting document URLs embedded in a Scottsdale agenda PDF.
+
+    Scottsdale agenda PDFs contain link annotations pointing to
+    eservices.scottsdaleaz.gov/cityclerk/DocumentViewer/Show/...
+    These are staff reports and backup materials for agenda items.
+    """
+    docs: list[dict] = []
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(pdf_bytes)
+        for page_num, page in enumerate(reader.pages, 1):
+            if '/Annots' not in page:
+                continue
+            for annot_ref in page['/Annots']:
+                annot = annot_ref.get_object()
+                if '/A' in annot and '/URI' in annot['/A']:
+                    uri = annot['/A']['/URI']
+                    if "eservices.scottsdaleaz.gov" in uri and "DocumentViewer" in uri:
+                        doc_id = uri.split("/")[-1] if "/" in uri else ""
+                        docs.append({
+                            "document_url": uri,
+                            "document_type": "supporting_doc",
+                            "file_extension": "pdf",
+                            "document_title": f"Supporting Document ({doc_id[:8]}...)",
+                            "page_number": page_num,
+                        })
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    return docs
+
+
 def parse_minutes_votes(pdf_bytes: bytes, meeting_id: str) -> dict:
     """Parse vote data from Scottsdale minutes PDFs.
 

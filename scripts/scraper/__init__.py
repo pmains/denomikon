@@ -14,6 +14,7 @@ from scraper.tab import *
 from scraper.ida import *
 from scraper.agendacenter import *
 from scraper.tempe import *
+from scraper.tucson import *
 from scraper.agenda_items import *
 from scraper.supporting_docs import *
 from scraper.votes import *
@@ -45,6 +46,7 @@ from scraper.onbase import (
     OnBaseConfig,
     OnBaseAgendaClient,
     TEMPE_CONFIG,
+    TUCSON_CONFIG,
     MARICOPA_BOS_CONFIG,
     parse_meetings_from_html,
     parse_agenda_html,
@@ -61,6 +63,7 @@ __all__ = [
     "OnBaseAgendaClient",
     "OnBaseConfig",
     "TEMPE_CONFIG",
+    "TUCSON_CONFIG",
     "AGENDAS_ROOT",
     "AGENDA_ITEMS_CSV",
     "AGENDA_ITEMS_ROOT",

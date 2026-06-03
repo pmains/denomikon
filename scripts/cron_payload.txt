@@ -1,0 +1,17 @@
+# =============================================================================
+# Cron Payload — maricopa-daily-sync
+#
+# Full pipeline: sync → monitor → report
+# Runs daily at 5 AM Phoenix time.
+# Insert this as the "Command" (payload/action) for the maricopa-daily-sync
+# cron job in the OpenClaw gateway config.
+# =============================================================================
+
+cd ~/Code/openclaw/maricopa-agendas && \
+  POLISCOPIC_DB_TIER=development PYTHONPATH=scripts ./scripts/sync_log.sh 2>&1 && \
+  echo "=== MONITOR ===" && \
+  POLISCOPIC_DB_TIER=development PYTHONPATH=scripts .venv/bin/python scripts/sync_monitor.py 2>&1 && \
+  echo "=== REPORT ===" && \
+  cat data/sync/$(date "+%Y-%m-%d")-summary.txt && \
+  echo "---" && \
+  head -40 data/sync/$(date "+%Y-%m-%d")-monitor.txt

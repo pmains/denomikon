@@ -113,6 +113,7 @@ def init_db():
     _ensure_index(engine, "agenda_items", "idx_agenda_items_c_number", "c_number")
     _ensure_index(engine, "agenda_items", "idx_agenda_items_c_number_base", "c_number_base")
     _ensure_index(engine, "agenda_items", "idx_agenda_items_agenda_item_number", "agenda_item_number")
+    _ensure_index(engine, "agenda_items", "idx_agenda_items_body_meeting_id", "body, meeting_id")
 
     # Create poliscopic tables
     init_poliscopic_models(engine)
@@ -323,6 +324,8 @@ def _migrate_table(table_name: str):
 def _migrate_col(engine, table: str, col: str, col_def: str):
     """Add a column to an existing table if it doesn't exist yet."""
     inspector = sa_inspect(engine)
+    if table not in inspector.get_table_names():
+        return  # Table doesn't exist yet, will be created when needed
     existing_cols = {c["name"] for c in inspector.get_columns(table)}
     if col not in existing_cols:
         try:
@@ -337,6 +340,8 @@ def _migrate_col(engine, table: str, col: str, col_def: str):
 def _ensure_index(engine, table: str, index_name: str, column_expr: str):
     """Create an index if it doesn't already exist."""
     inspector = sa_inspect(engine)
+    if table not in inspector.get_table_names():
+        return  # Table doesn't exist yet
     existing = {ix["name"] for ix in inspector.get_indexes(table)}
     if index_name not in existing:
         with engine.connect() as conn:
@@ -344,6 +349,32 @@ def _ensure_index(engine, table: str, index_name: str, column_expr: str):
                 text(f'CREATE INDEX IF NOT EXISTS {index_name} ON {table} ({column_expr})')
             )
             conn.commit()
+
+def _create_agenda_items_fk_trigger(engine):
+    """Create a trigger to prevent agenda_items inserts without a matching meeting.
+
+    This ensures (body, meeting_id) references an existing meeting row at write time,
+    preventing the cross-contamination bug where items were stored with body/meeting_id
+    combos that didn't match any meeting.
+    """
+    with engine.connect() as conn:
+        # Drop existing trigger if any (idempotent)
+        conn.execute(text("DROP TRIGGER IF EXISTS trg_agenda_items_check_meeting"))
+        conn.execute(text("""
+            CREATE TRIGGER trg_agenda_items_check_meeting
+            BEFORE INSERT ON agenda_items
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE(ABORT, 'agenda_items (body, meeting_id) must reference an existing meeting')
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM meetings
+                    WHERE meetings.body = NEW.body
+                      AND meetings.meeting_id = NEW.meeting_id
+                );
+            END
+        """))
+        conn.commit()
+
 
 def init_poliscopic_models(engine=None):
     """Create all poliscopic tables that may not yet exist (jurisdictions, public_bodies, etc.)."""
@@ -636,6 +667,103 @@ def seed_default_jurisdictions():
             if existing is None:
                 session.add(pb)
 
+        # New Phoenix AEM-discovered bodies
+        phoenix_aem_bodies = [
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix Historic Preservation Commission",
+                slug="phoenix-historic-preservation",
+                body_code="phoenix-hp",
+                body_type="Commission",
+            ),
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix Zoning Adjustment",
+                slug="phoenix-zoning-adjustment",
+                body_code="phoenix-za",
+                body_type="Board",
+            ),
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix Human Services Commission",
+                slug="phoenix-human-services",
+                body_code="phoenix-hs",
+                body_type="Commission",
+            ),
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix Human Relations Commission",
+                slug="phoenix-human-relations",
+                body_code="phoenix-hr",
+                body_type="Commission",
+            ),
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix Environmental Quality & Sustainability Commission",
+                slug="phoenix-environmental-quality",
+                body_code="phoenix-eq",
+                body_type="Commission",
+            ),
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix Mayor's Commission on Disability Issues",
+                slug="phoenix-disability-issues",
+                body_code="phoenix-di",
+                body_type="Commission",
+            ),
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix Women's Commission",
+                slug="phoenix-womens-commission",
+                body_code="phoenix-wc",
+                body_type="Commission",
+            ),
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix Heritage Commission",
+                slug="phoenix-heritage-commission",
+                body_code="phoenix-hc",
+                body_type="Commission",
+            ),
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix License Appeal Board",
+                slug="phoenix-license-appeal",
+                body_code="phoenix-la",
+                body_type="Board",
+            ),
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix Fire Pension Board",
+                slug="phoenix-fire-pension",
+                body_code="phoenix-fp",
+                body_type="Board",
+            ),
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix Police Pension Board",
+                slug="phoenix-police-pension",
+                body_code="phoenix-pp",
+                body_type="Board",
+            ),
+            PublicBody(
+                jurisdiction_id=phoenix.id,
+                name="Phoenix City of Phoenix Employees' Retirement System Board",
+                slug="phoenix-copers-board",
+                body_code="phoenix-cb",
+                body_type="Board",
+            ),
+        ]
+        for pb in phoenix_aem_bodies:
+            existing = session.execute(
+                select(PublicBody).where(
+                    PublicBody.jurisdiction_id == phoenix.id,
+                    PublicBody.slug == pb.slug,
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(pb)
+
         # ── City of Mesa (jurisdiction_id=5) ──
         mesa = session.execute(
             select(Jurisdiction).where(Jurisdiction.slug == "mesa")
@@ -819,6 +947,50 @@ def seed_default_jurisdictions():
             existing = session.execute(
                 select(PublicBody).where(
                     PublicBody.jurisdiction_id == scottsdale.id,
+                    PublicBody.slug == pb.slug,
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(pb)
+
+        # ── City of Tucson (jurisdiction_id=8) ──
+        tucson = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == "tucson")
+        ).scalar_one_or_none()
+        if tucson is None:
+            tucson = Jurisdiction(name="City of Tucson", slug="tucson", state="AZ")
+            session.add(tucson)
+            session.flush()
+
+        tucson_bodies = [
+            PublicBody(
+                jurisdiction_id=tucson.id,
+                name="Tucson City Council",
+                slug="tucson-city-council",
+                body_code="tucson-cc",
+                body_type="Council",
+                website_url="https://www.tucsonaz.gov/Government/Mayor-Council-and-City-Manager",
+            ),
+            PublicBody(
+                jurisdiction_id=tucson.id,
+                name="Tucson Planning Commission",
+                slug="tucson-planning-commission",
+                body_code="tucson-pc",
+                body_type="Commission",
+                website_url="https://www.tucsonaz.gov/Departments/Planning-Development-Services/Public-Meetings-Boards-Committees-Commissions/Planning-Commission",
+            ),
+            PublicBody(
+                jurisdiction_id=tucson.id,
+                name="Tucson Public Housing Authority Board of Commissioners",
+                slug="tucson-public-housing-authority",
+                body_code="tucson-pha",
+                body_type="Board",
+            ),
+        ]
+        for pb in tucson_bodies:
+            existing = session.execute(
+                select(PublicBody).where(
+                    PublicBody.jurisdiction_id == tucson.id,
                     PublicBody.slug == pb.slug,
                 )
             ).scalar_one_or_none()

@@ -36,13 +36,25 @@ HEADERS = {
 
 # Body name → (slug, code)
 _CATEGORY_MAP: dict[str, tuple[str, str]] = {
-    "city council": ("avondale-city-council", "avondale-cc"),
-    "planning commission": ("avondale-planning-zoning", "avondale-pz"),
-    "board of adjustment": ("avondale-board-of-adjustment", "avondale-boa"),
-    "possible quorum": ("avondale-quorum", "avondale-quorum"),
-    "parks and recreation": ("avondale-parks-rec", "avondale-prc"),
-    "library board": ("avondale-library-board", "avondale-library"),
-    "historic preservation": ("avondale-historic-preservation", "avondale-hpc"),
+    "city council": ("avondale-cc", "avondale-cc"),
+    "planning commission": ("avondale-pz", "avondale-pz"),
+    "board of adjustment": ("avondale-boa", "avondale-boa"),
+    "possible quorum": ("avondale-cc", "avondale-cc"),
+    "parks and recreation": ("avondale-parks", "avondale-parks"),
+    "library board": ("avondale-library", "avondale-library"),
+    "historic preservation": ("avondale-hpc", "avondale-hpc"),
+    "judicial advisory": ("avondale-judicial", "avondale-judicial"),
+    "art committee": ("avondale-arts", "avondale-arts"),
+    "sustainability": ("avondale-sustainability", "avondale-sustainability"),
+    "psprs": ("avondale-psprs", "avondale-psprs"),
+    "public safety personnel": ("avondale-psprs", "avondale-psprs"),
+    "cfd": ("avondale-cfd", "avondale-cfd"),
+    "alamar": ("avondale-cfd", "avondale-cfd"),
+    "audit committee": ("avondale-audit", "avondale-audit"),
+    "neighborhood": ("avondale-neighborhood", "avondale-neighborhood"),
+    "family services": ("avondale-neighborhood", "avondale-neighborhood"),
+    "employee benefit": ("avondale-benefits", "avondale-benefits"),
+    "risk management": ("avondale-risk", "avondale-risk"),
 }
 
 

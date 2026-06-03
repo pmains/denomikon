@@ -214,7 +214,8 @@ async def main():
                 text(
                     "SELECT COUNT(*) FROM agenda_item_votes aiv "
                     "JOIN agenda_items ai ON ai.agenda_item_number = aiv.agenda_item_number "
-                    "AND ai.meeting_id = aiv.meeting_id "
+                    "AND ai.meeting_db_id = aiv.meeting_db_id "
+                    "AND ai.body = aiv.body "
                     "WHERE (ai.agenda_item_title LIKE '%ROLL CALL%' "
                     "OR ai.agenda_item_title LIKE '%PLEDGE OF ALLEGIANCE%' "
                     "OR ai.agenda_item_title LIKE '%INVOCATION%' "

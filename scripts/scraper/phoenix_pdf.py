@@ -118,43 +118,70 @@ def extract_pdf_text(pdf_bytes: bytes) -> Optional[str]:
             pass
 
 
+_BOILERPLATE = re.compile(
+    r"^(Agenda Date|Page \d+ of \d+|City Council|City of Phoenix|Mayor and Council|"
+    r"Formal Meeting|Policy Session|Work Study|"
+    r"Printed on|Data Refreshed|Agenda Online)"
+)
+
+_ITEM_START = re.compile(r"Item No\.\s+\*?(\d+)")
+_ITEM_ADDON = re.compile(r"\*\*\*ITEM (?:REVISED|ADD.ON|CONTINUED)")
+
+
 def parse_agenda_items(text: str) -> list[dict]:
-    """Extract agenda items from a Phoenix council agenda PDF text."""
+    """Extract agenda items with full descriptions from a Phoenix agenda PDF.
+
+    Captures everything between consecutive "Item No." markers
+    (minus boilerplate lines) as agenda_item_text for that item.
+    Only the first occurrence of each item number is used; page-break
+    continuations that repeat the item number are merged into the same entry.
+    """
     items: list[dict] = []
     sort_order = 0
     lines = text.split("\n") if text else []
+
+    # Find all item start positions, dedup by item number (keep first)
     seen: set[int] = set()
-
+    item_starts: list[tuple[int, int]] = []
     for i, line in enumerate(lines):
-        s = line.strip()
-        if not s:
-            continue
-        m = re.search(r"Item No\.\s+\*?(\d+)", s)
-        if not m:
-            continue
-        item_num = int(m.group(1))
-        if item_num in seen:
-            continue
-        seen.add(item_num)
+        m = _ITEM_START.search(line)
+        if m:
+            num = int(m.group(1))
+            if num not in seen and num <= 999:
+                seen.add(num)
+                item_starts.append((i, num))
 
+    if not item_starts:
+        return items
+
+    for idx, (start_line, item_num) in enumerate(item_starts):
+        end_line = item_starts[idx + 1][0] if idx + 1 < len(item_starts) else len(lines)
+
+        body_lines: list[str] = []
         title = ""
-        for j in range(i + 1, min(i + 6, len(lines))):
-            c = lines[j].strip()
-            if not c:
+        for j in range(start_line + 1, end_line):
+            s = lines[j].strip()
+            if not s:
+                if body_lines:
+                    body_lines.append("")
                 continue
-            skip = ["Agenda Date", "Item No", "Page ", "City Council"]
-            if any(p in c for p in skip):
+            if _BOILERPLATE.match(s) or _ITEM_ADDON.match(s):
                 continue
-            title = c[:150]
-            break
+            if not title:
+                title = s[:200]
+            # Skip pure-page-number lines and continuation headers
+            if re.match(r"^\d+$", s):
+                continue
+            body_lines.append(s)
 
         if title:
             sort_order += 1
+            body_text = "\n".join(body_lines).strip()
             items.append({
                 "agenda_item_number": str(item_num),
                 "item_type_category": "item",
                 "agenda_item_title": title,
-                "agenda_item_text": title,
+                "agenda_item_text": body_text if body_text else title,
                 "sort_order": sort_order,
             })
 

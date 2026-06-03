@@ -1,227 +1,56 @@
 {% extends "base.html" %}
-{% block title %}Admin Dashboard — Poliscopic{% endblock %}
+{% block title %}Admin{% endblock %}
 {% block content %}
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js">
-<script>
-
-
-</script>
-<div class="d-flex justify-content-between align-items-start mb-3">
+<div class="container-fluid mt-3">
   <h1>Admin Dashboard</h1>
-  <div>
-    <a href="/admin/suggestions" class="btn btn-outline-primary btn-sm">AI Suggestions</a>
-    <a href="/admin/articles/new" class="btn btn-primary btn-sm">New Article</a>
-    <a href="/admin/tags" class="btn btn-outline-secondary btn-sm">Manage Tags</a>
-  </div>
-</div>
 
-{% with messages = get_flashed_messages(with_categories=true) %}
-  {% if messages %}
-    {% for category, message in messages %}
-      <div class="alert alert-{{ 'danger' if category == 'error' else 'success' }}">{{ message }}</div>
-    {% endfor %}
-  {% endif %}
-{% endwith %}
-
-<ul class="nav nav-tabs mb-3" id="adminTabs" role="tablist">
-  <li class="nav-item" role="presentation">
-    <button class="nav-link active" id="drafts-tab" data-bs-toggle="tab" data-bs-target="#drafts" type="button" role="tab">Drafts ({{ drafts|length }})</button>
-  </li>
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" id="published-tab" data-bs-toggle="tab" data-bs-target="#published" type="button" role="tab">Published ({{ published|length }})</button>
-  </li>
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" id="archived-tab" data-bs-toggle="tab" data-bs-target="#archived" type="button" role="tab">Archived ({{ archived|length }})</button>
-  </li>
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" id="featured-tab" data-bs-toggle="tab" data-bs-target="#featured" type="button" role="tab">Featured ({{ featured|length }}/3)</button>
-  </li>
-</ul>
-
-<div class="tab-content">
-  <div class="tab-pane fade show active" id="drafts" role="tabpanel">
-    {% if drafts %}
-      <div id="draft-list">
-      {% for article in drafts %}
-        <div class="card mb-2" data-id="{{ article.id }}">
-          <div class="card-body py-2">
-            <div class="d-flex justify-content-between align-items-center">
-              <div class="d-flex align-items-center gap-2">
-                <span class="drag-handle" style="cursor:grab;font-size:16px;color:#aaa" title="Drag to reorder">⠿</span>
-                <div>
-                  {% if article.is_featured %}<span class="badge bg-warning text-dark me-1" title="Featured">★</span>{% endif %}
-                  <a href="/admin/articles/{{ article.id }}/edit" class="fw-bold text-decoration-none">{{ article.title[:80] }}{% if article.title|length > 80 %}…{% endif %}</a>
-                  <small class="text-muted ms-2">{{ article.created_at.strftime('%b %d') }}</small>
-                  {% if article.tags %}
-                    {% for t in article.tags %}<span class="badge bg-light text-dark ms-1">{{ t.name }}</span>{% endfor %}
-                  {% endif %}
-                </div>
-              </div>
-              <div class="d-flex gap-1">
-                <a href="/admin/articles/{{ article.id }}/edit" class="btn btn-sm btn-outline-primary">Edit</a>
-                <form method="POST" action="/admin/articles/{{ article.id }}/promote" style="display:inline">
-                  <button class="btn btn-sm btn-success">Publish</button>
-                </form>
-                <form method="POST" action="/admin/articles/{{ article.id }}/delete" style="display:inline" onsubmit="return confirm('Delete this article?')">
-                  <button class="btn btn-sm btn-outline-danger">Delete</button>
-                </form>
-              </div>
-            </div>
+  <div class="row mt-4">
+    <div class="col-sm-6 col-lg-3 mb-3">
+      <a href="/admin/drafts" class="text-decoration-none">
+        <div class="card border-primary">
+          <div class="card-body text-center">
+            <h2 class="text-primary mb-0">{{ drafts_count }}</h2>
+            <small class="text-muted">Drafts</small>
           </div>
         </div>
-      {% endfor %}
-      </div>
-      <script>
-      (function() {
-        var list = document.getElementById('draft-list');
-        if (!list) return;
-        Sortable.create(list, {
-          animation: 150,
-          handle: '.drag-handle',
-          forceFallback: true,
-          fallbackClass: 'sortable-fallback',
-          onEnd: function() {
-            var order = Array.from(list.querySelectorAll('.card')).map(function(el) {
-              return el.getAttribute('data-id');
-            });
-            fetch('/admin/articles/reorder', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({ order: order })
-            });
-          }
-        });
-      })();
-      </script>
-<script>
-// Featured articles search widget
-var searchTimer = null;
-
-document.addEventListener('DOMContentLoaded', function() {
-  var searchInput = document.getElementById('feature-search');
-  var searchResults = document.getElementById('feature-search-results');
-  if (!searchInput) return;
-
-  searchInput.addEventListener('input', function() {
-    clearTimeout(searchTimer);
-    var q = this.value.trim();
-    if (q.length < 2) {
-      searchResults.innerHTML = '';
-      return;
-    }
-    searchTimer = setTimeout(function() {
-      fetch('/admin/articles/search?q=' + encodeURIComponent(q), {
-        credentials: 'same-origin'
-      })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-          searchResults.innerHTML = '';
-          if (!data.results || data.results.length === 0) {
-            searchResults.innerHTML = '<a class="list-group-item text-muted small">No results</a>';
-            return;
-          }
-          data.results.forEach(function(a) {
-            var form = document.createElement('form');
-            form.method = 'POST';
-            form.action = '/admin/articles/' + a.id + '/feature';
-            form.style.display = 'block';
-            var btn = document.createElement('button');
-            btn.type = 'submit';
-            btn.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center py-2';
-            btn.style.border = 'none';
-            btn.style.width = '100%';
-            btn.style.textAlign = 'left';
-            btn.style.cursor = 'pointer';
-            if (a.is_featured) {
-              btn.innerHTML = '<span>' + a.title + ' <span class="badge bg-warning text-dark">\u2605 Featured</span></span>';
-            } else {
-              btn.innerHTML = '<span>' + a.title + '</span><span class="text-primary small">Feature +</span>';
-            }
-            form.appendChild(btn);
-            searchResults.appendChild(form);
-          });
-        })
-        .catch(function(err) {
-          searchResults.innerHTML = '<a class="list-group-item text-muted small">Search error</a>';
-        });
-    }, 300);
-  });
-});
-</script>
-    {% else %}
-      <p class="text-muted">No drafts yet. <a href="/admin/suggestions">Check AI suggestions</a> to get started.</p>
-    {% endif %}
-  </div>
-
-  <div class="tab-pane fade" id="published" role="tabpanel">
-    {% if published %}
-      {% for article in published %}
-        <div class="card mb-2">
-          <div class="card-body py-2 d-flex justify-content-between align-items-center">
-            <div>
-              <a href="/articles/{{ article.slug }}" class="fw-bold text-decoration-none">{{ article.title }}</a>
-              <small class="text-muted ms-2">{{ article.published_at.strftime('%b %d, %Y') if article.published_at }}</small>
-              {% for t in article.tags %}<span class="badge bg-light text-dark ms-1">{{ t.name }}</span>{% endfor %}
-            </div>
-            <form method="POST" action="/admin/articles/{{ article.id }}/archive" style="display:inline">
-              <button class="btn btn-sm btn-outline-secondary">Archive</button>
-            </form>
+      </a>
+    </div>
+    <div class="col-sm-6 col-lg-3 mb-3">
+      <a href="/admin/published" class="text-decoration-none">
+        <div class="card border-success">
+          <div class="card-body text-center">
+            <h2 class="text-success mb-0">{{ published_count }}</h2>
+            <small class="text-muted">Published</small>
           </div>
         </div>
-      {% endfor %}
-    {% else %}
-      <p class="text-muted">No published articles.</p>
-    {% endif %}
-  </div>
-
-  <div class="tab-pane fade" id="archived" role="tabpanel">
-    {% if archived %}
-      {% for article in archived %}
-        <div class="card mb-2">
-          <div class="card-body py-2 d-flex justify-content-between align-items-center">
-            <div>
-              <a href="/articles/{{ article.slug }}" class="fw-bold text-decoration-none">{{ article.title }}</a>
-              <small class="text-muted ms-2">{{ article.archived_at.strftime('%b %d, %Y') if article.archived_at }}</small>
-              {% for t in article.tags %}<span class="badge bg-light text-dark ms-1">{{ t.name }}</span>{% endfor %}
-            </div>
-            <form method="POST" action="/admin/articles/{{ article.id }}/promote" style="display:inline">
-              <button class="btn btn-sm btn-primary">Re-publish</button>
-            </form>
+      </a>
+    </div>
+    <div class="col-sm-6 col-lg-3 mb-3">
+      <a href="/admin/archived" class="text-decoration-none">
+        <div class="card border-secondary">
+          <div class="card-body text-center">
+            <h2 class="text-secondary mb-0">{{ archived_count }}</h2>
+            <small class="text-muted">Archived</small>
           </div>
         </div>
-      {% endfor %}
-    {% else %}
-      <p class="text-muted">No archived articles.</p>
-    {% endif %}
-  </div>
-
-  <div class="tab-pane fade" id="featured" role="tabpanel">
-    <div class="row">
-      <div class="col-md-6">
-        <h6>Featured Articles <small class="text-muted">(max 3)</small></h6>
-        <div id="featured-list">
-          {% for article in featured %}
-          <div class="card mb-2">
-            <div class="card-body py-2 d-flex justify-content-between align-items-center">
-              <span>{% if article.featured_image %}<img src="{{ article.featured_image }}" style="height:30px;width:45px;object-fit:cover;border-radius:3px" class="me-2">{% endif %}{{ article.title[:60] }}</span>
-              <form method="POST" action="/admin/articles/{{ article.id }}/feature" style="display:inline">
-                <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove from featured">✕</button>
-              </form>
-            </div>
+      </a>
+    </div>
+    <div class="col-sm-6 col-lg-3 mb-3">
+      <a href="/admin/bluesky" class="text-decoration-none">
+        <div class="card border-info">
+          <div class="card-body text-center">
+            <h2 class="text-info mb-0">{{ skeet_count }}</h2>
+            <small class="text-muted">Bluesky Drafts</small>
           </div>
-          {% else %}
-          <p class="text-muted small">No featured articles. Search below to add up to three.</p>
-          {% endfor %}
         </div>
-        {% if featured|length < 3 %}
-        <div class="mt-3">
-          <input type="text" id="feature-search" class="form-control form-control-sm" placeholder="Search articles by keyword..." autocomplete="off">
-          <div id="feature-search-results" class="list-group mt-1" style="max-height:300px;overflow-y:auto"></div>
-        </div>
-        {% endif %}
-      </div>
+      </a>
     </div>
   </div>
 
+  <div class="mt-2">
+    <a href="/admin/drafts" class="btn btn-primary me-2">Manage Articles →</a>
+    <a href="/admin/bluesky" class="btn btn-outline-info me-2">Review Bluesky Drafts →</a>
+    <a href="/admin/articles/new" class="btn btn-outline-success">New Article</a>
+  </div>
 </div>
 {% endblock %}

@@ -272,7 +272,7 @@ def get_supervisor_vote_stats(
         AgendaItemVote.body == body,
     ).group_by(SupervisorVote.vote, SupervisorVote.agenda_item_vote_id)
     if start_date or end_date:
-        q = q.join(Meeting, and_(Meeting.meeting_id == AgendaItemVote.meeting_id, Meeting.body == AgendaItemVote.body))
+        q = q.join(Meeting, and_(Meeting.id == AgendaItemVote.meeting_db_id))
         if start_date:
             q = q.where(Meeting.meeting_date >= start_date)
         if end_date:
@@ -418,7 +418,7 @@ def get_supervisor_split_votes(
         )
         .join(
             Meeting,
-            and_(Meeting.meeting_id == AgendaItemVote.meeting_id, Meeting.body == AgendaItemVote.body),
+            and_(Meeting.id == AgendaItemVote.meeting_db_id),
         )
         .where(
             SupervisorVote.supervisor_id == sup_id,
@@ -487,9 +487,10 @@ def get_supervisor_split_votes(
                 m.meeting_type
             FROM agenda_item_votes aiv
             LEFT JOIN agenda_items ai
-                ON ai.meeting_id = aiv.meeting_id
+                ON ai.meeting_db_id = aiv.meeting_db_id
+                AND ai.body = aiv.body
                 AND ai.agenda_item_number = aiv.agenda_item_number
-            LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id AND m.body = aiv.body
+            LEFT JOIN meetings m ON m.id = aiv.meeting_db_id AND m.body = aiv.body
             WHERE aiv.id IN ({ids_str})
             ORDER BY m.meeting_date, aiv.agenda_item_number
         """)
@@ -586,9 +587,10 @@ def get_supervisor_abstentions(
         FROM supervisor_votes sv
         JOIN agenda_item_votes aiv ON aiv.id = sv.agenda_item_vote_id
         LEFT JOIN agenda_items ai
-            ON ai.meeting_id = aiv.meeting_id
+            ON ai.meeting_db_id = aiv.meeting_db_id
+            AND ai.body = aiv.body
             AND ai.agenda_item_number = aiv.agenda_item_number
-        LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id AND m.body = aiv.body
+        LEFT JOIN meetings m ON m.id = aiv.meeting_db_id AND m.body = aiv.body
         WHERE {where_sql}
         ORDER BY m.meeting_date, aiv.agenda_item_number
     """)
@@ -703,9 +705,10 @@ def get_supervisor_full_voting_record(
         FROM supervisor_votes sv
         JOIN agenda_item_votes aiv ON aiv.id = sv.agenda_item_vote_id
         LEFT JOIN agenda_items ai
-            ON ai.meeting_id = aiv.meeting_id
+            ON ai.meeting_db_id = aiv.meeting_db_id
+            AND ai.body = aiv.body
             AND ai.agenda_item_number = aiv.agenda_item_number
-        LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id AND m.body = aiv.body
+        LEFT JOIN meetings m ON m.id = aiv.meeting_db_id AND m.body = aiv.body
         WHERE {where_sql}
         ORDER BY m.meeting_date DESC, aiv.agenda_item_number{limit_clause}
     """)
@@ -800,7 +803,7 @@ def get_supervisor_majority_alignment_stats(
         AgendaItemVote.body == body,
     )
     if start_date or end_date:
-        q = q.join(Meeting, and_(Meeting.meeting_id == AgendaItemVote.meeting_id, Meeting.body == AgendaItemVote.body))
+        q = q.join(Meeting, and_(Meeting.id == AgendaItemVote.meeting_db_id))
         if start_date:
             q = q.where(Meeting.meeting_date >= start_date)
         if end_date:
@@ -960,7 +963,7 @@ def get_supervisor_voting_alignment(
         )
     )
     if start_date or end_date:
-        q = q.join(Meeting, and_(Meeting.meeting_id == AgendaItemVote.meeting_id, Meeting.body == AgendaItemVote.body))
+        q = q.join(Meeting, and_(Meeting.id == AgendaItemVote.meeting_db_id))
         if start_date:
             q = q.where(Meeting.meeting_date >= start_date)
         if end_date:
@@ -1097,7 +1100,7 @@ def get_supervisor_swing_votes(
         )
     )
     if start_date or end_date:
-        q = q.join(Meeting, and_(Meeting.meeting_id == AgendaItemVote.meeting_id, Meeting.body == AgendaItemVote.body))
+        q = q.join(Meeting, and_(Meeting.id == AgendaItemVote.meeting_db_id))
         if start_date:
             q = q.where(Meeting.meeting_date >= start_date)
         if end_date:
@@ -1172,9 +1175,10 @@ def get_supervisor_swing_votes(
                 m.meeting_type
             FROM agenda_item_votes aiv
             LEFT JOIN agenda_items ai
-                ON ai.meeting_id = aiv.meeting_id
+                ON ai.meeting_db_id = aiv.meeting_db_id
+                AND ai.body = aiv.body
                 AND ai.agenda_item_number = aiv.agenda_item_number
-            LEFT JOIN meetings m ON m.meeting_id = aiv.meeting_id AND m.body = aiv.body
+            LEFT JOIN meetings m ON m.id = aiv.meeting_db_id AND m.body = aiv.body
             WHERE aiv.id IN ({ids_str})
             ORDER BY m.meeting_date, aiv.agenda_item_number
         """)

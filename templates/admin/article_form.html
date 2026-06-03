@@ -131,6 +131,9 @@
             {% if article %}
             <button type="submit" name="action" value="save" class="btn btn-primary">Update</button>
             <button type="submit" name="action" value="publish" class="btn btn-success">Publish</button>
+            <form method="POST" action="/admin/skeet-drafts/create/{{ article.id }}" class="mt-2">
+              <button type="submit" class="btn btn-outline-info btn-sm w-100">Create Skeet Draft</button>
+            </form>
             {% else %}
             <button type="submit" name="action" value="save" class="btn btn-primary">Create Draft</button>
             <button type="submit" name="action" value="publish" class="btn btn-success">Create &amp; Publish</button>

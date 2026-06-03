@@ -152,6 +152,31 @@ class DismissedSuggestion(Base):
                           default=lambda: datetime.now(timezone.utc))
 
 
+class SkeetDraft(Base):
+    """Curated Bluesky post draft linked to an article.
+
+    The editor reviews the auto-generated draft, tweaks the text,
+    optionally replaces the link-card image, and approves or skips.
+    A separate cron posts approved drafts.
+    """
+    __tablename__ = "skeet_drafts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    article_id = Column(Integer, ForeignKey("articles.id", ondelete="CASCADE"), nullable=False)
+    article = relationship("Article", backref="skeet_drafts")
+    draft_text = Column(String(300), nullable=False, default="")
+    status = Column(String(16), nullable=False, default="draft", index=True)
+    # draft, approved, posted, skipped
+    image_path = Column(String(512), nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), nullable=False,
+                        default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False,
+                        default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+    posted_at = Column(DateTime(timezone=True), nullable=True)
+    bluesky_post_uri = Column(String(256), nullable=False, default="")
+
+
 # ── FTS Setup ──
 
 FTS_TABLES = {}

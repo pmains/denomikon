@@ -2,7 +2,7 @@
 {% block title %}Voting Alignment — {{ body_code|upper }} — Poliscopic Meetings{% endblock %}
 {% block content %}
 
-<a href="/bodies" class="btn btn-outline-secondary btn-sm mb-3">&larr; All bodies</a>
+<a href="/bodies" class="btn btn-outline-secondary btn-sm my-3">&larr; All bodies</a>
 
 <h3 class="mb-3">{{ body_code|upper }} — Voting Alignment</h3>
 
@@ -346,5 +346,5 @@ if (firstOption) showPairwise(firstOption.value);
 <p class="text-muted mb-4">No supervisors active during this time period.</p>
 {% endif %}
 
-<p class="text-muted small mt-3"><a href="/bodies">&larr; Back to bodies</a></p>
+<a href="/bodies" class="btn btn-outline-secondary btn-sm my-3">&larr; Back to bodies</a>
 {% endblock %}

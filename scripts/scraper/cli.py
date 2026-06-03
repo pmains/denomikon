@@ -34,9 +34,14 @@ def _print_top_level_help() -> None:
     print("  buckeye-granicus City of Buckeye (Council, P&Z, PSPRS, CFD, Youth via Granicus ViewPublisher)")
     print("  el-mirage City of El Mirage (Council, P&Z, YAC, PSPRS via AgendaQuick)")
     print("  goodyear  City of Goodyear (Council, P&Z, boards via AgendaQuick)")
+    print("  paradise-valley  Town of Paradise Valley (Council, Planning, BOA via Granicus)")
+    print("  queen-creek  Town of Queen Creek (Council, Planning, boards via Granicus)")
     print("  peoria    City of Peoria (Council, P&Z, BOA, DRB, HPC via NovusAgenda)")
     print("  surprise              City of Surprise (Council via Granicus, legacy)")
     print("  surprise-civicclerk   City of Surprise (P&Z, boards via CivicClerk API)")
+    print("  tucson                City of Tucson (Mayor & Council via OnBase)")
+    print("  tucson-pc             City of Tucson (Planning Commission via listing page + PDF)")
+    print("  phoenix-aem  Phoenix boards/commissions via Adobe AEM (Planning, Village, Historic Pres, etc.)")
     print("  all       Sync all Maricopa County boards: BOS, PZ, ADJ, Drain, Health, TAB, IDA")
     print("  mcacc     All remaining Maricopa County boards via AgendaCenter")
     print()
@@ -128,7 +133,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("hearings", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "mcacc", "phoenix", "all"):
+    if rest and rest[0] in ("hearings", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "paradise-valley", "queen-creek", "mcacc", "phoenix", "phoenix-aem", "tempe-subcommittees", "tucson", "tucson-pc", "all", "all-jurisdictions"):
         source = rest.pop(0)
 
     if source == "bos":
@@ -150,6 +155,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     elif source == "chandler":
         args = _parse_mesa_args(rest)
     elif source == "gilbert":
+        args = _parse_mesa_args(rest)
+    elif source == "tucson":
+        args = _parse_mesa_args(rest)
+    elif source == "tucson-pc":
         args = _parse_mesa_args(rest)
     elif source == "scottsdale":
         args = _parse_mesa_args(rest)
@@ -179,15 +188,44 @@ def parse_args(argv=None) -> argparse.Namespace:
         args = _parse_mesa_args(rest)
     elif source == "goodyear":
         args = _parse_mesa_args(rest)
+    elif source == "paradise-valley":
+        args = _parse_mesa_args(rest)
+    elif source == "queen-creek":
+        args = _parse_mesa_args(rest)
+    elif source == "tempe-subcommittees":
+        args = _parse_tempe_subcommittees_args(rest)
     elif source == "hearings":
         args = _parse_hearings_args(rest)
     elif source == "mcacc":
         args = _parse_mcacc_args(rest)
-    elif source == "all":
-        args = _parse_bos_args(rest)
+    elif source == "phoenix-aem":
+        args = _parse_phoenix_aem_args(rest)
+    elif source in ("all", "all-jurisdictions"):
+        args = _parse_all_jurisdictions_args(rest)
     else:
         args = _parse_pz_args(rest)
     args.source = source
+    return args
+
+
+def _parse_phoenix_aem_args(rest: list[str]) -> argparse.Namespace:
+    """Parse Phoenix AEM board/commission meeting arguments."""
+    p = argparse.ArgumentParser(description="Scrape Phoenix boards/commissions via AEM", prog="phoenix-aem")
+    p.add_argument("--sync", action="store_true", help="Fetch notices and persist AEM meetings to database")
+    p.add_argument("--sync-results", action="store_true", help="Fetch past meeting results and persist to database")
+    p.add_argument("--body", help="Filter by body name (e.g. 'Planning Commission')")
+    p.add_argument("--bodies", help="Comma-separated list of body slugs to filter")
+    p.add_argument("--limit", type=int, default=0, help="Max meetings to fetch (0 = all)")
+    p.add_argument("--force", action="store_true", help="Re-sync meetings even if sync_status = complete")
+    p.add_argument("--download", action="store_true", help="Download PDF notices")
+    p.add_argument("--init-db", action="store_true", help="Create database tables")
+    p.add_argument("--status", action="store_true", help="Print summary counts of meetings by sync_status")
+    p.add_argument("--failed", action="store_true", help="List failed/partial meetings with errors")
+    p.add_argument("--extract-results-pdf", metavar="PDF_URL", default=None,
+                   help="Download and parse a single results PDF, store outcomes in DB")
+    p.add_argument("--sync-board-members", action="store_true",
+                   help="Scrape member lists from boards.phoenix.gov and persist to DB")
+    args = p.parse_args(rest)
     return args
 
 
@@ -453,6 +491,12 @@ def _parse_tempe_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--retry-count", type=int, default=3, help="Max retry attempts")
     p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
     p.add_argument("--download", action="store_true", help="Download agenda PDF and packet PDF")
+    p.add_argument("--backfill-votes", action="store_true",
+                      help="Backfill Legal Action Summary vote data for Tempe CC meetings "
+                           "already synced but missing vote records")
+    p.add_argument("--persist-votes", action="store_true",
+                      help="Used with --backfill-votes: actually persist extracted votes to DB "
+                           "(default is dry-run / report only)")
     p.add_argument("--bodies", help="Body group to sync: council, drc, boa, hpc, all (default: all)")
     args = p.parse_args(rest)
     if args.date:
@@ -564,7 +608,7 @@ def _parse_surprise_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--retry-count", type=int, default=3, help="Max retry attempts")
     p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
     p.add_argument("--download", action="store_true", help="Download agenda PDF files")
-    p.add_argument("--bodies", help="Body slugs to sync (comma-separated), e.g. surprise-city-council,surprise-planning-zoning (default: surprise-city-council)")
+    p.add_argument("--bodies", help="Body slugs to sync (comma-separated), e.g. surprise-cc,surprise-pz (default: surprise-cc)")
     args = p.parse_args(rest)
     if args.date:
         if args.start_date or args.end_date:
@@ -637,6 +681,52 @@ def _parse_glendale_new_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
     p.add_argument("--download", action="store_true", help="Download agenda PDF files")
     p.add_argument("--bodies", help="Body slugs to sync (comma-separated), e.g. glendale-city-council,glendale-planning-commission (default: glendale-city-council)")
+    args = p.parse_args(rest)
+    if args.date:
+        if args.start_date or args.end_date:
+            p.error("--date cannot be combined with --start-date or --end-date")
+        args.start_date = args.date
+        args.end_date = args.date
+    _normalize_year_month(args, p)
+    return args
+
+
+def _parse_tempe_subcommittees_args(rest: list[str]) -> argparse.Namespace:
+    """Parse tempe-subcommittees sync arguments."""
+    p = argparse.ArgumentParser(description="Scrape Tempe Council Subcommittees", prog="tempe-subcommittees")
+    p.add_argument("--sync", action="store_true", help="Sync subcommittees")
+    p.add_argument("--all", action="store_true", help="Sync all subcommittees")
+    p.add_argument("--body", help="Sync a specific subcommittee slug")
+    p.add_argument("--download", action="store_true", help="Download PDF files")
+    p.add_argument("--limit", type=int, default=None, help="Max meetings per body")
+    p.add_argument("--init-db", action="store_true", help=argparse.SUPPRESS)
+    args = p.parse_args(rest)
+    return args
+
+
+def _parse_all_jurisdictions_args(rest: list[str]) -> argparse.Namespace:
+    """Parse all-jurisdictions sync arguments.
+
+    Runs sync for every known jurisdiction with the same date range.
+    
+    Usage:
+      all --sync --start-date=2026-05-01 --end-date=2026-06-01
+    """
+    p = argparse.ArgumentParser(
+        description="Sync all jurisdictions within a date range",
+        prog="all",
+    )
+    p.add_argument("--start-date", help="Start date in YYYY-MM-DD")
+    p.add_argument("--end-date", help="End date in YYYY-MM-DD")
+    p.add_argument("--date", help="Single date in YYYY-MM-DD")
+    p.add_argument("--year", help="Sync an entire year (e.g. --year=2026)")
+    p.add_argument("--month", help="Sync an entire month (e.g. --month=2026-04)")
+    p.add_argument("--sync", action="store_true", help="Sync all jurisdictions")
+    p.add_argument("--force", action="store_true", help="Re-sync meetings even if sync_status = complete")
+    p.add_argument("--limit", type=int, default=None, help="Max meetings per jurisdiction")
+    p.add_argument("--headed", action="store_true", help="Run Playwright headed (bos/pz/adj only)")
+    p.add_argument("--init-db", action="store_true", help="Create database tables")
+    p.add_argument("--status", action="store_true", help="Print sync status summary")
     args = p.parse_args(rest)
     if args.date:
         if args.start_date or args.end_date:

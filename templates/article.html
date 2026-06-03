@@ -20,12 +20,40 @@
   .article-body tr:nth-child(even) {
     background: #f8f9fa;
   }
+  .article-featured-image {
+    float: right;
+    max-width: 45%;
+    margin: 0 0 0.75rem 1rem;
+  }
+  .article-featured-image img {
+    max-height: 350px;
+    width: auto;
+    height: auto;
+    border-radius: 8px;
+    border: 2px solid #e8651a;
+  }
+  .article-featured-image figcaption {
+    font-size: 0.75rem;
+    color: #666;
+    margin-top: 4px;
+    text-align: right;
+  }
+  @media (max-width: 768px) {
+    .article-featured-image {
+      float: none;
+      max-width: 100%;
+      margin: 0 0 1rem 0;
+    }
+    .article-featured-image img {
+      width: 100%;
+      max-height: 100vw;
+      height: auto;
+    }
+  }
 </style>
 {% endblock %}
 {% block content %}
-<div class="mb-3">
-  <a href="/" class="text-decoration-none text-muted">&larr; Back to front page</a>
-</div>
+<a href="/" class="btn btn-outline-secondary btn-sm my-3">&larr; Back to front page</a>
 
 <article>
   <h1>{{ article.title }}</h1>
@@ -47,10 +75,10 @@
   {% endif %}
 
   {% if article.featured_image %}
-  <figure style="float:right;max-width:45%;margin:0 0 0.75rem 1rem;">
-    <img src="{{ article.featured_image }}" alt="{{ article.title }}" style="max-height:350px;width:auto;height:auto;border-radius:8px;border:2px solid #e8651a;">
+  <figure class="article-featured-image">
+    <img src="{{ article.featured_image }}" alt="{{ article.title }}">
     {% if article.image_credit %}
-    <figcaption style="font-size:0.75rem;color:#666;margin-top:4px;text-align:right;">{{ article.image_credit }}</figcaption>
+    <figcaption>{{ article.image_credit }}</figcaption>
     {% endif %}
   </figure>
   {% endif %}

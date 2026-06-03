@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Admin — Featured{% endblock %}
+{% block content %}
+<div class="container-fluid mt-3">
+  <h1>Admin</h1>
+  {% include "admin/_nav.html" %}
+
+  <div class="row">
+    <div class="col-md-6">
+      <h6>Featured Articles <small class="text-muted">(max 3)</small></h6>
+      <div id="featured-list">
+        {% for article in featured %}
+        <div class="card mb-2">
+          <div class="card-body py-2 d-flex justify-content-between align-items-center">
+            <span>{% if article.featured_image %}<img src="{{ article.featured_image }}" style="height:30px;width:45px;object-fit:cover;border-radius:3px" class="me-2">{% endif %}{{ article.title[:60] }}</span>
+            <form method="POST" action="/admin/articles/{{ article.id }}/feature" style="display:inline">
+              <input type="hidden" name="redirect" value="/admin/featured">
+              <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove from featured">✕</button>
+            </form>
+          </div>
+        </div>
+        {% else %}
+        <p class="text-muted small">No featured articles. Search below to add up to three.</p>
+        {% endfor %}
+      </div>
+      {% if featured|length < 3 %}
+      <div class="mt-3">
+        <input type="text" id="feature-search" class="form-control form-control-sm" placeholder="Search articles by keyword..." autocomplete="off">
+        <div id="feature-search-results" class="list-group mt-1" style="max-height:300px;overflow-y:auto"></div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<script>
+var searchTimer = null;
+var searchInput = document.getElementById('feature-search');
+if (searchInput) {
+  searchInput.addEventListener('input', function() {
+    clearTimeout(searchTimer);
+    var q = this.value.trim();
+    var results = document.getElementById('feature-search-results');
+    if (q.length < 2) { results.innerHTML = ''; return; }
+    searchTimer = setTimeout(function() {
+      fetch('/admin/articles/search?q=' + encodeURIComponent(q))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          results.innerHTML = '';
+          if (!data.results || !data.results.length) {
+            results.innerHTML = '<div class="list-group-item small text-muted">No results</div>';
+            return;
+          }
+          data.results.forEach(function(a) {
+            var div = document.createElement('div');
+            div.className = 'list-group-item list-group-item-action py-1 px-2 small';
+            div.innerHTML = a.title;
+            div.style.cursor = 'pointer';
+            div.addEventListener('click', function() {
+              var form = document.createElement('form');
+              form.method = 'POST';
+              form.action = '/admin/articles/' + a.id + '/feature';
+              var inp = document.createElement('input');
+              inp.type = 'hidden';
+              inp.name = 'redirect';
+              inp.value = '/admin/featured';
+              form.appendChild(inp);
+              document.body.appendChild(form);
+              form.submit();
+            });
+            results.appendChild(div);
+          });
+        });
+    }, 300);
+  });
+}
+</script>
+{% endblock %}

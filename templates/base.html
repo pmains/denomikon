@@ -33,6 +33,22 @@
             font-weight: 500;
             letter-spacing: 0.04em;
             text-transform: uppercase;
+            position: relative;
+            padding-left: 82px;
+        }
+        .navbar-brand::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 2px;
+            width: 68px;
+            height: 68px;
+            padding: 5px;
+            background: #fff url('/static/poliscopic-logo.svg') no-repeat center;
+            background-size: 40px auto;
+            border-bottom: 4px solid #ED680B;
+            border-radius: 0;
+            box-sizing: border-box;
         }
     </style>
 </head>
@@ -47,15 +63,17 @@
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" href="/meetings">Meetings</a>
-                        <a class="nav-link" href="/housing">Housing</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/bodies">Members</a>
+                        <a class="nav-link" href="/about">About</a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" href="/search">Search</a>
                     </li>
                     {% if current_user.is_authenticated %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="/housing">Housing</a>
+                    </li>
                     <li class="nav-item">
                         <a class="nav-link" href="/admin">Admin</a>
                     </li>

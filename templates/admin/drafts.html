@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Admin — Drafts{% endblock %}
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+{% endblock %}
+{% block content %}
+<div class="container-fluid mt-3">
+  <h1>Admin</h1>
+  {% include "admin/_nav.html" %}
+
+  {% if drafts %}
+    <div id="draft-list">
+    {% for article in drafts %}
+      <div class="card mb-2" data-id="{{ article.id }}">
+        <div class="card-body py-2">
+          <div class="d-flex justify-content-between align-items-center">
+            <div class="d-flex align-items-center gap-2">
+              <span class="drag-handle" style="cursor:grab;font-size:16px;color:#aaa" title="Drag to reorder">⠿</span>
+              <div>
+                {% if article.is_featured %}<span class="badge bg-warning text-dark me-1" title="Featured">★</span>{% endif %}
+                <a href="/admin/articles/{{ article.id }}/edit" class="fw-bold text-decoration-none">{{ article.title[:80] }}{% if article.title|length > 80 %}…{% endif %}</a>
+                <small class="text-muted ms-2">{{ article.created_at.strftime('%b %d') }}</small>
+                {% if article.tags %}
+                  {% for t in article.tags %}<span class="badge bg-light text-dark ms-1">{{ t.name }}</span>{% endfor %}
+                {% endif %}
+              </div>
+            </div>
+            <div class="d-flex gap-1 flex-shrink-0">
+              <a href="/admin/articles/{{ article.id }}/edit" class="btn btn-sm btn-outline-primary">Edit</a>
+              <form method="POST" action="/admin/articles/{{ article.id }}/delete" style="display:inline" onsubmit="return confirm('Delete this draft?')">
+                <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+    {% endfor %}
+    </div>
+  {% else %}
+    <p class="text-muted">No drafts. <a href="/admin/articles/new">Create one.</a></p>
+  {% endif %}
+</div>
+
+<script>
+  var list = document.getElementById('draft-list');
+  if (list) {
+    new Sortable(list, {
+      handle: '.drag-handle',
+      animation: 200,
+      onEnd: function() {
+        var ids = Array.from(list.querySelectorAll('[data-id]')).map(function(el) {
+          return parseInt(el.getAttribute('data-id'));
+        });
+        fetch('/admin/articles/reorder', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ids: ids})
+        });
+      }
+    });
+  }
+</script>
+{% endblock %}
