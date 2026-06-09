@@ -268,15 +268,22 @@ def parse_agenda_items(pdf_bytes: bytes, meeting_id: str) -> list[dict]:
     return items
 
 
-def extract_supporting_docs(pdf_bytes: bytes) -> list[dict]:
+def extract_supporting_docs(pdf_bytes: bytes, items: Optional[list[dict]] = None) -> list[dict]:
     """Extract supporting document URLs embedded in a Scottsdale agenda PDF.
 
     Scottsdale agenda PDFs contain link annotations pointing to
     eservices.scottsdaleaz.gov/cityclerk/DocumentViewer/Show/...
     These are staff reports and backup materials for agenda items.
 
+    If ``items`` is provided, tries to match each document to its agenda item
+    by extracting the text under the link annotation rectangle and comparing
+    it to item titles. When matched, ``agenda_item_number`` is set to the
+    item's number instead of the default "0".
+
     Returns list of dicts with document_url and page_number.
     """
+    import logging
+    log = logging.getLogger(__name__)
     docs: list[dict] = []
     try:
         import io
@@ -295,18 +302,50 @@ def extract_supporting_docs(pdf_bytes: bytes) -> list[dict]:
                 uri = a['/URI']
                 if "eservices.scottsdaleaz.gov" in uri and "DocumentViewer" in uri:
                     doc_id = uri.split("/")[-1] if "/" in uri else ""
+                    item_num = "0"
+
+                    # Try to extract the text under the link rectangle
+                    # and match it to an item title
+                    rect = annot.get('/Rect')
+                    link_text = ""
+                    if rect and items:
+                        try:
+                            x1, y1, x2, y2 = float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])
+                            captured: list[str] = []
+
+                            def _visitor(text, cm, tm, font_dict, font_size):
+                                tx = tm[4]
+                                ty = tm[5]
+                                if x1 <= tx <= x2 and y1 <= ty <= y2:
+                                    captured.append(text)
+
+                            page.extract_text(visitor_text=_visitor)
+                            link_text = "".join(captured).strip()
+                        except Exception as ve:
+                            log.debug("Text extraction from link rect failed: %s", ve)
+
+                    if link_text:
+                        for item in items:
+                            title = item.get("agenda_item_title", "")
+                            if title and link_text in title:
+                                item_num = str(item.get("agenda_item_number", "0"))
+                                log.debug(
+                                    "Matched doc %s to item %s via link text %r",
+                                    doc_id[:8], item_num, link_text[:40]
+                                )
+                                break
+
                     docs.append({
                         "document_url": uri,
                         "document_type": "supporting_doc",
                         "file_extension": "pdf",
                         "document_title": f"Supporting Document ({doc_id[:8]}...)",
                         "page_number": page_num,
+                        "agenda_item_number": item_num,
                     })
     except ImportError:
         pass
     except Exception as e:
-        import logging
-        log = logging.getLogger(__name__)
         log.debug("extract_supporting_docs failed: %s", e)
     return docs
 

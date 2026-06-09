@@ -1468,7 +1468,7 @@ async def main() -> int:
                 supp_docs = []
                 if pdf:
                     try:
-                        supp_docs = extract_supporting_docs(pdf)
+                        supp_docs = extract_supporting_docs(pdf, items=items)
                     except Exception as de:
                         log.debug("Scottsdale doc extraction failed: %s", de)
 
