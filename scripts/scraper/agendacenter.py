@@ -548,8 +548,108 @@ def _extract_items_from_page_text(html: str, source_url: str) -> list[dict]:
     return items
 
 
+def _extract_pdf_supporting_docs(pdf_data: bytes, items: list[dict]) -> None:
+    """Match supporting document links from PDF annotations to agenda items.
+
+    Modifies items in-place by populating ``supporting_doc_dicts``.
+
+    Uses PyPDF to extract link annotations from the PDF and the ``visitor_text``
+    callback to determine what text appears under each annotation rectangle.
+    When the linked text matches an item title, the document is associated
+    with that item.
+    """
+    import logging
+    log = logging.getLogger(__name__)
+
+    if not items:
+        return
+
+    item_titles = {}
+    for it in items:
+        num = it.get("agenda_item_number", "")
+        title = (it.get("agenda_item_title", "") or "").strip()
+        if num and title:
+            item_titles[num] = title
+
+    if not item_titles:
+        return
+
+    try:
+        import io
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(pdf_data))
+
+        for page_num, page in enumerate(reader.pages, 1):
+            if '/Annots' not in page:
+                continue
+            for annot_ref in page['/Annots']:
+                annot = annot_ref.get_object()
+                if '/A' not in annot:
+                    continue
+                a = annot['/A']
+                if '/URI' not in a:
+                    continue
+                uri = a['/URI']
+                if not uri or not uri.startswith("http"):
+                    continue
+
+                doc_id = uri.strip("/").split("/")[-1] if "/" in uri else ""
+                rect = annot.get('/Rect')
+                link_text = ""
+                matched_item = None
+
+                if rect:
+                    try:
+                        x1, y1, x2, y2 = float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])
+                        captured: list[str] = []
+
+                        def _visitor(text, cm, tm, font_dict, font_size):
+                            tx = tm[4]
+                            ty = tm[5]
+                            if x1 <= tx <= x2 and y1 <= ty <= y2:
+                                captured.append(text)
+
+                        page.extract_text(visitor_text=_visitor)
+                        link_text = "".join(captured).strip()
+                    except Exception:
+                        pass
+
+                if link_text:
+                    for num, title in item_titles.items():
+                        if link_text in title or title in link_text:
+                            matched_item = num
+                            break
+
+                if not matched_item:
+                    continue
+
+                doc_dict = {
+                    "document_url": uri,
+                    "document_type": "supporting_doc",
+                    "file_extension": "pdf",
+                    "document_title": f"Supporting Document ({doc_id[:8]}...)",
+                    "page_number": page_num,
+                    "agenda_item_number": matched_item,
+                }
+
+                for it in items:
+                    if it.get("agenda_item_number") == matched_item:
+                        it.setdefault("supporting_doc_dicts", []).append(doc_dict)
+                        log.debug("Linked doc %s to item %s via: %r", doc_id[:8], matched_item, link_text[:40])
+                        break
+
+    except ImportError:
+        pass
+    except Exception as e:
+        log.debug("PDF supporting doc extraction failed: %s", e)
+
+
 def _download_and_parse_pdf(pdf_url: str) -> list[dict]:
-    """Download a PDF from a URL and try to extract numbered items from it."""
+    """Download a PDF from a URL and try to extract numbered items from it.
+
+    Also attempts to link supporting document URLs embedded as link annotations
+    in the PDF to their corresponding agenda items.
+    """
     import tempfile
 
     if not pdf_url:
@@ -571,6 +671,10 @@ def _download_and_parse_pdf(pdf_url: str) -> list[dict]:
 
         items = _parse_ac_agenda_pdf(pdf_path)
         Path(pdf_path).unlink(missing_ok=True)
+
+        # Try to link supporting documents from PDF annotations
+        _extract_pdf_supporting_docs(pdf_data, items)
+
         return items
     except Exception:
         return []
