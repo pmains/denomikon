@@ -1,5 +1,11 @@
 {% extends "base.html" %}
-{% block title %}Poliscopic — Government Intelligence{% endblock %}
+{% block title %}Poliscopic | Arizona Government Intelligence, Meetings & Development Tracking{% endblock %}
+{% block meta_description %}
+<meta name="description" content="Poliscopic tracks Arizona public meetings, agendas, votes, development cases, contracts, permits, and government documents so journalists, advocates, and civic leaders can spot important local policy decisions earlier.">
+{% endblock %}
+{% block canonical %}
+<link rel="canonical" href="https://poliscopic.com/">
+{% endblock %}
 {% block content %}
 <div class="row mb-4">
   <div class="col">
@@ -29,7 +35,7 @@
               <a href="/articles/tag/{{ t.slug }}" class="badge bg-primary text-decoration-none">{{ t.name }}</a>
               {% endfor %}
             </div>
-            <small class="text-muted">{{ article.published_at.strftime('%b %d, %Y') if article.published_at }}</small>
+            <small class="text-muted">{{ article.published_at|az_date('%b %d, %Y') }}</small>
           </div>
         </div>
       </div>
@@ -49,7 +55,7 @@
                 {% for t in article.tags %}
                 <a href="/articles/tag/{{ t.slug }}" class="badge bg-light text-dark text-decoration-none me-1">{{ t.name }}</a>
                 {% endfor %}
-                <span class="text-muted ms-2">{{ article.published_at.strftime('%b %d, %Y') if article.published_at }}</span>
+                <span class="text-muted ms-2">{{ article.published_at|az_date('%b %d, %Y') }}</span>
               </div>
             </div>
             {% if article.featured_image %}

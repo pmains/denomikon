@@ -821,14 +821,11 @@ def parse_item_details(html: str, meeting_id: str, body: str, agenda_item_number
     # Fallback: if no structured description found, extract all visible
     # text from the detail HTML excluding script, style, and navigation.
     if not description_text:
-        for script in _find_all(root, "script"):
-            script.decompose()
-        for style in _find_all(root, "style"):
-            style.decompose()
-        for nav in _find_all(root, "nav"):
-            nav.decompose()
-        body_tag = _find_one(root, "body") or root
-        raw = _clean_html_text(_node_text(body_tag))
+        try:
+            body_tag = _find_one(root, "body") or root
+            raw = _clean_html_text(_node_text(body_tag))
+        except Exception:
+            raw = _clean_html_text(_node_text(root))
         # Remove generic OnBase chrome text
         for boilerplate in ["OnBase Agenda Online", "Hide Media", "Home", "Meetings", "Contact",
                             "Supporting Documents", "Item not found",

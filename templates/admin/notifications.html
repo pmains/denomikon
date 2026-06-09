@@ -22,7 +22,7 @@
           {{ n.message }}
         {% endif %}
       </div>
-      <small class="text-muted">{{ n.created_at.strftime('%B %d, %Y at %I:%M %p %Z') }}</small>
+      <small class="text-muted">{{ n.created_at|az_date('%B %d, %Y at %I:%M %p AZ') }}</small>
       {% if not n.is_read %}<span class="badge bg-primary ms-2">New</span>{% endif %}
     </div>
     <form method="POST" action="/admin/notifications/{{ n.id }}/delete" style="display:inline">

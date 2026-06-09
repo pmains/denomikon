@@ -13,7 +13,7 @@
         {% for t in article.tags %}
         <span class="badge bg-light text-dark me-1">{{ t.name }}</span>
         {% endfor %}
-        {% if article.published_at %}{{ article.published_at.strftime('%b %d, %Y') }}{% endif %}
+        {{ article.published_at|az_date('%b %d, %Y') }}
       </div>
     </div>
   </div>

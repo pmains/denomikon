@@ -13,7 +13,7 @@
           <div>
             {% if article.is_featured %}<span class="badge bg-warning text-dark me-1" title="Featured">★</span>{% endif %}
             <a href="/admin/articles/{{ article.id }}/edit" class="fw-bold text-decoration-none">{{ article.title[:80] }}{% if article.title|length > 80 %}…{% endif %}</a>
-            <small class="text-muted ms-2">{{ article.published_at.strftime('%b %d %Y') if article.published_at else '' }}</small>
+            <small class="text-muted ms-2">{{ article.published_at|az_date('%b %d %Y') }}</small>
             {% if article.tags %}
               {% for t in article.tags %}<span class="badge bg-light text-dark ms-1">{{ t.name }}</span>{% endfor %}
             {% endif %}

@@ -682,6 +682,7 @@ async def main() -> int:
             fetch_page, build_month_url,
             JURISDICTION_ID, PUBLIC_BODY_CODE,
         )
+        from scraper.destiny_common import fetch_agenda_memo_docs
 
         init_db()
 
@@ -743,15 +744,34 @@ async def main() -> int:
                     replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
                     continue
 
+                # ── Extract supporting docs from item memo pages ──
+                supp_docs = []
+                seen_memo_urls: set[str] = set()
+                for it in items:
+                    memo_url = it.get("agenda_item_url", "") or it.get("source_url", "")
+                    if memo_url and memo_url not in seen_memo_urls:
+                        seen_memo_urls.add(memo_url)
+                        try:
+                            docs = fetch_agenda_memo_docs(memo_url, timeout=15)
+                            for doc in docs:
+                                an = it.get("agenda_item_number", "")
+                                doc["agenda_item_id"] = 0
+                                doc["agenda_item_number"] = an
+                                supp_docs.append(doc)
+                        except Exception as de:
+                            log.debug("Memo docs failed for %s item %s: %s",
+                                      meeting_id, it.get("agenda_item_number", ""), de)
+
                 agenda_item_dicts = []
                 for it in items:
                     an = it.get("agenda_item_number", "")
+                    item_url = it.get("agenda_item_url", "") or it.get("source_url", "")
                     agenda_item_dicts.append({
                         "agenda_item_id": body_code + "-" + meeting_id + "_" + an,
                         "meeting_id": meeting_id, "agenda_item_number": an,
                         "agenda_item_title": it.get("agenda_item_title", ""),
                         "agenda_item_text": it.get("agenda_item_text", ""),
-                        "agenda_item_url": "", "vote_or_action": "",
+                        "agenda_item_url": item_url, "vote_or_action": "",
                         "item_type": it.get("item_type", ""),
                         "agenda_category": it.get("agenda_category", ""),
                         "source_body": body_code, "source_url": agenda_url,
@@ -759,11 +779,15 @@ async def main() -> int:
                         "sort_order": it.get("sort_order", 0),
                     })
 
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_item_dicts)
+                replace_meeting_data_safe(
+                    session, body_code, meeting_id, meeting_dict,
+                    agenda_item_dicts, supporting_doc_dicts=supp_docs,
+                )
                 total_items += len(items)
 
                 ts = _dt.datetime.now().strftime("%H:%M:%S")
-                print("%s [%d/%d] %s %s: %d item(s)" % (ts, idx, meeting_count, meeting_id, meeting_date, len(items)))
+                doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
+                print("%s [%d/%d] %s %s: %d item(s)%s" % (ts, idx, meeting_count, meeting_id, meeting_date, len(items), doc_summary))
 
                 # -- Scottsdale minutes vote extraction --
                 minutes_url = m.get("minutes_url", "")
@@ -826,6 +850,8 @@ async def main() -> int:
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe
         from scraper.goodyear import search_goodyear_meetings, fetch_page, parse_agenda_items, BODY_MAP, DEFAULT_BODY_SLUGS, GOODYEAR_ID, BASE_URL
+        from scraper.destiny_common import fetch_agenda_memo_docs, BASE_URL as DESTINY_BASE_URL
+        import urllib.parse as _gy_url
         init_db()
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
         body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
@@ -863,13 +889,114 @@ async def main() -> int:
                     replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
                     print("  [%d/%d] %s %s: no items" % (idx, meeting_count, meeting_id, meeting_date))
                     continue
+
+                # ── Extract supporting docs and item text from Destiny memo pages ──
+                # For each agenda item, find its View Agenda Memo link in the HTML
+                # and fetch docs + text from that memo page, assigning the correct
+                # agenda_item_number to each document and item text to the item.
+                supp_docs = []
+                seen_memo_urls: set[str] = set()
+                import re as _gy_re
+                # Build item_number -> memo_url map by walking item anchor blocks.
+                # Each item has an <a class="ai_link" id="ReturnToNNNN"> anchor.
+                # The memo link is within the block from this anchor to the next.
+                item_memo_map: dict[str, str] = {}
+                anchors = list(_gy_re.finditer(
+                    r'<a\s+class="ai_link"[^>]*id="ReturnTo(\d+)"',
+                    html
+                ))
+                for i, anchor_m in enumerate(anchors):
+                    block_start = anchor_m.start()
+                    if i + 1 < len(anchors):
+                        block_end = anchors[i + 1].start()
+                    else:
+                        block_end = len(html)
+                    block = html[block_start:block_end]
+                    item_num_m = _gy_re.search(r'<td[^>]*>(\d+)\.</td>', block)
+                    if not item_num_m:
+                        continue
+                    item_num = item_num_m.group(1)
+                    memo_m = _gy_re.search(
+                        r'<a[^>]*title=[\"\']View Agenda Memo[\"\'][^>]*href=[\"\']([^\"\']+)[\"\']',
+                        block, _gy_re.I
+                    )
+                    if memo_m:
+                        memo_url = memo_m.group(1)
+                        memo_url = _gy_re.sub(r'&amp;', '&', memo_url)
+                        memo_url = _gy_url.urljoin(DESTINY_BASE_URL, memo_url)
+                        item_memo_map[item_num] = memo_url
+
+                # ── Helper: extract clean text from a memo page ──
+                def _extract_memo_text(memo_html: str) -> str:
+                    """Strip HTML from a memo page and return meaningful content."""
+                    import html as _html_mod
+                    t = memo_html
+                    # Decode HTML entities first (before stripping tags)
+                    t = _html_mod.unescape(t)
+                    # Remove scripts and styles
+                    t = _gy_re.sub(r'<script[^>]*>.*?</script>', '', t, flags=_gy_re.DOTALL | _gy_re.I)
+                    t = _gy_re.sub(r'<style[^>]*>.*?</style>', '', t, flags=_gy_re.DOTALL | _gy_re.I)
+                    # Replace breaks with newlines, then strip remaining tags
+                    t = _gy_re.sub(r'<br\s*/?>', '\n', t, flags=_gy_re.I)
+                    t = _gy_re.sub(r'<[^>]+>', '\n', t)
+                    t = _gy_re.sub(r'\n{3,}', '\n\n', t)
+                    # Clean up whitespace per line
+                    lines = [l.strip() for l in t.split('\n') if l.strip()]
+                    skip_prefixes = (
+                        'Agenda - View Meetings', 'Print', 'Reading Mode',
+                        'Back to Calendar', 'Return', 'GO TO', 'AgendaQuick',
+                        'All Rights Reserved',
+                    )
+                    meaningful = []
+                    hit_agenda_item = False
+                    for line in lines:
+                        if line.startswith('AGENDA ITEM #'):
+                            hit_agenda_item = True
+                            continue
+                        if not hit_agenda_item:
+                            continue
+                        if line.startswith(skip_prefixes):
+                            continue
+                        # Strip leading colons/whitespace artifacts
+                        line = line.lstrip(':').strip()
+                        meaningful.append(line)
+                    return '\n\n'.join(meaningful) if meaningful else ''
+
+                # Fetch per-item memo pages for docs and item text
+                for it in items:
+                    an = it.get("agenda_item_number", "")
+                    memo_url = item_memo_map.get(an) or it.get("agenda_item_url", "") or it.get("source_url", "")
+                    if not memo_url or memo_url in seen_memo_urls:
+                        continue
+                    seen_memo_urls.add(memo_url)
+                    try:
+                        # Fetch the memo page HTML once
+                        memo_raw = fetch_page(memo_url, timeout=15)
+                        # Extract supporting documents from this memo
+                        docs = fetch_agenda_memo_docs(memo_url, timeout=15)
+                        for doc in docs:
+                            doc["agenda_item_id"] = 0
+                            doc["agenda_item_number"] = an
+                            supp_docs.append(doc)
+                        # Extract item text from memo page
+                        memo_text = _extract_memo_text(memo_raw)
+                        if memo_text:
+                            it["agenda_item_text"] = memo_text
+                    except Exception as de:
+                        log.debug("Memo fetch failed for %s item %s: %s",
+                                  meeting_id, an, de)
+
                 agenda_item_dicts = []
                 for it in items:
                     an = it.get("agenda_item_number", "")
                     agenda_item_dicts.append({"agenda_item_id": body_code + "-" + meeting_id + "_" + an, "meeting_id": meeting_id, "agenda_item_number": an, "agenda_item_title": it.get("agenda_item_title", ""), "agenda_item_text": it.get("agenda_item_text", ""), "source_body": body_code, "source_url": agenda_url, "sort_order": it.get("sort_order", 0)})
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_item_dicts)
+                replace_meeting_data_safe(
+                    session, body_code, meeting_id, meeting_dict,
+                    agenda_item_dicts, supporting_doc_dicts=supp_docs,
+                )
                 total_items += len(items)
-                print("  [%d/%d] %s %s: %d item(s)" % (idx, meeting_count, meeting_id, meeting_date, len(items)))
+                doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
+                print("  [%d/%d] %s %s: %d item(s)%s" % (idx, meeting_count, meeting_id, meeting_date, len(items), doc_summary))
             except Exception as e:
                 log.error("Failed Goodyear meeting %s: %s", meeting_id, e)
         session.close()
@@ -1270,6 +1397,7 @@ async def main() -> int:
 
         from scraper.scottsdale import (
             search_meetings, download_pdf, parse_agenda_items,
+            extract_supporting_docs,
             PUBLIC_BODY_CODE,
         )
 
@@ -1336,7 +1464,18 @@ async def main() -> int:
                         "c_number_base": "", "case_number": "",
                         "sort_order": it.get("sort_order", 0)})
 
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_dicts)
+                                # ── Extract supporting docs embedded in the PDF ──
+                supp_docs = []
+                if pdf:
+                    try:
+                        supp_docs = extract_supporting_docs(pdf)
+                    except Exception as de:
+                        log.debug("Scottsdale doc extraction failed: %s", de)
+
+                replace_meeting_data_safe(
+                    session, body_code, meeting_id, meeting_dict,
+                    agenda_dicts, supporting_doc_dicts=supp_docs,
+                )
                 total_items += len(items)
 
                 ts = _dt.datetime.now().strftime("%H:%M:%S")
@@ -1818,6 +1957,7 @@ async def main() -> int:
             fetch_page, BASE_URL, ORG_ID,
             DEFAULT_BODY_SLUGS,
         )
+        from scraper.destiny_common import fetch_agenda_memo_docs
         init_db()
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
         body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
@@ -1855,13 +1995,37 @@ async def main() -> int:
                     replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
                     print("  [%d/%d] %s %s: no items" % (idx, meeting_count, meeting_id, meeting_date))
                     continue
+
+                # ── Extract supporting docs from Destiny memo pages ──
+                supp_docs = []
+                seen_memo_urls: set[str] = set()
+                for it in items:
+                    memo_url = it.get("agenda_item_url", "") or it.get("source_url", "")
+                    if memo_url and memo_url not in seen_memo_urls:
+                        seen_memo_urls.add(memo_url)
+                        try:
+                            docs = fetch_agenda_memo_docs(memo_url, timeout=15)
+                            for doc in docs:
+                                an = it.get("agenda_item_number", "")
+                                doc["agenda_item_id"] = 0
+                                doc["agenda_item_number"] = an
+                                supp_docs.append(doc)
+                        except Exception as de:
+                            log.debug("Memo docs failed for %s item %s: %s",
+                                      meeting_id, it.get("agenda_item_number", ""), de)
+
                 agenda_item_dicts = []
                 for it in items:
                     an = it.get("agenda_item_number", "")
-                    agenda_item_dicts.append({"agenda_item_id": body_code + "-" + meeting_id + "_" + an, "meeting_id": meeting_id, "agenda_item_number": an, "agenda_item_title": it.get("agenda_item_title", ""), "agenda_item_text": it.get("agenda_item_text", ""), "source_body": body_code, "source_url": agenda_url, "sort_order": it.get("sort_order", 0)})
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_item_dicts)
+                    item_url = it.get("agenda_item_url", "") or it.get("source_url", "")
+                    agenda_item_dicts.append({"agenda_item_id": body_code + "-" + meeting_id + "_" + an, "meeting_id": meeting_id, "agenda_item_number": an, "agenda_item_title": it.get("agenda_item_title", ""), "agenda_item_text": it.get("agenda_item_text", ""), "agenda_item_url": item_url, "source_body": body_code, "source_url": agenda_url, "sort_order": it.get("sort_order", 0)})
+                replace_meeting_data_safe(
+                    session, body_code, meeting_id, meeting_dict,
+                    agenda_item_dicts, supporting_doc_dicts=supp_docs,
+                )
                 total_items += len(items)
-                print("  [%d/%d] %s %s: %d item(s)" % (idx, meeting_count, meeting_id, meeting_date, len(items)))
+                doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
+                print("  [%d/%d] %s %s: %d item(s)%s" % (idx, meeting_count, meeting_id, meeting_date, len(items), doc_summary))
             except Exception as e:
                 log.error("Failed El Mirage meeting %s: %s", meeting_id, e)
         session.close()
@@ -1950,9 +2114,27 @@ async def main() -> int:
                         item["agenda_item_id"] = f"{body_code}-{meeting_id}_{an}"
                         item["source_body"] = body_code
                         item["source_url"] = agenda_url
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, items)
+
+                # ── Build supporting docs from CivicClerk published files ──
+                supp_docs = []
+                for sf in m.get("supporting_files", []):
+                    supp_docs.append({
+                        "agenda_item_id": 0,
+                        "agenda_item_number": "",
+                        "document_title": sf["file_name"],
+                        "document_url": sf["url"],
+                        "document_type": sf["type"],
+                        "body": body_code,
+                        "meeting_id": meeting_id,
+                    })
+
+                replace_meeting_data_safe(
+                    session, body_code, meeting_id, meeting_dict,
+                    items, supporting_doc_dicts=supp_docs,
+                )
                 total_items += len(items)
-                print("  [%d/%d] %s %s: %d items synced" % (idx, meeting_count, meeting_id, meeting_date, len(items)))
+                doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
+                print("  [%d/%d] %s %s: %d items synced%s" % (idx, meeting_count, meeting_id, meeting_date, len(items), doc_summary))
             except Exception as e:
                 log.error("Failed Avondale meeting %s: %s", meeting_id, e)
 
@@ -2181,15 +2363,42 @@ async def main() -> int:
     if args.source == "surprise-civicclerk" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe
-        from scraper.surprise_civicclerk import search_meetings, fetch_and_parse_agenda, DEFAULT_BODY_SLUGS
+        from scraper.civicclerk import CivicClerkConfig, search_meetings, fetch_and_parse_agenda
+
+        surprise_config = CivicClerkConfig(
+            subdomain="surpriseaz",
+            body_map={
+                "Planning and Zoning Commission": ("surprise-pz", "surprise-pz", "Planning & Zoning Commission"),
+                "Regular City Council Meeting": ("surprise-cc", "surprise-cc", "City Council"),
+                "Regular City Council Work Session": ("surprise-cc", "surprise-cc", "City Council Work Session"),
+                "Special City Council Meeting": ("surprise-cc", "surprise-cc", "Special City Council Meeting"),
+                "Arts and Cultural Advisory Commission": ("surprise-arts", "surprise-arts", "Arts & Cultural Advisory Commission"),
+                "Arts & Cultural Advisory Commission": ("surprise-arts", "surprise-arts", "Arts & Cultural Advisory Commission"),
+                "Veteran, Disability and Human Service Commission": ("surprise-veterans", "surprise-veterans", "Veterans, Disability & Human Services"),
+                "Library Commission": ("surprise-library", "surprise-library", "Library Commission"),
+                "Library Advisory Commission": ("surprise-library", "surprise-library", "Library Advisory Commission"),
+                "Parks and Recreation Commission": ("surprise-parks", "surprise-parks", "Parks & Recreation Commission"),
+                "Public Safety Personnel Retirement System Commission \u2013 Fire": ("surprise-psprs-fire", "surprise-psprs-fire", "PSPRS Fire"),
+                "Public Safety Personnel Retirement System Commission \u2013 Police": ("surprise-psprs-police", "surprise-psprs-police", "PSPRS Police"),
+                "Health Benefits Trust Fund Board": ("surprise-health-benefits", "surprise-health-benefits", "Health Benefits Trust Fund Board"),
+                "Boards and Commissions Nominations Committee": ("surprise-nominations", "surprise-nominations", "Boards & Commissions Nominations"),
+                "City Audit Committee": ("surprise-audit", "surprise-audit", "City Audit Committee"),
+                "Tourism Fund Subcommittee": ("surprise-tourism", "surprise-tourism", "Tourism Fund Subcommittee"),
+                "Judicial Selection Advisory Commission": ("surprise-judicial-selection", "surprise-judicial-selection", "Judicial Selection Advisory Commission"),
+            },
+            default_body="surprise-pz",
+        )
+
         init_db()
-        body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
-        body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
+        body_slugs_str = getattr(args, "bodies", None) or "surprise-pz"
+        body_slugs = None if body_slugs_str == "all" else [s.strip() for s in body_slugs_str.split(",") if s.strip()]
         year_val = getattr(args, "year", None)
         year = int(year_val) if year_val else _dt.date.today().year
-        start_date = f"{year}-01-01"
+        start_date = getattr(args, "start_date", None) or f"{year}-01-01"
         print("Searching Surprise CivicClerk meetings from %s..." % start_date)
-        meetings = search_meetings(start_date=start_date, body_slugs=body_slugs)
+        meetings = search_meetings(surprise_config, start_date=start_date)
+        if body_slugs:
+            meetings = [m for m in meetings if m["body_code"] in body_slugs]
         if not meetings:
             print("No Surprise CivicClerk meetings found.")
             return 0
@@ -2216,15 +2425,33 @@ async def main() -> int:
             try:
                 items = []
                 if agenda_url:
-                    items = fetch_and_parse_agenda(agenda_url, meeting_id)
+                    items = fetch_and_parse_agenda(agenda_url, meeting_id, body_code)
                     for item in items:
                         an = item.get("agenda_item_number", "") or ""
                         item["agenda_item_id"] = f"{body_code}-{meeting_id}_{an}"
                         item["source_body"] = body_code
                         item["source_url"] = agenda_url
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, items)
+
+                # ── Build supporting docs from CivicClerk published files ──
+                supp_docs = []
+                for sf in m.get("supporting_files", []):
+                    supp_docs.append({
+                        "agenda_item_id": 0,
+                        "agenda_item_number": "",
+                        "document_title": sf["file_name"],
+                        "document_url": sf["url"],
+                        "document_type": sf["type"],
+                        "body": body_code,
+                        "meeting_id": meeting_id,
+                    })
+
+                replace_meeting_data_safe(
+                    session, body_code, meeting_id, meeting_dict,
+                    items, supporting_doc_dicts=supp_docs,
+                )
                 total_items += len(items)
-                print("  [%d/%d] %s %s: %d items synced" % (idx, meeting_count, meeting_id, meeting_date, len(items)))
+                doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
+                print("  [%d/%d] %s %s: %d items synced%s" % (idx, meeting_count, meeting_id, meeting_date, len(items), doc_summary))
             except Exception as e:
                 log.error("Failed Surprise CivicClerk meeting %s: %s", meeting_id, e)
         session.close()

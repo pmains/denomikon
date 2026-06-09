@@ -1,6 +1,35 @@
 {% extends "base.html" %}
 {% block title %}{{ article.title }} — Poliscopic{% endblock %}
+{% block meta_description %}
+{% if article.summary %}
+<meta name="description" content="{{ article.summary[:250] }}">
+{% endif %}
+{% endblock %}
+{% block canonical %}
+<link rel="canonical" href="https://poliscopic.com/articles/{{ article.slug }}">
+{% endblock %}
 {% block extra_css %}
+{% if article.published_at %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "NewsArticle",
+  "headline": {{ article.title|tojson }},
+  "url": "https://poliscopic.com/articles/{{ article.slug }}",
+  "datePublished": "{{ article.published_at|az_date('%Y-%m-%dT%H:%M:%S%z') }}",{% if article.author %}
+  "author": {
+    "@type": "Person",
+    "name": {{ article.author.display_name|tojson }}
+  },{% endif %}
+  "description": {{ (article.summary or article.title)[:250]|tojson }},
+  "publisher": {
+    "@type": "Organization",
+    "name": "Poliscopic",
+    "url": "https://poliscopic.com"
+  }
+}
+</script>
+{% endif %}
 <style>
   .article-body table {
     width: 100%;
@@ -27,6 +56,7 @@
   }
   .article-featured-image img {
     max-height: 350px;
+    max-width: 100%;
     width: auto;
     height: auto;
     border-radius: 8px;
@@ -59,7 +89,7 @@
   <h1>{{ article.title }}</h1>
   <p class="text-muted">
     {% if article.published_at %}
-      Published {{ article.published_at.strftime('%B %d, %Y') }}
+      Published {{ article.published_at|az_date }}
     {% endif %}
     {% if article.author %}
       · by {{ article.author.display_name }}

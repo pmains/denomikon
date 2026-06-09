@@ -286,7 +286,66 @@ log_info "Writing summary → $SUMMARY_FILE"
 
 } > "$SUMMARY_FILE"
 
-# ── Step 6: Clean up old logs ──────────────────────────────────────────────
+# ── Step 6: Doc availability check ─────────────────────────────────────────
+# Lightweight probe for Tempe OnBase meetings that may have newly-published
+# item-level supporting documents.  Only runs if the main sync succeeded.
+if [ "$COMPLETION_STATUS" != "failed" ]; then
+    log_info "Seeding doc check for newly-synced Tempe meetings..."
+    # Seed next_doc_check_at for Tempe meetings that:
+    #   - have items extracted but no supporting docs
+    #   - are from the last 30 days
+    #   - don't already have next_doc_check_at set
+    #   - aren't known doc-less types (Executive, Cancelled)
+    $PYTHON -c "
+import sys; sys.path.insert(0, '.')
+from db import get_session
+from db.models import Meeting
+from sqlalchemy import or_
+from datetime import date, datetime, timedelta, timezone
+
+session = get_session()
+now = datetime.now(timezone.utc)
+today = date.today()
+thirty_days_ago = today - timedelta(days=30)
+
+rows = session.query(Meeting).filter(
+    Meeting.body.like('tempe%'),
+    Meeting.items_extracted == True,
+    Meeting.supporting_docs_extracted == False,
+    Meeting.next_doc_check_at.is_(None),
+    Meeting.meeting_date >= thirty_days_ago.isoformat(),
+    Meeting.sync_status.in_(['complete', 'pending']),
+).all()
+
+skip_types = ['executive', 'cancelled', 'canceled']
+seeded = 0
+for m in rows:
+    mt = (m.meeting_type or '').lower()
+    if any(s in mt for s in skip_types):
+        continue
+    # Future meeting: check 1 day after meeting date
+    # Past meeting: check in 2 days
+    try:
+        md = date.fromisoformat(m.meeting_date) if m.meeting_date else today
+    except (ValueError, TypeError):
+        md = today
+    if md >= today:
+        m.next_doc_check_at = date(md.year, md.month, md.day).isoformat() + 'T00:00:00'
+    else:
+        m.next_doc_check_at = now + timedelta(days=2)
+    seeded += 1
+
+session.commit()
+session.close()
+print(f'Seeded {seeded} meeting(s) for doc check')
+" 2>&1 || true
+
+    log_info "Checking for newly-available supporting documents..."
+    DOC_CHECK_OUTPUT="$($PYTHON scripts/doc_check.py --apply 2>&1)" || true
+    echo "$DOC_CHECK_OUTPUT" | while IFS= read -r line; do log_info "  $line"; done
+fi
+
+# ── Step 7: Clean up old logs ──────────────────────────────────────────────
 log_info "Cleaning up logs older than $LOG_RETENTION_DAYS days..."
 find "$LOG_DIR" -name '*.log.gz' -type f -mtime +$LOG_RETENTION_DAYS -exec rm -v {} \;
 find "$LOG_DIR" -name '*-summary.txt' -type f -mtime +$LOG_RETENTION_DAYS -exec rm -v {} \;

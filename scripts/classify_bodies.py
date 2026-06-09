@@ -201,6 +201,22 @@ BODY_TYPE_CLASSIFICATION = {
     # ── Goodyear ──
     "goodyear-cc": "primary",
     "goodyear-pz": "land_use",
+    "goodyear-acc": "advisory_general",
+    "goodyear-yc": "advisory_general",
+    "goodyear-wac": "advisory_general",
+    "goodyear-psprs": "fiscal_oversight",
+    "goodyear-psprs-f": "fiscal_oversight",
+    "goodyear-psprs-p": "fiscal_oversight",
+    "goodyear-psprs-j": "fiscal_oversight",
+    "goodyear-audit": "fiscal_oversight",
+    "goodyear-quorum": "primary",
+    "goodyear-ida": "infrastructure",
+    "goodyear-parks": "culture_recreation",
+    "goodyear-boa": "land_use",
+    "goodyear-cfd": "fiscal_oversight",
+    "goodyear-healthcare": "fiscal_oversight",
+    "goodyear-fr": "fiscal_oversight",
+    "goodyear-public-art": "culture_recreation",
 
     # ── Paradise Valley ──
     "paradise-valley-boa": "land_use",

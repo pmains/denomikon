@@ -1,7 +1,15 @@
 {% extends "base.html" %}
-{% block title %}Meetings — Poliscopic Meetings{% endblock %}
+{% block title %}Arizona Public Meetings Tracker | Agendas, Votes & Government Documents | Poliscopic{% endblock %}
+{% block meta_description %}
+<meta name="description" content="Search Arizona public meetings, agendas, votes, staff reports, development cases, contracts, permits, and supporting documents from city councils, planning commissions, county boards, and public agencies.">
+{% endblock %}
+{% block canonical %}
+<link rel="canonical" href="https://poliscopic.com/meetings">
+{% endblock %}
 {% block content %}
-<h1 class="mb-4">Meetings</h1>
+<h1 class="mb-2">Arizona Public Meetings Tracker</h1>
+
+<p class="text-muted mb-4">Poliscopic tracks public meetings across Arizona, including city councils, planning commissions, county boards, transportation agencies, school districts, and other public bodies. Search agendas, votes, staff reports, development cases, contracts, permits, and supporting documents to find important local policy decisions before they disappear into consent agendas or meeting packets.</p>
 
 <form method="GET" action="/meetings" class="row g-3 mb-4 align-items-end">
     <div class="col-md-2">
@@ -200,6 +208,15 @@
             <option value="goodyear-wac" {% if filter_body == 'goodyear-wac' %}selected{% endif %}>Water Advisory</option>
             <option value="goodyear-yc" {% if filter_body == 'goodyear-yc' %}selected{% endif %}>Youth Comm</option>
             <option value="goodyear-audit" {% if filter_body == 'goodyear-audit' %}selected{% endif %}>Audit</option>
+            <option value="goodyear-ida" {% if filter_body == 'goodyear-ida' %}selected{% endif %}>IDA</option>
+            <option value="goodyear-parks" {% if filter_body == 'goodyear-parks' %}selected{% endif %}>Parks &amp; Rec</option>
+            <option value="goodyear-boa" {% if filter_body == 'goodyear-boa' %}selected{% endif %}>Bd of Adjustment</option>
+            <option value="goodyear-cfd" {% if filter_body == 'goodyear-cfd' %}selected{% endif %}>CFD</option>
+            <option value="goodyear-quorum" {% if filter_body == 'goodyear-quorum' %}selected{% endif %}>Quorum Notices</option>
+            <option value="goodyear-psprs" {% if filter_body == 'goodyear-psprs' %}selected{% endif %}>PSPRS Board</option>
+            <option value="goodyear-healthcare" {% if filter_body == 'goodyear-healthcare' %}selected{% endif %}>Healthcare Trust</option>
+            <option value="goodyear-fr" {% if filter_body == 'goodyear-fr' %}selected{% endif %}>Firefighter Retirement</option>
+            <option value="goodyear-public-art" {% if filter_body == 'goodyear-public-art' %}selected{% endif %}>Public Art</option>
             </optgroup>
             <optgroup label="City of Phoenix">
             <option value="phoenix-cc" {% if filter_body == 'phoenix-cc' %}selected{% endif %}>City Council</option>

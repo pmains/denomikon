@@ -38,7 +38,7 @@ def _print_top_level_help() -> None:
     print("  queen-creek  Town of Queen Creek (Council, Planning, boards via Granicus)")
     print("  peoria    City of Peoria (Council, P&Z, BOA, DRB, HPC via NovusAgenda)")
     print("  surprise              City of Surprise (Council via Granicus, legacy)")
-    print("  surprise-civicclerk   City of Surprise (P&Z, boards via CivicClerk API)")
+    print("  surprise-civicclerk   City of Surprise (all bodies via CivicClerk API)")
     print("  tucson                City of Tucson (Mayor & Council via OnBase)")
     print("  tucson-pc             City of Tucson (Planning Commission via listing page + PDF)")
     print("  phoenix-aem  Phoenix boards/commissions via Adobe AEM (Planning, Village, Historic Pres, etc.)")

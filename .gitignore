@@ -9,6 +9,9 @@ snapshots/
 # Data directory (downloaded agendas, database, metadata CSV outputs)
 data/
 
+# Sync monitor logs (never shipped to production or git)
+data/sync/
+
 # Logs
 logs/
 
@@ -73,3 +76,4 @@ bsky.credentials
 scripts/run_daily_sync.sh
 SYNC.md
 *.zip
+drafts/

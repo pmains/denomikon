@@ -76,7 +76,7 @@
                 <a href="/articles/{{ article.slug }}" class="list-group-item list-group-item-action">
                     <div class="d-flex justify-content-between align-items-center">
                         <strong class="small">{{ article.title[:80] }}{% if article.title|length > 80 %}&hellip;{% endif %}</strong>
-                        <small class="text-muted">{{ article.published_at.strftime('%b %d') if article.published_at else '' }}</small>
+                        <small class="text-muted">{{ article.published_at|az_date('%b %d') }}</small>
                     </div>
                     <p class="mb-0 small text-muted">{{ article.summary[:180] }}{% if article.summary|length > 180 %}&hellip;{% endif %}</p>
                 </a>

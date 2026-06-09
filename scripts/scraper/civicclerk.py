@@ -89,6 +89,7 @@ def parse_events_to_meetings(config: CivicClerkConfig, events: list[dict]) -> li
 
         agenda_url = ""
         minutes_url = ""
+        supporting_files = []
         for pf in e.get("publishedFiles", []):
             ftype = pf.get("type", "")
             fid = pf.get("fileId")
@@ -96,6 +97,11 @@ def parse_events_to_meetings(config: CivicClerkConfig, events: list[dict]) -> li
                 agenda_url = f"{config.api_base}/Meetings/GetMeetingFileStream(fileId={fid},plainText=false)"
             elif ftype == "Minutes" and not minutes_url and fid:
                 minutes_url = f"{config.api_base}/Meetings/GetMeetingFileStream(fileId={fid},plainText=false)"
+            supporting_files.append({
+                "type": ftype,
+                "file_name": pf.get("name", "") or f"{ftype}",
+                "url": f"{config.api_base}/Meetings/GetMeetingFileStream(fileId={fid},plainText=false)" if fid else "",
+            })
 
         meetings.append({
             "meeting_id": str(event_id) if event_id else f"cc-{date_raw}",
@@ -107,6 +113,7 @@ def parse_events_to_meetings(config: CivicClerkConfig, events: list[dict]) -> li
             "event_id": event_id,
             "agenda_url": agenda_url,
             "minutes_url": minutes_url,
+            "supporting_files": supporting_files,
             "source_url": portal_url,
         })
     return meetings

@@ -64,8 +64,8 @@
             {% endif %}
           </td>
           <td>
-            <small class="text-muted">{{ d.created_at.strftime('%b %d %H:%M') if d.created_at else '' }}</small>
-            {% if d.posted_at %}<br><small class="text-success">posted {{ d.posted_at.strftime('%b %d %H:%M') }}</small>{% endif %}
+            <small class="text-muted">{{ d.created_at|az_date('%b %d %H:%M') }}</small>
+            {% if d.posted_at %}<br><small class="text-success">posted {{ d.posted_at|az_date('%b %d %H:%M') }}</small>{% endif %}
           </td>
           <td>
             <div class="d-flex flex-wrap gap-1">

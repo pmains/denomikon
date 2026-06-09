@@ -16,7 +16,7 @@ from scraper.io_utils import _normalize_text_date
 
 log = logging.getLogger(__name__)
 
-JURISDICTION_ID = 14  # City of Goodyear
+JURISDICTION_ID = 16  # City of Goodyear
 PUBLIC_BODY_CODE = "goodyear-cc"
 SOURCE_SYSTEM = "agendaquick"
 SOURCE_INSTANCE_URL = "https://public.destinyhosted.com"
@@ -45,9 +45,37 @@ BODY_MAP: dict[str, tuple[str, str]] = {
     "audit committee": ("goodyear-audit-committee", "goodyear-audit"),
     "notice of quorum": ("goodyear-notice-of-quorum", "goodyear-quorum"),
     "notice quorum": ("goodyear-notice-of-quorum", "goodyear-quorum"),
+
+    # Missing bodies discovered June 2026
+    "industrial development authority": ("goodyear-ida", "goodyear-ida"),
+    "ida": ("goodyear-ida", "goodyear-ida"),
+    "parks & recreation advisory commission": ("goodyear-parks", "goodyear-parks"),
+    "parks and recreation": ("goodyear-parks", "goodyear-parks"),
+    "board of adjustment": ("goodyear-boa", "goodyear-boa"),
+    "community facilities district": ("goodyear-cfd", "goodyear-cfd"),
+    "joint community facilities district": ("goodyear-cfd", "goodyear-cfd"),
+    "self-insured healthcare trust": ("goodyear-healthcare-trust", "goodyear-healthcare"),
+    "volunteer & reserve firefighter": ("goodyear-firefighter-retirement", "goodyear-fr"),
+    "public art subcommittee": ("goodyear-public-art", "goodyear-public-art"),
 }
 
-DEFAULT_BODY_SLUGS = ["goodyear-city-council"]
+DEFAULT_BODY_SLUGS = [
+    "goodyear-city-council",
+    "goodyear-planning-zoning-commission",
+    "goodyear-arts-culture-commission",
+    "goodyear-youth-commission",
+    "goodyear-water-advisory",
+    "goodyear-psprs",
+    "goodyear-audit-committee",
+    "goodyear-notice-of-quorum",
+    "goodyear-ida",
+    "goodyear-parks",
+    "goodyear-boa",
+    "goodyear-cfd",
+    "goodyear-healthcare-trust",
+    "goodyear-firefighter-retirement",
+    "goodyear-public-art",
+]
 
 HEADERS = {
     "User-Agent": (
@@ -238,6 +266,8 @@ def _parse_month_page(html: str, year: int, month: int) -> list[dict]:
 
             # This line is the meeting name
             title = _re.sub(r'<[^>]+>', '', stripped).strip()
+            # Decode HTML entities (e.g. &amp; → &)
+            title = html_mod.unescape(title)
             # Clean up any "*" prefix (future meeting indicator)
             title = _re.sub(r'^\*\s*', '', title)
             if title:

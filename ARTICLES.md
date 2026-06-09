@@ -97,9 +97,16 @@ descriptive labels — `[ev-staff-report]`, `[ev-agenda-item-4]`, `[ev-resolutio
 - Link text in the final article goes where the label is. See STYLE.md §6 for
   inline linking rules.
 
-### 6. Verify with Berry
+### 6. Verify with Berry — the claims ledger workflow
 
-At minimum, verify in these situations:
+Use `detect_hallucination_run` (NOT `detect_hallucination` — the inline span
+parameter has a known MCP bug). The run-based workflow resolves evidence from
+Berry's own ledger, which is more reliable and provides an audit trail.
+
+**Prerequisite:** Create a Berry run and add your source documents as evidence
+spans before drafting (see Phase 1, step 3).
+
+**When to verify:**
 
 - **After drafting** — full article verification before review
 - **After a significant edit** — if you substantially rewrote a section
@@ -108,10 +115,11 @@ At minimum, verify in these situations:
 **Workflow:**
 
 ```
-1. Create_claim for each factual claim in the draft
-2. Link_claim_evidence to connect each claim to its evidence span
-3. Run audit_trace_budget_run to score every claim against its evidence
-4. Review the results:
+1. Draft the article with inline citation labels [S2], [S4], etc.
+   (S-labels = the SIDs assigned by add_span in this Berry run)
+2. Run detect_hallucination_run with the article body as the "answer"
+   parameter, setting require_citations=True
+3. Review the results:
    ├── CLAIMS PASS → proceed
    └── CLAIMS FLAGGED → go to step 7
 ```
@@ -121,9 +129,16 @@ At minimum, verify in these situations:
 | Result | Meaning | Action |
 |---|---|---|
 | **PASS** | The cited evidence carries the claim | Move on |
-| **FLAG (no evidence)** | Claim has no citation label | Add a label or remove the claim |
+| **FLAG (missing citations)** | Claim has no `[S-label]` citation | Add a citation label to that claim |
 | **FLAG (not entailed)** | The evidence doesn't support the claim | Revise the claim or add better evidence |
-| **FLAG (uncited span)** | The label points to something that wasn't added as evidence | Fix the label or add the span |
+| **FLAG (verifier_error)** | The OpenAI verifier call failed | Check API key and retry |
+
+**Important notes:**
+- Berry splits the answer into atomic claims. Each sub-claim needs its OWN
+  citation label next to it. A single citation at the end of a list won't
+  carry through to earlier items.
+- SIDs are the identifiers Berry assigned when you called `add_span`
+  (e.g., S2, S3, S4). You can find them in the response from `add_span`.
 
 ### 7. Revise flagged claims
 
@@ -244,3 +259,28 @@ Scraper → Meeting identified → Thesis developed → Draft written
 | Date | Change |
 |---|---|
 | 2026-06-09 | Initial workflow — added Berry verification loop |
+
+## Lessons Learned
+
+### 1. Use `detect_hallucination_run`, not `detect_hallucination` (2026-06-09)
+
+`detect_hallucination` has a known bug in Berry v1.27.2 where the `spans`
+parameter is not parsed by the MCP server. Always use `detect_hallucination_run`
+which resolves evidence from the run ledger instead.
+
+### 2. Verify the API key has no non-ASCII characters (2026-06-09)
+
+The OpenAI API key must contain only ASCII characters. A masked key string
+with `…` (U+2026 horizontal ellipsis) caused httpx to fail when encoding the
+Authorization header. Symptoms: `UnicodeEncodeError: 'ascii' codec can't encode
+character '\\u2026'` from httpx._models._normalize_header_value.
+
+**Fix:** Use the actual API key from the environment, not a manually typed
+display string.
+
+### 3. Cite each item in a list separately (2026-06-09)
+
+Berry splits your answer into atomic claims. A sentence like "The three
+properties are at 19601 N. Scottsdale Road, 19190 N. 72nd Way, and 19194 N. 73rd
+Way [S2]" gets split into 4 sub-claims, but only the last one carries the
+citation. Each address needs its own `[S2]` label next to it.

@@ -1,0 +1,3 @@
+[mcp_servers.berry]
+command = "berry"
+args = ["mcp", "--server", "classic"]

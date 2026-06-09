@@ -14,7 +14,7 @@
             {% for t in article.tags %}
             <a href="/articles/tag/{{ t.slug }}" class="badge bg-light text-dark text-decoration-none me-1">{{ t.name }}</a>
             {% endfor %}
-            <span class="text-muted ms-2">Archived {{ article.archived_at.strftime('%b %d, %Y') if article.archived_at }}</span>
+            <span class="text-muted ms-2">Archived {{ article.archived_at|az_date('%b %d, %Y') }}</span>
           </div>
         </div>
       </div>

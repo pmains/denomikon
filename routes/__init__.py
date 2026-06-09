@@ -167,6 +167,20 @@ def create_app():
             extensions=["fenced_code", "tables", "sane_lists"],
         )
 
+    # ── Arizona timezone filter ──────────────────────────────────────────
+    from zoneinfo import ZoneInfo
+    _UTC = ZoneInfo("UTC")
+    _AZ = ZoneInfo("America/Phoenix")
+
+    @app.template_filter("az_date")
+    def _format_az_date(dt, fmt="%B %d, %Y"):
+        """Convert a UTC datetime to Arizona time and format it."""
+        if dt is None:
+            return ""
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_UTC)
+        return dt.astimezone(_AZ).strftime(fmt)
+
     # ── Initialize newsroom tables ───────────────────────────────────────
     from db.newsroom import init_newsroom_db, seed_default_tags, seed_default_users
     init_newsroom_db()

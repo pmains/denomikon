@@ -176,10 +176,13 @@ def parse_agenda_items(pdf_bytes: bytes, meeting_id: str) -> list[dict]:
 
     The PDF format has:
       N.    Item Name
-      Request: [motion text]
+      Request: [multi-line motion text including sub-items]
+      Location: ...
+      Staff Contact(s): ...
       – Action Result
 
-    Returns list of item dicts.
+    Returns list of item dicts with full item_text capturing all content
+    between the item number and the next item or action result.
     """
     text = extract_pdf_text(pdf_bytes)
     if not text:
@@ -191,42 +194,59 @@ def parse_agenda_items(pdf_bytes: bytes, meeting_id: str) -> list[dict]:
 
     i = 0
     while i < len(lines):
-        line = lines[i].strip()
-        if not line:
+        line = lines[i]
+        if not line.strip():
             i += 1
             continue
 
-        # Detect numbered items: "N.    Item Name"
-        item_match = re.match(r"^(\d+)\.\s+(.*)", line)
+        # Detect numbered items, allowing leading whitespace from -layout mode
+        item_match = re.match(r"^(\s*)(\d+)\.\s+(.*)", line)
         if not item_match:
             i += 1
             continue
 
-        item_number = item_match.group(1)
-        title = item_match.group(2).strip()
+        item_indent = len(item_match.group(1))  # leading whitespace
+        item_number = item_match.group(2)
+        title = item_match.group(3).strip()
 
-        # Collect the full title (next lines until blank or next item)
-        j = i + 1
-        while j < len(lines):
-            next_line = lines[j].strip()
-            if not next_line or re.match(r"^\d+\.", next_line):
-                break
-            if not next_line.startswith("Request:") and not next_line.startswith("–"):
-                title += " " + next_line
-            j += 1
+        # If we already have items and this indent is DEEPER than the last
+        # item's number, this is a sub-item (e.g. numbered request within Request:)
+        # — skip it, let it be captured as text of the parent.
+        if items and item_indent > items[-1].get("_item_indent", 0):
+            i += 1
+            continue
 
-        # Find motion text
-        motion_text = ""
+        # Collect item text: everything from the next line through to the
+        # next top-level item at same or lesser indent, or action result.
+        full_lines: list[str] = []
         action_result = ""
-        for k in range(i + 1, min(i + 20, len(lines))):
-            lk = lines[k].strip()
-            if lk.startswith("Request:"):
-                motion_text = lk
-            elif lk.startswith("–"):
-                action_result = lk
+        k = i + 1
+        while k < len(lines):
+            lk = lines[k]
+            stripped = lk.strip()
+
+            if not stripped:
+                k += 1
+                continue
+
+            # Check for next top-level item: same "N." pattern at same or lesser indent
+            next_item = re.match(r"^(\s*)(\d+)\.\s+(.*)", lk)
+            if next_item:
+                next_indent = len(next_item.group(1))
+                if next_indent <= item_indent:
+                    break  # This is a new top-level item
+
+            if stripped.startswith("—") or stripped.startswith("—"):
+                action_result = stripped
+                break
+
+            full_lines.append(stripped)
+            k += 1
+
+        motion_text = "\n".join(full_lines) if full_lines else ""
 
         sort_order += 1
-        items.append({
+        item_dict = {
             "meeting_id": meeting_id,
             "agenda_item_number": item_number,
             "agenda_item_title": title,
@@ -235,9 +255,15 @@ def parse_agenda_items(pdf_bytes: bytes, meeting_id: str) -> list[dict]:
             "item_type": "",
             "agenda_category": "",
             "sort_order": sort_order,
-        })
+            "_item_indent": item_indent,  # internal: indent tracking
+        }
+        items.append(item_dict)
 
         i += 1
+
+    # Strip internal keys before returning
+    for item in items:
+        item.pop("_item_indent", None)
 
     return items
 
@@ -248,31 +274,40 @@ def extract_supporting_docs(pdf_bytes: bytes) -> list[dict]:
     Scottsdale agenda PDFs contain link annotations pointing to
     eservices.scottsdaleaz.gov/cityclerk/DocumentViewer/Show/...
     These are staff reports and backup materials for agenda items.
+
+    Returns list of dicts with document_url and page_number.
     """
     docs: list[dict] = []
     try:
+        import io
         from pypdf import PdfReader
-        reader = PdfReader(pdf_bytes)
+        reader = PdfReader(io.BytesIO(pdf_bytes))
         for page_num, page in enumerate(reader.pages, 1):
             if '/Annots' not in page:
                 continue
             for annot_ref in page['/Annots']:
                 annot = annot_ref.get_object()
-                if '/A' in annot and '/URI' in annot['/A']:
-                    uri = annot['/A']['/URI']
-                    if "eservices.scottsdaleaz.gov" in uri and "DocumentViewer" in uri:
-                        doc_id = uri.split("/")[-1] if "/" in uri else ""
-                        docs.append({
-                            "document_url": uri,
-                            "document_type": "supporting_doc",
-                            "file_extension": "pdf",
-                            "document_title": f"Supporting Document ({doc_id[:8]}...)",
-                            "page_number": page_num,
-                        })
+                if '/A' not in annot:
+                    continue
+                a = annot['/A']
+                if '/URI' not in a:
+                    continue
+                uri = a['/URI']
+                if "eservices.scottsdaleaz.gov" in uri and "DocumentViewer" in uri:
+                    doc_id = uri.split("/")[-1] if "/" in uri else ""
+                    docs.append({
+                        "document_url": uri,
+                        "document_type": "supporting_doc",
+                        "file_extension": "pdf",
+                        "document_title": f"Supporting Document ({doc_id[:8]}...)",
+                        "page_number": page_num,
+                    })
     except ImportError:
         pass
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        log = logging.getLogger(__name__)
+        log.debug("extract_supporting_docs failed: %s", e)
     return docs
 
 

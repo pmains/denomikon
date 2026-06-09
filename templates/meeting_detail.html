@@ -1,5 +1,15 @@
 {% extends "base.html" %}
-{% block title %}Meeting {{ meeting_id }} — Poliscopic Meetings{% endblock %}
+{% block title %}{% if meeting %}{{ meeting.display_name or (meeting.meeting_type + ' — ' + meeting.meeting_date) }} — Poliscopic{% else %}Meeting Not Found — Poliscopic{% endif %}{% endblock %}
+{% block meta_description %}
+{% if meeting %}
+<meta name="description" content="{{ meeting.meeting_type }} meeting of {{ jurisdiction_slug.replace('-', ' ').title() }} on {{ meeting.meeting_date }}. {% if items %}View {{ items|length }} agenda items{% endif %}{% if vote_count > 0 %}, {{ vote_count }} votes{% endif %}{% if meeting.supporting_doc_count and meeting.supporting_doc_count > 0 %}, and {{ meeting.supporting_doc_count }} supporting documents{% endif %}.">
+{% endif %}
+{% endblock %}
+{% block canonical %}
+{% if body_code %}
+<link rel="canonical" href="https://poliscopic.com/meetings/{{ body_code }}/{{ meeting_id }}">
+{% endif %}
+{% endblock %}
 {% block content %}
 
 <a href="/meetings" class="btn btn-outline-secondary btn-sm my-3">&larr; Back to meetings</a>
@@ -58,10 +68,10 @@
         <hr class="my-2">
         <div class="small text-muted">
             {% if meeting.last_synced_at %}
-            Synced: {{ meeting.last_synced_at.strftime('%Y-%m-%d %H:%M UTC') }}<br>
+            Synced: {{ meeting.last_synced_at|az_date('%Y-%m-%d %H:%M AZ') }}<br>
             {% endif %}
             {% if meeting.last_attempted_at and (not meeting.last_synced_at or meeting.last_attempted_at != meeting.last_synced_at) %}
-            Last attempted: {{ meeting.last_attempted_at.strftime('%Y-%m-%d %H:%M UTC') }}<br>
+            Last attempted: {{ meeting.last_attempted_at|az_date('%Y-%m-%d %H:%M AZ') }}<br>
             {% endif %}
             {% if meeting.retry_count %}
             Retries: {{ meeting.retry_count }}<br>
@@ -347,6 +357,32 @@
 {% endblock %}
 
 {% block extra_js %}
+{% if meeting %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Event",
+  "name": {{ meeting.display_name|tojson }},
+  "eventType": "GovernmentMeeting",
+  "description": "{{ meeting.meeting_type }} meeting on {{ meeting.meeting_date }}.",
+  "startDate": "{{ meeting.meeting_date }}",
+  "url": "https://poliscopic.com/meetings/{{ body_code }}/{{ meeting_id }}",
+  "location": {
+    "@type": "GovernmentBuilding",
+    "address": {
+      "@type": "PostalAddress",
+      "addressRegion": "AZ",
+      "addressCountry": "US"
+    }
+  }{% if vote_count > 0 or items %},
+  "organizer": {
+    "@type": "GovernmentOrganization",
+    "name": {{ jurisdiction_slug.replace('-', ' ').title()|tojson }},
+    "url": "https://poliscopic.com/meetings?jurisdiction={{ jurisdiction_slug }}"
+  }{% endif %}
+}
+</script>
+{% endif %}
 {% if scroll_item %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {

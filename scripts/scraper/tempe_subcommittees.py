@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import os
 import re
 import subprocess
@@ -175,15 +176,107 @@ def _is_cancellation(title: str) -> bool:
     return bool(re.search(r"cancel", title, re.I))
 
 
-def _build_meeting_id(body_slug: str, date_str: str, title: str) -> str:
-    """Build a unique meeting ID."""
-    suffix = _slugify(title[:40])
-    return f"{body_slug}-{date_str}-{suffix}"
+def _build_meeting_id(body_slug: str, date_str: str, title: str, existing_ids: set[str] | None = None) -> str:
+    """Build a unique meeting ID from body and date only."""
+    base = f"{body_slug}-{date_str}"
+    if existing_ids is None:
+        return base
+    candidate = base
+    n = 2
+    while candidate in existing_ids:
+        candidate = f"{base}-{n}"
+        n += 1
+    return candidate
 
 
 def _build_agenda_item_id(body_slug: str, meeting_id: str) -> str:
     """Build a single agenda item ID for a meeting."""
     return f"{body_slug}-{meeting_id}-item-1"
+
+
+# -- PDF agenda parsing -------------------------------------------------------
+
+
+def _extract_agenda_items_from_pdf(pdf_url: str, meeting_date: str) -> list[dict] | None:
+    """Download a PDF via the Node.js helper, extract text via pdftotext,
+    and parse agenda items.
+
+    Looks for numbered items (1., 2., 3., etc.) followed by titles.
+    Returns a list of item dicts matching the agenda_item_dicts format,
+    or None if parsing fails.
+    """
+    import tempfile
+    log = logging.getLogger(__name__)
+
+    # Download via the Node.js helper (handles tempe.gov's Akamai blocking)
+    tmp_pdf = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+    tmp_pdf.close()
+    try:
+        result = _helper_download(pdf_url, tmp_pdf.name)
+        if not result.get("downloaded"):
+            log.debug("PDF download failed for %s: %s", pdf_url, result.get("error", "unknown"))
+            return None
+    except Exception as e:
+        log.debug("PDF download exception for %s: %s", pdf_url, e)
+        return None
+
+    # Extract text with pdftotext
+    try:
+        proc = subprocess.run(
+            ["pdftotext", "-layout", tmp_pdf.name, "-"],
+            capture_output=True, text=True, timeout=30,
+        )
+        text = proc.stdout
+    except (FileNotFoundError, subprocess.SubprocessError) as e:
+        log.debug("pdftotext failed for %s: %s", pdf_url, e)
+        return None
+    finally:
+        try:
+            os.unlink(tmp_pdf.name)
+        except (NameError, OSError):
+            pass
+
+    if not text or len(text.strip()) < 50:
+        return None
+
+    # Parse numbered items: "1. Title" or "1. Title" followed by description lines
+    items = []
+    sort_order = 0
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+        # Match "1. Title" optionally followed by Action/Information/Discussion
+        m = re.match(r"^(\d+)\.\s+(.+?)\s*(Action|Information|Discussion)?$", line, re.I)
+        if m:
+            num = m.group(1)
+            title = m.group(2).strip()
+            item_type = (m.group(3) or "").lower()
+            # If the type wasn't on this line, check the next non-empty line
+            if not item_type:
+                for j in range(i + 1, min(i + 5, len(lines))):
+                    nxt = lines[j].strip()
+                    if not nxt:
+                        continue
+                    tm = re.match(r"^(Action|Information|Discussion)$", nxt, re.I)
+                    if tm:
+                        item_type = tm.group(1).lower()
+                    break
+            sort_order += 1
+            # Classify item
+            is_substantive = title.lower() not in (
+                "call to order", "adjourn"
+            )
+            items.append({
+                "agenda_item_number": num,
+                "agenda_item_title": title,
+                "agenda_item_text": "",
+                "item_type": "item" if is_substantive else "",
+                "sort_order": sort_order,
+            })
+
+    return items if items else None
 
 
 # -- Scraper logic -------------------------------------------------------------
@@ -252,6 +345,7 @@ def sync_subcommittee(
 
     # Track which minutes index to use per date (handles multiple docs per date)
     minutes_index: dict[str, int] = {}
+    existing_ids_by_body: dict[str, set[str]] = {}
 
     # Build meeting records from agenda documents
     for idx, doc in enumerate(agenda_docs):
@@ -277,7 +371,21 @@ def sync_subcommittee(
         clean_title = re.sub(r"^ARCHIVED\s+", "", title, flags=re.I)
         clean_title = re.sub(r"^ARCHIEVED\s+", "", clean_title, flags=re.I)
         clean_title = re.sub(r"\(pdf\)$", "", clean_title, flags=re.I).strip()
-        meeting_id = _build_meeting_id(body_slug, date_str, clean_title)
+        # Collect existing meeting IDs for this body to avoid collisions
+        if body_slug not in existing_ids_by_body:
+            existing_ids_by_body[body_slug] = set()
+            rows = session.execute(
+                select(MeetingModel.meeting_id).where(
+                    MeetingModel.body == body_slug
+                )
+            ).fetchall()
+            existing_ids_by_body[body_slug] = {r[0] for r in rows}
+
+        meeting_id = _build_meeting_id(
+            body_slug, date_str, clean_title,
+            existing_ids=existing_ids_by_body[body_slug],
+        )
+        existing_ids_by_body[body_slug].add(meeting_id)
 
         # Check if already synced
         existing = session.execute(
@@ -311,20 +419,42 @@ def sync_subcommittee(
         if minutes_url:
             meeting_dict["minutes_url"] = minutes_url
 
-        # Build a single agenda item for this meeting
-        agenda_item_dicts = [
-            {
-                "agenda_item_id": _build_agenda_item_id(body_slug, meeting_id),
-                "agenda_item_number": "1",
-                "agenda_item_title": clean_title,
-                "agenda_item_text": f"Council Subcommittee meeting on {date_str}",
-                "agenda_item_url": pdf_url,
-                "item_type": "item",
-                "source_body": body_slug,
-                "source_url": pdf_url,
-                "sort_order": 0,
-            }
-        ]
+        # Try to extract agenda items from the PDF
+        parsed_items = _extract_agenda_items_from_pdf(pdf_url, date_str)
+
+        if parsed_items:
+            agenda_item_dicts = []
+            for pit in parsed_items:
+                an = pit["agenda_item_number"]
+                item_title = pit["agenda_item_title"]
+                item_type = pit["item_type"]
+                sort_order = pit["sort_order"]
+                agenda_item_dicts.append({
+                    "agenda_item_id": f"{body_slug}-{meeting_id}-item-{an}",
+                    "agenda_item_number": an,
+                    "agenda_item_title": item_title,
+                    "agenda_item_text": "",
+                    "agenda_item_url": pdf_url,
+                    "item_type": item_type,
+                    "source_body": body_slug,
+                    "source_url": pdf_url,
+                    "sort_order": sort_order,
+                })
+        else:
+            # Fall back to a single generic item
+            agenda_item_dicts = [
+                {
+                    "agenda_item_id": _build_agenda_item_id(body_slug, meeting_id),
+                    "agenda_item_number": "1",
+                    "agenda_item_title": clean_title,
+                    "agenda_item_text": f"Council Subcommittee meeting on {date_str}",
+                    "agenda_item_url": pdf_url,
+                    "item_type": "item",
+                    "source_body": body_slug,
+                    "source_url": pdf_url,
+                    "sort_order": 0,
+                }
+            ]
 
         # Build supporting documents
         supporting_doc_dicts = [
