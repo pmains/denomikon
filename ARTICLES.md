@@ -214,8 +214,8 @@ Follow the deployment checklist in [SYNC.md](SYNC.md):
 
 Follow the social posting workflow in [SOCIAL.md](SOCIAL.md):
 
-- [ ] Draft a skeet following STYLE.md §7 rules
-- [ ] Post via admin dashboard or `bluesky_sync.py --post <article-id>`
+- [ ] Generate skeet pitches via LLM (per STYLE.md §7)
+- [ ] `python bsky.py --article <id> --text "..."`
 
 ---
 

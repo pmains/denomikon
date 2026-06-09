@@ -12,7 +12,7 @@
 |---|---|---|---|
 | **Draft an article** | [ARTICLES.md](ARTICLES.md) | A newsworthy item is found in meeting data | 2026-06-09 |
 | **Deploy to production** | [SYNC.md](SYNC.md) | Ready to publish articles to poliscopic.com | 2026-06-04 |
-| **Post to Bluesky** | [SOCIAL.md](SOCIAL.md) | After an article is published | _Not yet extracted_ |
+| **Post to Bluesky** | [SOCIAL.md](SOCIAL.md) | After an article is deployed to production | 2026-06-09 |
 | **Triage sync failures** | [SCRAPERS.md](SCRAPERS.md)§Monitor | Sync report shows failures, stuck meetings, or orphans | _See scripts/sync_monitor.py_ |
 | **Record a lesson** | This file §Post-Mortem | Something broke, got fixed, or could have been better | _Always current_ |
 
@@ -106,7 +106,7 @@ workflow or a new automated check.
 |---|---|---|---|
 | Article drafting | ✅ ARTICLES.md | Partially (Berry verify) | Berry MCP tools only |
 | Deployment | ✅ SYNC.md | Partially (sync.sh) | sync.sh script |
-| Social posting | ⬜ In OPS.md, needs extraction | Yes (bluesky_sync.py) | Production cron |
+| Social posting | ✅ SOCIAL.md | Yes (bsky.py) | bsky.py CLI tool |
 | Sync monitoring | ⬜ Partial (SCRAPERS.md) | Yes (sync_monitor.py) | Monitor script, no triage doc |
 | Lesson capture | ⬜ This section only | No | — |
 
