@@ -1264,6 +1264,71 @@ async def main() -> int:
                 await browser.close()
         return 0
 
+    # ── MAG sync (via browser calendar + direct PDFs) ──
+    if args.source == "mag" and args.sync:
+        import datetime as _dt
+        from scraper.mag import (
+            COMMITTEES, MAG_BODY_CODES,
+            ensure_mag_public_bodies,
+            sync_mag_committee,
+        )
+
+        now = _dt.datetime.now()
+
+        # Parse date range
+        if args.start_date and args.end_date:
+            start_date = args.start_date
+            end_date = args.end_date
+        elif args.year:
+            start_date = f"{args.year}-01-01"
+            end_date = f"{args.year}-12-31"
+        elif args.month:
+            y, m = args.month.split("-")
+            import calendar
+            last_day = calendar.monthrange(int(y), int(m))[1]
+            start_date = f"{y}-{m}-01"
+            end_date = f"{y}-{m}-{last_day}"
+        elif args.date:
+            start_date = args.date
+            end_date = args.date
+        else:
+            start_date = now.strftime("%Y-%m-%d")
+            end_date = (now + _dt.timedelta(days=365)).strftime("%Y-%m-%d")
+
+        # Parse CIDs
+        cids = [int(c.strip()) for c in args.cids.split(",") if c.strip()]
+        valid_cids = [c for c in cids if c in COMMITTEES]
+
+        if not valid_cids:
+            print("No valid committee CIDs specified. Use --list-committees to see available.")
+            return 0
+
+        # Register bodies in DB
+        from db import get_session, init_db
+        session = get_session()
+        db_map = ensure_mag_public_bodies(session)
+        session.commit()
+        session.close()
+
+        api_start = _dt.datetime.strptime(start_date, "%Y-%m-%d").strftime("%m/%d/%Y")
+        api_end = _dt.datetime.strptime(end_date, "%Y-%m-%d").strftime("%m/%d/%Y")
+
+        grand_total_meetings = 0
+        grand_total_items = 0
+
+        for cid in valid_cids:
+            print(f"Syncing {COMMITTEES[cid][2]} (cid={cid})...")
+            synced, items = sync_mag_committee(
+                cid, api_start, api_end, db_map,
+                force=args.force,
+            )
+            grand_total_meetings += synced
+            grand_total_items += items
+            print(f"  {COMMITTEES[cid][2]}: {synced} meetings, {items} items")
+
+        print(f"MAG sync complete: {grand_total_meetings} meetings, {grand_total_items} items across {len(valid_cids)} committee(s)")
+        return 0
+
     # ── Gilbert sync (via OnBase JSON) ──
     if args.source == "gilbert" and args.sync:
         import datetime as _dt

@@ -44,6 +44,7 @@ def _print_top_level_help() -> None:
     print("  phoenix-aem  Phoenix boards/commissions via Adobe AEM (Planning, Village, Historic Pres, etc.)")
     print("  all       Sync all Maricopa County boards: BOS, PZ, ADJ, Drain, Health, TAB, IDA")
     print("  mcacc     All remaining Maricopa County boards via AgendaCenter")
+    print("  mag       Maricopa Association of Governments (MAG) committees (via browser)")
     print()
     print("Common options (varies per subcommand; use <subcommand> --help for details):")
     print("  --sync                    Search online, extract, and persist to database")
@@ -133,7 +134,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("hearings", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "paradise-valley", "queen-creek", "mcacc", "phoenix", "phoenix-aem", "tempe-subcommittees", "tucson", "tucson-pc", "all", "all-jurisdictions"):
+    if rest and rest[0] in ("hearings", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "paradise-valley", "queen-creek", "mcacc", "mag", "phoenix", "phoenix-aem", "tempe-subcommittees", "tucson", "tucson-pc", "all", "all-jurisdictions"):
         source = rest.pop(0)
 
     if source == "bos":
@@ -198,6 +199,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         args = _parse_hearings_args(rest)
     elif source == "mcacc":
         args = _parse_mcacc_args(rest)
+    elif source == "mag":
+        args = _parse_mag_args(rest)
     elif source == "phoenix-aem":
         args = _parse_phoenix_aem_args(rest)
     elif source in ("all", "all-jurisdictions"):
@@ -538,6 +541,38 @@ def _parse_mcacc_args(rest: list[str]) -> argparse.Namespace:
         help=f"Body codes to sync (comma-separated). Default: all {len(MCACC_BODY_CODES)} bodies. "
              f"Available: {', '.join(MCACC_BODY_CODES)}",
     )
+    args = p.parse_args(rest)
+    if args.date:
+        if args.start_date or args.end_date:
+            p.error("--date cannot be combined with --start-date or --end-date")
+        args.start_date = args.date
+        args.end_date = args.date
+    _normalize_year_month(args, p)
+    return args
+
+
+def _parse_mag_args(rest: list[str]) -> argparse.Namespace:
+    """Parse MAG (Maricopa Association of Governments) arguments."""
+    from scraper.mag import COMMITTEES
+    default_cids = ",".join(str(c) for c in sorted(COMMITTEES.keys()))
+    p = argparse.ArgumentParser(
+        description="Scrape MAG committee meetings (mag)",
+        prog="mag",
+    )
+    p.add_argument("--start-date", help="Start date in YYYY-MM-DD")
+    p.add_argument("--end-date", help="End date in YYYY-MM-DD")
+    p.add_argument("--year", help="Sync an entire year (e.g. --year=2026)")
+    p.add_argument("--date", help="Single date in YYYY-MM-DD")
+    p.add_argument("--sync", action="store_true", help="Fetch events, download PDFs, extract items, persist to DB")
+    p.add_argument("--force", action="store_true", help="Re-sync meetings even if sync_status = complete")
+    p.add_argument("--init-db", action="store_true", help="Create database tables")
+    p.add_argument("--skip-downloads", action="store_true", help="Don't download PDFs")
+    p.add_argument("--cids",
+        default=default_cids,
+        help=f"Committee CIDs to sync (comma-separated). Default: all {len(COMMITTEES)} committees. "
+             f"Use --list-committees to see available CIDs.",
+    )
+    p.add_argument("--list-committees", action="store_true", help="List all MAG committees with their CIDs")
     args = p.parse_args(rest)
     if args.date:
         if args.start_date or args.end_date:
