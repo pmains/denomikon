@@ -32,7 +32,10 @@
             <option value="gilbert" {% if filter_jurisdiction == 'gilbert' %}selected{% endif %}>Town of Gilbert</option>
             <option value="tucson" {% if filter_jurisdiction == 'tucson' %}selected{% endif %}>City of Tucson</option>
             <option value="paradise-valley" {% if filter_jurisdiction == 'paradise-valley' %}selected{% endif %}>Town of Paradise Valley</option>
+            <option value="apache-junction" {% if filter_jurisdiction == 'apache-junction' %}selected{% endif %}>City of Apache Junction</option>
+            <option value="fountain-hills" {% if filter_jurisdiction == 'fountain-hills' %}selected{% endif %}>Town of Fountain Hills</option>
             <option value="queen-creek" {% if filter_jurisdiction == 'queen-creek' %}selected{% endif %}>Town of Queen Creek</option>
+            <option value="wickenburg" {% if filter_jurisdiction == 'wickenburg' %}selected{% endif %}>Town of Wickenburg</option>
         </select>
     </div>
     <div class="col-md-2">
@@ -191,7 +194,7 @@
             </optgroup>
             <optgroup label="City of El Mirage">
             <option value="el-mirage-cc" {% if filter_body == 'el-mirage-cc' %}selected{% endif %}>City Council</option>
-            <option value="el-mirage-planning-zoning" {% if filter_body == 'el-mirage-planning-zoning' %}selected{% endif %}>Planning &amp; Zoning</option>
+            <option value="el-mirage-pz" {% if filter_body == 'el-mirage-pz' %}selected{% endif %}>Planning &amp; Zoning</option>
             <option value="el-mirage-boa" {% if filter_body == 'el-mirage-boa' %}selected{% endif %}>Board of Adjustment</option>
             <option value="el-mirage-yac" {% if filter_body == 'el-mirage-yac' %}selected{% endif %}>Youth Advisory Commission</option>
             <option value="el-mirage-psprs" {% if filter_body == 'el-mirage-psprs' %}selected{% endif %}>PSPRS Board</option>
@@ -200,6 +203,16 @@
             <option value="el-mirage-prtf" {% if filter_body == 'el-mirage-prtf' %}selected{% endif %}>Parks &amp; Rec Task Force</option>
             <option value="el-mirage-pss" {% if filter_body == 'el-mirage-pss' %}selected{% endif %}>Public Safety Subcommittee</option>
             <option value="el-mirage-rec" {% if filter_body == 'el-mirage-rec' %}selected{% endif %}>Recreation Subcommittee</option>
+            </optgroup>
+            <optgroup label="Town of Wickenburg">
+            <option value="wickenburg-cc" {% if filter_body == 'wickenburg-cc' %}selected{% endif %}>Common Council</option>
+            <option value="wickenburg-pz" {% if filter_body == 'wickenburg-pz' %}selected{% endif %}>Planning &amp; Zoning</option>
+            <option value="wickenburg-airport" {% if filter_body == 'wickenburg-airport' %}selected{% endif %}>Airport Advisory</option>
+            <option value="wickenburg-cpac" {% if filter_body == 'wickenburg-cpac' %}selected{% endif %}>Community Programming</option>
+            <option value="wickenburg-edt" {% if filter_body == 'wickenburg-edt' %}selected{% endif %}>Economic Dev &amp; Transportation</option>
+            <option value="wickenburg-finance" {% if filter_body == 'wickenburg-finance' %}selected{% endif %}>Finance Advisory</option>
+            <option value="wickenburg-parks" {% if filter_body == 'wickenburg-parks' %}selected{% endif %}>Parks &amp; Recreation</option>
+            <option value="wickenburg-trails" {% if filter_body == 'wickenburg-trails' %}selected{% endif %}>Parks &amp; Trails</option>
             </optgroup>
             <optgroup label="City of Goodyear">
             <option value="goodyear-cc" {% if filter_body == 'goodyear-cc' %}selected{% endif %}>City Council</option>
@@ -241,6 +254,19 @@
             </optgroup>
             <optgroup label="City of Surprise">
             <option value="surprise-cc" {% if filter_body == 'surprise-cc' %}selected{% endif %}>City Council</option>
+            <option value="surprise-pz" {% if filter_body == 'surprise-pz' %}selected{% endif %}>Planning &amp; Zoning Commission</option>
+            <option value="surprise-arts" {% if filter_body == 'surprise-arts' %}selected{% endif %}>Arts &amp; Cultural Advisory Commission</option>
+            <option value="surprise-audit" {% if filter_body == 'surprise-audit' %}selected{% endif %}>City Audit Committee</option>
+            <option value="surprise-health-benefits" {% if filter_body == 'surprise-health-benefits' %}selected{% endif %}>Health Benefits Trust Fund Board</option>
+            <option value="surprise-judicial-selection" {% if filter_body == 'surprise-judicial-selection' %}selected{% endif %}>Judicial Selection Advisory Commission</option>
+            <option value="surprise-library" {% if filter_body == 'surprise-library' %}selected{% endif %}>Library Commission</option>
+            <option value="surprise-nominations" {% if filter_body == 'surprise-nominations' %}selected{% endif %}>Boards &amp; Commissions Nominations</option>
+            <option value="surprise-outreach" {% if filter_body == 'surprise-outreach' %}selected{% endif %}>Community Outreach Subcommittee</option>
+            <option value="surprise-parks" {% if filter_body == 'surprise-parks' %}selected{% endif %}>Parks &amp; Recreation Commission</option>
+            <option value="surprise-psprs-fire" {% if filter_body == 'surprise-psprs-fire' %}selected{% endif %}>PSPRS &ndash; Fire</option>
+            <option value="surprise-psprs-police" {% if filter_body == 'surprise-psprs-police' %}selected{% endif %}>PSPRS &ndash; Police</option>
+            <option value="surprise-tourism" {% if filter_body == 'surprise-tourism' %}selected{% endif %}>Tourism Fund Subcommittee</option>
+            <option value="surprise-veterans" {% if filter_body == 'surprise-veterans' %}selected{% endif %}>Veterans, Disability &amp; Human Services Commission</option>
             </optgroup>
             <optgroup label="City of Tucson">
             <option value="tucson-cc" {% if filter_body == 'tucson-cc' %}selected{% endif %}>City Council</option>
@@ -253,6 +279,18 @@
             </optgroup>
             <optgroup label="Town of Queen Creek">
             <option value="queen-creek-cc" {% if filter_body == 'queen-creek-cc' %}selected{% endif %}>Town Council</option>
+            <option value="queen-creek-pz" {% if filter_body == 'queen-creek-pz' %}selected{% endif %}>Planning & Zoning Commission</option>
+            <option value="queen-creek-boa" {% if filter_body == 'queen-creek-boa' %}selected{% endif %}>Board of Adjustment</option>
+            </optgroup>
+            <optgroup label="City of Apache Junction">
+            <option value="apache-junction-cc" {% if filter_body == 'apache-junction-cc' %}selected{% endif %}>City Council</option>
+            <option value="apache-junction-pz" {% if filter_body == 'apache-junction-pz' %}selected{% endif %}>Planning & Zoning Commission</option>
+            <option value="apache-junction-parks" {% if filter_body == 'apache-junction-parks' %}selected{% endif %}>Parks & Recreation</option>
+            </optgroup>
+            <optgroup label="Town of Fountain Hills">
+            <option value="fountain-hills-cc" {% if filter_body == 'fountain-hills-cc' %}selected{% endif %}>Town Council</option>
+            <option value="fountain-hills-pz" {% if filter_body == 'fountain-hills-pz' %}selected{% endif %}>Planning & Zoning Commission</option>
+            <option value="fountain-hills-boa" {% if filter_body == 'fountain-hills-boa' %}selected{% endif %}>Board of Adjustment</option>
             </optgroup>
         </select>
     </div>
@@ -312,6 +350,8 @@ var JUR_TO_LABEL = {
     "tucson": "City of Tucson",
     "paradise-valley": "Town of Paradise Valley",
     "queen-creek": "Town of Queen Creek",
+    "apache-junction": "City of Apache Junction",
+    "fountain-hills": "Town of Fountain Hills",
 };
 
 function filterSourceOptions() {

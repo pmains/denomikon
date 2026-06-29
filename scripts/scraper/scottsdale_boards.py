@@ -126,8 +126,23 @@ def parse_meetings_from_board_page(html: str, board_cfg: dict) -> list[dict]:
     return meetings
 
 
-def search_board_meetings(board_slug: str, year: Optional[int] = None) -> list[dict]:
-    """Search for a board's meetings, optionally filtered by year."""
+def _to_iso(date_str: str) -> str:
+    """Normalize MM/DD/YYYY → YYYY-MM-DD for comparison."""
+    parts = date_str.split("/")
+    return f"{parts[2]}-{int(parts[0]):02d}-{int(parts[1]):02d}"
+
+
+def search_board_meetings(
+    board_slug: str,
+    year: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> list[dict]:
+    """Search for a board's meetings, optionally filtered by year or date range.
+
+    ``start_date`` and ``end_date`` are YYYY-MM-DD strings.  When both are
+    provided ``year`` is ignored.
+    """
     cfg = BOARDS.get(board_slug)
     if not cfg:
         log.warning("Unknown board: %s", board_slug)
@@ -141,7 +156,13 @@ def search_board_meetings(board_slug: str, year: Optional[int] = None) -> list[d
 
     all_meetings = parse_meetings_from_board_page(html, cfg)
 
-    if year:
+    # Date-range filter takes precedence over year
+    if start_date and end_date:
+        all_meetings = [
+            m for m in all_meetings
+            if start_date <= _to_iso(m["meeting_date"]) <= end_date
+        ]
+    elif year:
         all_meetings = [m for m in all_meetings if m["year"] == str(year)]
 
     log.info("Found %d meetings for %s", len(all_meetings), cfg["name"])

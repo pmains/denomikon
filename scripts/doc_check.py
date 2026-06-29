@@ -405,6 +405,7 @@ def _resync_meeting(body_code: str, meeting_id: str,
                 item_docs, _ = parse_item_details(
                     detail_html, meeting_id, body_code,
                     item.get("agenda_item_number", ""),
+                    base_url=TEMPE_CONFIG.base_url,
                 )
                 for doc in item_docs:
                     doc["agenda_item_id"] = 0

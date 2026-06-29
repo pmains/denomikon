@@ -77,6 +77,10 @@ BODY_CODE_MAP = {
 # Default body slugs — include CFD boards for full coverage
 DEFAULT_BODY_SLUGS = [
     "mesa-city-council",
+    "mesa-planning-zoning",
+    "mesa-design-review-board",
+    "mesa-historic-preservation-board",
+    "mesa-board-of-adjustment",
     "mesa-cadence-cfd",
     "mesa-eastmark-cfd-1",
     "mesa-eastmark-cfd-2",

@@ -25,6 +25,7 @@ def _print_top_level_help() -> None:
     print("  chandler  City of Chandler (Council, PZ, DRC, BOA, HPC via AgendaQuick)")
     print("  avondale            City of Avondale (Council, P&Z, BOA, boards via CivicClerk — current)")
     print("  avondale-granicus   City of Avondale (Council, P&Z, BOA via Granicus — legacy, no items)")
+    print("  fountain-hills  Town of Fountain Hills (Council, P&Z, boards via CivicClerk)")
     print("  gilbert   Town of Gilbert (Council via OnBase)")
     print("  scottsdale City of Scottsdale (Council via PDF archive)")
     print("  scottsdale-boards Scottsdale P&Z, BOA, DRB, HPC, Bldg Appeals")
@@ -36,9 +37,13 @@ def _print_top_level_help() -> None:
     print("  goodyear  City of Goodyear (Council, P&Z, boards via AgendaQuick)")
     print("  paradise-valley  Town of Paradise Valley (Council, Planning, BOA via Granicus)")
     print("  queen-creek  Town of Queen Creek (Council, Planning, boards via Granicus)")
+    print("  apache-junction  City of Apache Junction (Council, P&Z, boards via Legistar)")
     print("  peoria    City of Peoria (Council, P&Z, BOA, DRB, HPC via NovusAgenda)")
     print("  surprise              City of Surprise (Council via Granicus, legacy)")
+    print("  wickenburg          Town of Wickenburg (Common Council, P&Z, boards via Destiny/AgendaQuick)")
+    print("  tolleson            City of Tolleson (City Council, P&Z via CivicClerk)")
     print("  surprise-civicclerk   City of Surprise (all bodies via CivicClerk API)")
+    print("  avondale            City of Avondale (City Council, P&Z, BOA, boards via CivicClerk)")
     print("  tucson                City of Tucson (Mayor & Council via OnBase)")
     print("  tucson-pc             City of Tucson (Planning Commission via listing page + PDF)")
     print("  phoenix-aem  Phoenix boards/commissions via Adobe AEM (Planning, Village, Historic Pres, etc.)")
@@ -134,7 +139,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("hearings", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "paradise-valley", "queen-creek", "mcacc", "mag", "phoenix", "phoenix-aem", "tempe-subcommittees", "tucson", "tucson-pc", "all", "all-jurisdictions"):
+    if rest and rest[0] in ("hearings", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "wickenburg", "paradise-valley", "queen-creek", "fountain-hills", "apache-junction", "mcacc", "mag", "phoenix", "phoenix-aem", "tempe-subcommittees", "tolleson", "tucson", "tucson-pc", "all", "all-jurisdictions"):
         source = rest.pop(0)
 
     if source == "bos":
@@ -171,11 +176,15 @@ def parse_args(argv=None) -> argparse.Namespace:
         args = _parse_glendale_new_args(rest)
     elif source == "surprise":
         args = _parse_surprise_args(rest)
+    elif source == "tolleson":
+        args = _parse_surprise_args(rest)
     elif source == "surprise-civicclerk":
         args = _parse_surprise_args(rest)
     elif source == "phoenix":
         args = _parse_mesa_args(rest)
     elif source == "peoria":
+        args = _parse_mesa_args(rest)
+    elif source == "wickenburg":
         args = _parse_mesa_args(rest)
     elif source == "el-mirage":
         args = _parse_mesa_args(rest)
@@ -192,6 +201,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     elif source == "paradise-valley":
         args = _parse_mesa_args(rest)
     elif source == "queen-creek":
+        args = _parse_mesa_args(rest)
+    elif source == "fountain-hills":
+        args = _parse_mesa_args(rest)
+    elif source == "apache-junction":
         args = _parse_mesa_args(rest)
     elif source == "tempe-subcommittees":
         args = _parse_tempe_subcommittees_args(rest)
@@ -214,8 +227,13 @@ def parse_args(argv=None) -> argparse.Namespace:
 def _parse_phoenix_aem_args(rest: list[str]) -> argparse.Namespace:
     """Parse Phoenix AEM board/commission meeting arguments."""
     p = argparse.ArgumentParser(description="Scrape Phoenix boards/commissions via AEM", prog="phoenix-aem")
+    p.add_argument("--start-date", help="Start date in YYYY-MM-DD")
+    p.add_argument("--end-date", help="End date in YYYY-MM-DD")
     p.add_argument("--sync", action="store_true", help="Fetch notices and persist AEM meetings to database")
     p.add_argument("--sync-results", action="store_true", help="Fetch past meeting results and persist to database")
+    p.add_argument("--headed", action="store_true", help="Run Playwright headed")
+    p.add_argument("--meeting-id", help="Single meeting ID to sync")
+    p.add_argument("--offline", action="store_true", help="Sync from a locally saved HTML file")
     p.add_argument("--body", help="Filter by body name (e.g. 'Planning Commission')")
     p.add_argument("--bodies", help="Comma-separated list of body slugs to filter")
     p.add_argument("--limit", type=int, default=0, help="Max meetings to fetch (0 = all)")
@@ -608,7 +626,9 @@ def _parse_mesa_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
     p.add_argument("--download", action="store_true", help="Download agenda PDF files")
     p.add_argument("--persist", action="store_true", default=False, help=argparse.SUPPRESS)
-    p.add_argument("--bodies", help="Body slugs to sync (comma-separated), e.g. mesa-city-council,mesa-planning-zoning (default: mesa-city-council)")
+    from scraper.mesa import DEFAULT_BODY_SLUGS
+    _default_bodies_help = ",".join(DEFAULT_BODY_SLUGS)
+    p.add_argument("--bodies", help=f"Body slugs to sync (comma-separated), e.g. mesa-city-council,mesa-planning-zoning (default: {_default_bodies_help})")
     args = p.parse_args(rest)
     if args.date:
         if args.start_date or args.end_date:

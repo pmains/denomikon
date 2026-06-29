@@ -831,7 +831,7 @@ def article_delete(article_id):
         session.commit()
     session.close()
     flash("Article deleted.", "success")
-    return redirect(url_for("admin.dashboard"))
+    return redirect(url_for("admin.drafts_list"))
 
 
 @admin_bp.route("/articles/<int:article_id>/promote", methods=["POST"])

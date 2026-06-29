@@ -354,6 +354,7 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             14: ("Avondale", "avondale"),
             15: ("El Mirage", "el-mirage"),
             16: ("Goodyear", "goodyear"),
+            24: ("Wickenburg", "wickenburg"),
         }
         jur_name, jur_slug = jur_map.get(row.jurisdiction_id, ("Maricopa County", "maricopa-county"))
 

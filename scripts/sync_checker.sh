@@ -200,6 +200,16 @@ if [ -f "$SUMMARY_FILE" ] && [ ! -f "$ANALYSIS_MARKER" ]; then
     else
         echo "Analysis clean — marking as analyzed."
         date -Iseconds > "$ANALYSIS_MARKER"
+        echo ""
+        echo "=== Syncing to poliscopic.com ==="
+        bash "$PROJECT_ROOT/sync.sh" 2>&1
+        SYNC_EXIT=$?
+        if [ $SYNC_EXIT -eq 0 ]; then
+            echo "Production sync complete."
+        else
+            echo "WARNING: Production sync exited with code $SYNC_EXIT"
+        fi
+        echo ""
         echo "Done for today. Final report:"
         echo ""
         cat "$SUMMARY_FILE"

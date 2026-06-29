@@ -97,6 +97,24 @@
             {% if doc.document_type %}<span class="badge bg-secondary text-white ms-1">{{ doc.document_type }}</span>{% endif %}
         </li>
         {% endfor %}
+        {% if meeting.source_url and 'civicclerk' in meeting.source_url %}
+        <li class="mt-2">
+            <a href="{{ meeting.source_url.replace('overview', 'files') }}" target="_blank" rel="noopener" class="fw-semibold">
+                View all documents on portal &nearr;
+            </a>
+        </li>
+        {% endif %}
+    </ul>
+</div>
+{% elif meeting.source_url and 'civicclerk' in meeting.source_url %}
+<div class="mb-3">
+    <h6 class="mt-3 mb-2">Meeting Documents</h6>
+    <ul class="list-unstyled small mb-0">
+        <li>
+            <a href="{{ meeting.source_url.replace('overview', 'files') }}" target="_blank" rel="noopener" class="fw-semibold">
+                View all documents on portal &nearr;
+            </a>
+        </li>
     </ul>
 </div>
 {% endif %}

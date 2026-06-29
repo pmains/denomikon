@@ -73,21 +73,26 @@ def search_meetings() -> list[dict]:
         title = title_el.text or ""
         desc = desc_el.text or "" if desc_el is not None else ""
 
-        # Extract event_id from description (CDATA contains full URL)
+        # Extract clip_id or event_id from description (CDATA contains full URL)
+        clip_match = re.search(r"clip_id=(\d+)", desc)
         event_match = re.search(r"event_id=(\d+)", desc)
-        if not event_match:
+        meeting_id_str = clip_match.group(1) if clip_match else (event_match.group(1) if event_match else None)
+        if not meeting_id_str:
             continue
-        event_id = int(event_match.group(1))
+        meeting_id_int = int(meeting_id_str)
 
         date_match = re.search(r"(\d{4}-\d{2}-\d{2})", title)
         meeting_date = date_match.group(1) if date_match else ""
 
         body_name = title.split(" on ")[0].split(" - ")[0].strip() if " on " in title else "Town Council"
         slug, code, display = _resolve_body(body_name)
-        agenda_url = f"{BASE_URL}/AgendaViewer.php?view_id={VIEW_ID}&event_id={event_id}"
+        if clip_match:
+            agenda_url = f"{BASE_URL}/AgendaViewer.php?view_id={VIEW_ID}&clip_id={meeting_id_str}"
+        else:
+            agenda_url = f"{BASE_URL}/AgendaViewer.php?view_id={VIEW_ID}&event_id={meeting_id_str}"
 
         meetings.append({
-            "meeting_id": str(event_id),
+            "meeting_id": meeting_id_str,
             "meeting_date": meeting_date,
             "meeting_type": display,
             "meeting_title": title.split(" - ")[0].strip() if " - " in title else body_name,

@@ -781,7 +781,93 @@ def fetch_item_details_sync(config: OnBaseConfig, meeting_id: int, item_id: int)
         return ""
 
 
-def parse_item_details(html: str, meeting_id: str, body: str, agenda_item_number: str) -> tuple[list[dict], str]:
+def fetch_item_details_batch(
+    config: OnBaseConfig,
+    meeting_id: int,
+    items: list[dict],
+    max_workers: int = 3,
+) -> list[dict]:
+    """Fetch supporting document links for multiple agenda items concurrently.
+
+    Uses a thread pool to parallelize the per-item HTTP requests to OnBase,
+    reducing wall-clock time.  Uses a low default concurrency (3) to avoid
+    overwhelming the OnBase server, which is known to drop connections when
+    hit with too many simultaneous requests.
+
+    Parameters
+    ----------
+    config : OnBaseConfig
+        The OnBase instance configuration.
+    meeting_id : int
+        The OnBase meeting ID.
+    items : list[dict]
+        List of agenda item dicts, each expected to have ``onbase_item_id``
+        and ``agenda_item_number``.
+    max_workers : int
+        Max threads for concurrent HTTP requests (default 3).
+
+    Returns
+    -------
+    list[dict]
+        Flat list of supporting document dicts, ready to pass to
+        ``replace_meeting_data_safe()``.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+
+    supp_docs: list[dict] = []
+    lock = threading.Lock()
+
+    def _fetch_one(item: dict) -> None:
+        oid = item.get("onbase_item_id")
+        if not oid:
+            return
+        # Retry up to 2 times with backoff for transient timeouts
+        for attempt in range(2):
+            try:
+                detail_html = fetch_item_details_sync(config, meeting_id, oid)
+                if not detail_html:
+                    return
+                item_docs, _ = parse_item_details(
+                    detail_html, str(meeting_id),
+                    item.get("body", ""),
+                    item.get("agenda_item_number", ""),
+                    base_url=config.base_url,
+                )
+                for doc in item_docs:
+                    doc["agenda_item_id"] = 0
+                if item_docs:
+                    with lock:
+                        supp_docs.extend(item_docs)
+                break
+            except Exception as de:
+                if attempt == 1:
+                    log.debug("Failed to fetch item details for meeting %s item %s (retried): %s",
+                               meeting_id, oid, de)
+                else:
+                    import time as _time
+                    _time.sleep(1)
+
+    candidates = [i for i in items if i.get("onbase_item_id")]
+    log.info("Fetching item details for %d item(s) (concurrency=%d)…",
+              len(candidates), max_workers)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(_fetch_one, item) for item in candidates]
+        for f in as_completed(futures):
+            pass  # results collected inline inside _fetch_one
+
+    log.info("Fetched item details: %d supporting doc(s) found", len(supp_docs))
+    return supp_docs
+
+
+def parse_item_details(
+    html: str,
+    meeting_id: str,
+    body: str,
+    agenda_item_number: str,
+    base_url: str | None = None,
+) -> tuple[list[dict], str]:
     """Parse item detail HTML for supporting document links and item description.
 
     Returns a tuple of (documents, description_text) where:
@@ -851,13 +937,14 @@ def parse_item_details(html: str, meeting_id: str, body: str, agenda_item_number
 
         # Build full URL (avoid duplicating path segments)
         if href.startswith("/"):
-            from scraper.tempe import TEMPE_CONFIG
-            parsed_base = urllib.parse.urlparse(TEMPE_CONFIG.base_url)
+            # Use the caller-supplied base_url; fall back to a safe default
+            resolved_base = base_url or "https://tempe.hylandcloud.com/Agendaonline"
+            parsed_base = urllib.parse.urlparse(resolved_base)
             base_path = parsed_base.path.rstrip("/")
             if href.lower().startswith(base_path.lower()):
                 href = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
             else:
-                href = f"{TEMPE_CONFIG.base_url}{href}"
+                href = f"{resolved_base}{href}"
 
         # Determine document type
         doc_type = "Attachment"
@@ -955,3 +1042,18 @@ class OnBaseAgendaClient:
 
     def build_packet_download_url(self, meeting_id: int, name: str) -> str:
         return self.config.build_packet_download_url(meeting_id, name)
+
+    def fetch_item_details_batch(
+        self,
+        meeting_id: int,
+        items: list[dict],
+        max_workers: int = 8,
+    ) -> list[dict]:
+        """Fetch per-item supporting documents concurrently for all items.
+
+        Shortcut for the module-level ``fetch_item_details_batch()`` bound
+        to this client's config.
+        """
+        return fetch_item_details_batch(
+            self.config, meeting_id, items, max_workers=max_workers,
+        )

@@ -1,8 +1,5 @@
 {% extends "base.html" %}
 {% block title %}Admin — Drafts{% endblock %}
-{% block extra_head %}
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
-{% endblock %}
 {% block content %}
 <div class="container-fluid mt-3">
   <h1>Admin</h1>
@@ -14,7 +11,7 @@
       <div class="card mb-2" data-id="{{ article.id }}">
         <div class="card-body py-2">
           <div class="d-flex justify-content-between align-items-center">
-            <div class="drag-handle d-flex align-items-center gap-2 flex-grow-1" style="cursor:grab">
+            <div class="drag-handle d-flex align-items-center gap-2 flex-grow-1" style="cursor:grab;user-select:none;-webkit-user-select:none">
               <span style="font-size:16px;color:#aaa" title="Drag to reorder">⠿</span>
               <div>
                 {% if article.is_featured %}<span class="badge bg-warning text-dark me-1" title="Featured">★</span>{% endif %}
@@ -27,9 +24,7 @@
             </div>
             <div class="d-flex gap-1 flex-shrink-0 ms-2">
               <a href="/admin/articles/{{ article.id }}/edit" class="btn btn-sm btn-outline-primary">Edit</a>
-              <form method="POST" action="/admin/articles/{{ article.id }}/delete" style="display:inline" onsubmit="return confirm('Delete this draft?')">
-                <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
-              </form>
+              <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#deleteModal" data-article-id="{{ article.id }}" data-article-title="{{ article.title[:60] }}">Delete</button>
             </div>
           </div>
         </div>
@@ -41,6 +36,28 @@
   {% endif %}
 </div>
 
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="deleteModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="deleteModalLabel">Delete draft?</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="deleteModalBody">
+        Are you sure you want to delete this draft?
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <form id="deleteForm" method="POST" action="">
+          <button type="submit" class="btn btn-danger">Delete</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
 <script>
   var list = document.getElementById('draft-list');
   if (list) {
@@ -49,7 +66,13 @@
       animation: 200,
       forceFallback: true,
       fallbackClass: 'sortable-fallback',
+      onStart: function() {
+        document.body.style.userSelect = 'none';
+        document.body.style.webkitUserSelect = 'none';
+      },
       onEnd: function() {
+        document.body.style.userSelect = '';
+        document.body.style.webkitUserSelect = '';
         var ids = Array.from(list.querySelectorAll('[data-id]')).map(function(el) {
           return parseInt(el.getAttribute('data-id'));
         });
@@ -59,6 +82,18 @@
           body: JSON.stringify({order: ids})
         });
       }
+    });
+  }
+
+  // Wire up delete modal
+  var deleteModal = document.getElementById('deleteModal');
+  if (deleteModal) {
+    deleteModal.addEventListener('show.bs.modal', function(event) {
+      var btn = event.relatedTarget;
+      var articleId = btn.getAttribute('data-article-id');
+      var articleTitle = btn.getAttribute('data-article-title');
+      document.getElementById('deleteForm').action = '/admin/articles/' + articleId + '/delete';
+      document.getElementById('deleteModalBody').textContent = 'Are you sure you want to delete "' + articleTitle + '"?';
     });
   }
 </script>
