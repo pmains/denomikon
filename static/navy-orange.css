@@ -54,6 +54,16 @@
             background-color: #ED6800 !important;
             color: #fff !important;
         }
+        .btn-check:checked + .btn-outline-secondary {
+            background-color: #05235B !important;
+            border-color: #05235B !important;
+            color: #fff !important;
+        }
+        .btn-check:checked + .btn-outline-secondary:hover {
+            background-color: #ED6800 !important;
+            border-color: #ED6800 !important;
+            color: #fff !important;
+        }
 
         /* ── Outline variants for highlight colors ── */
         .btn-outline-accent {

@@ -168,23 +168,20 @@ def backfill_multi_jurisdiction_columns(engine):
         for row in rows:
             body_map[row[1]] = row[0]
 
-        # Backfill meetings — use actual jurisdiction_id from the public body
+        # Backfill meetings — use Python dict to avoid LIMIT-1 ambiguity
+        for body_code, pb_id in body_map.items():
+            conn.execute(
+                text(
+                    "UPDATE meetings SET public_body_id = :pb_id, "
+                    "jurisdiction_id = (SELECT jurisdiction_id FROM public_bodies WHERE id = :pb_id), "
+                    "_multi_jurisdiction_backfilled = 1 "
+                    "WHERE body = :body_code AND _multi_jurisdiction_backfilled = 0"
+                ),
+                {"pb_id": pb_id, "body_code": body_code}
+            )
+        # Any remaining unbilled meetings (no matching public body) just get flagged
         conn.execute(
-            text("""
-                UPDATE meetings
-                SET jurisdiction_id = COALESCE(
-                        (SELECT pb.jurisdiction_id FROM public_bodies pb
-                         WHERE pb.body_code = meetings.body LIMIT 1),
-                        1
-                    ),
-                    public_body_id = (
-                        SELECT pb.id FROM public_bodies pb
-                        WHERE pb.body_code = meetings.body
-                        LIMIT 1
-                    ),
-                    _multi_jurisdiction_backfilled = 1
-                WHERE _multi_jurisdiction_backfilled = 0
-            """)
+            text("UPDATE meetings SET _multi_jurisdiction_backfilled = 1 WHERE _multi_jurisdiction_backfilled = 0")
         )
 
         # Backfill agenda_items from their parent meeting
@@ -391,6 +388,10 @@ def _migrate_existing_tables(engine=None):
     """
     if engine is None:
         engine = get_engine()
+
+    # Skip migration for non-SQLite databases (PostgreSQL handles schema via ORM)
+    if engine.dialect.name != "sqlite":
+        return
 
     migrations = [
         ("public_body_members", "jurisdiction_id", "INTEGER DEFAULT NULL"),

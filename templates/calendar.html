@@ -1,0 +1,425 @@
+{% extends "base.html" %}
+{% block title %}Calendar — Arizona Public Meetings | Poliscopic{% endblock %}
+{% block meta_description %}
+<meta name="description" content="Calendar view of Arizona public meetings — browse city councils, planning commissions, county boards, and public agencies by date.">
+{% endblock %}
+{% block canonical %}
+<link rel="canonical" href="https://poliscopic.com/calendar">
+{% endblock %}
+{% block extra_css %}
+/* Choices.js overrides for calendar filter */
+.choices__inner { font-size: 0.8rem; min-height: 32px; }
+.choices__list--dropdown .choices__item { font-size: 0.8rem; white-space: nowrap; }
+.choices[data-type*=select-one] .choices__inner { padding: 3px 8px; }
+.choices__list--single { padding: 2px 16px 2px 4px; }
+.choices__list--dropdown { min-width: 200px; }
+<style>
+/* ── Calendar grid ── */
+.calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+    background: var(--bs-border-color, #dee2e6);
+    border: 1px solid var(--bs-border-color, #dee2e6);
+    border-radius: 6px;
+    overflow: hidden;
+}
+.calendar-header-cell {
+    background: var(--bs-dark, #212529);
+    color: var(--bs-light, #f8f9fa);
+    padding: 6px 4px;
+    text-align: center;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.calendar-day {
+    background: var(--bs-body-bg, #fff);
+    min-height: 100px;
+    padding: 4px;
+    position: relative;
+}
+.calendar-day.padding {
+    background: var(--bs-tertiary-bg, #f5f5f5);
+    opacity: 0.5;
+}
+.calendar-day.today {
+    background: var(--bs-primary-bg-subtle, #e7f1ff);
+    box-shadow: inset 0 0 0 2px var(--bs-primary, #0d6efd);
+}
+.calendar-day .day-number {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--bs-secondary-color, #6c757d);
+    margin-bottom: 2px;
+}
+.calendar-day.today .day-number {
+    color: var(--bs-primary, #0d6efd);
+}
+.calendar-day .meeting-dot {
+    display: block;
+    font-size: 0.65rem;
+    line-height: 1.2;
+    padding: 1px 3px;
+    margin-bottom: 1px;
+    border-radius: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    text-decoration: none;
+    color: #fff;
+}
+.meeting-dot.primary { background: #0d6efd; }
+.meeting-dot.secondary { background: #6c757d; }
+.meeting-dot.success { background: #198754; }
+.meeting-dot.danger { background: #dc3545; }
+.meeting-dot.warning { background: #ffc107; color: #000; }
+.meeting-dot.info { background: #0dcaf0; color: #000; }
+.meeting-dot.dark { background: #212529; }
+
+/* ── Week view for mobile ── */
+.calendar-week-view .week-header {
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--bs-secondary-color, #6c757d);
+    margin-bottom: 4px;
+}
+.calendar-week-view .week-day-group {
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--bs-border-color, #dee2e6);
+    padding-bottom: 8px;
+}
+.calendar-week-view .week-day-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+.calendar-week-view .week-day-label.today {
+    color: var(--bs-primary, #0d6efd);
+}
+.week-meeting-card {
+    font-size: 0.8rem;
+    padding: 4px 8px;
+    margin-bottom: 3px;
+    border-left: 3px solid var(--bs-primary, #0d6efd);
+    background: var(--bs-tertiary-bg, #f5f5f5);
+    border-radius: 3px;
+}
+.week-meeting-card a {
+    text-decoration: none;
+    color: var(--bs-body-color, #212529);
+}
+.week-meeting-card a:hover {
+    text-decoration: underline;
+}
+.week-meeting-card .meeting-jurisdiction {
+    font-size: 0.7rem;
+    color: var(--bs-secondary-color, #6c757d);
+}
+
+/* ── Day view ── */
+.day-view-list .day-meeting-card {
+    padding: 8px 12px;
+    margin-bottom: 6px;
+    border-left: 4px solid var(--bs-primary, #0d6efd);
+    background: var(--bs-tertiary-bg, #f5f5f5);
+    border-radius: 4px;
+}
+.day-view-list .day-meeting-card a {
+    text-decoration: none;
+    font-weight: 500;
+}
+.day-view-list .day-meeting-card a:hover {
+    text-decoration: underline;
+}
+
+/* ── Nav controls ── */
+.calendar-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+.calendar-nav .month-title {
+    font-size: 1.2rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+.view-toggle .btn {
+    font-size: 0.8rem;
+}
+.filter-row {
+    margin-bottom: 12px;
+}
+.filter-row select, .filter-row input {
+    font-size: 0.8rem;
+}
+
+/* ── Mobile: show week view, hide month grid ── */
+.calendar-month-view { display: block; }
+.calendar-week-view { display: none; }
+
+@media (max-width: 767.98px) {
+    .calendar-month-view { display: none; }
+    .calendar-week-view { display: block; }
+    .calendar-nav .month-title { font-size: 1rem; }
+    .calendar-day { min-height: 70px; }
+    .calendar-day .meeting-dot { font-size: 0.6rem; }
+}
+
+/* ── Meeting count badge on month cells ── */
+.day-meeting-count {
+    font-size: 0.6rem;
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    background: var(--bs-secondary, #6c757d);
+    color: #fff;
+    border-radius: 8px;
+    padding: 0 4px;
+    min-width: 14px;
+    text-align: center;
+}
+
+/* ── Nav item active state ── */
+</style>
+{% endblock %}
+
+{% block content %}
+{% set month_names = ['','January','February','March','April','May','June','July','August','September','October','November','December'] %}
+{% set day_names = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}
+
+<h1 class="mb-2">Public Meetings Calendar</h1>
+<p class="text-muted mb-3">Browse upcoming and past public meetings across Arizona. <a href="/meetings" class="text-decoration-none">Switch to table view</a>.</p>
+
+{# ── Filters ── #}
+<form method="GET" action="/calendar" class="filter-row row g-2 align-items-end">
+    <input type="hidden" name="view" value="{{ view }}">
+    <input type="hidden" name="year" value="{{ calendar_year }}">
+    <input type="hidden" name="month" value="{{ calendar_month }}">
+    {% if view == "day" or view == "week" %}
+    <input type="hidden" name="day" value="{{ week_start.day if view == 'week' else start_date.split('-')[2] }}">
+    {% endif %}
+    <div class="col-md-3">
+        <label class="form-label small" for="jurisdiction">Jurisdiction</label>
+        <select name="jurisdiction" id="jurisdiction" class="form-select form-select-sm">
+            <option value="" {% if not filter_jurisdiction %}selected{% endif %}>All</option>
+            <option value="maricopa-county" {% if filter_jurisdiction == 'maricopa-county' %}selected{% endif %}>Maricopa County</option>
+            <option value="avondale" {% if filter_jurisdiction == 'avondale' %}selected{% endif %}>Avondale</option>
+            <option value="buckeye" {% if filter_jurisdiction == 'buckeye' %}selected{% endif %}>Buckeye</option>
+            <option value="chandler" {% if filter_jurisdiction == 'chandler' %}selected{% endif %}>Chandler</option>
+            <option value="el-mirage" {% if filter_jurisdiction == 'el-mirage' %}selected{% endif %}>El Mirage</option>
+            <option value="glendale" {% if filter_jurisdiction == 'glendale' %}selected{% endif %}>Glendale</option>
+            <option value="goodyear" {% if filter_jurisdiction == 'goodyear' %}selected{% endif %}>Goodyear</option>
+            <option value="mesa" {% if filter_jurisdiction == 'mesa' %}selected{% endif %}>Mesa</option>
+            <option value="peoria" {% if filter_jurisdiction == 'peoria' %}selected{% endif %}>Peoria</option>
+            <option value="phoenix" {% if filter_jurisdiction == 'phoenix' %}selected{% endif %}>Phoenix</option>
+            <option value="scottsdale" {% if filter_jurisdiction == 'scottsdale' %}selected{% endif %}>Scottsdale</option>
+            <option value="surprise" {% if filter_jurisdiction == 'surprise' %}selected{% endif %}>Surprise</option>
+            <option value="tempe" {% if filter_jurisdiction == 'tempe' %}selected{% endif %}>Tempe</option>
+            <option value="gilbert" {% if filter_jurisdiction == 'gilbert' %}selected{% endif %}>Gilbert</option>
+            <option value="tolleson" {% if filter_jurisdiction == 'tolleson' %}selected{% endif %}>Tolleson</option>
+            <option value="tucson" {% if filter_jurisdiction == 'tucson' %}selected{% endif %}>Tucson</option>
+            <option value="paradise-valley" {% if filter_jurisdiction == 'paradise-valley' %}selected{% endif %}>Paradise Valley</option>
+            <option value="queen-creek" {% if filter_jurisdiction == 'queen-creek' %}selected{% endif %}>Queen Creek</option>
+            <option value="apache-junction" {% if filter_jurisdiction == 'apache-junction' %}selected{% endif %}>Apache Junction</option>
+            <option value="fountain-hills" {% if filter_jurisdiction == 'fountain-hills' %}selected{% endif %}>Fountain Hills</option>
+            <option value="wickenburg" {% if filter_jurisdiction == 'wickenburg' %}selected{% endif %}>Wickenburg</option>
+            <option value="mag" {% if filter_jurisdiction == 'mag' %}selected{% endif %}>MAG</option>
+        </select>
+    </div>
+    <div class="col-md-3">
+        <label class="form-label small" for="body">Body</label>
+        <select name="body" id="body" class="form-select form-select-sm">
+            <option value="" {% if not filter_body %}selected{% endif %}>All bodies</option>
+        </select>
+    </div>
+    <div class="col-md-2">
+        <button type="submit" class="btn btn-primary btn-sm w-100">Filter</button>
+    </div>
+    <div class="col-md-2">
+        <a href="/calendar" class="btn btn-outline-secondary btn-sm w-100">Clear</a>
+    </div>
+</form>
+
+{# ── Navigation ── #}
+<div class="calendar-nav">
+    <div>
+        <a href="?year={{ prev_year }}&amp;month={{ prev_month }}&amp;view={{ view }}{% if filter_jurisdiction %}&amp;jurisdiction={{ filter_jurisdiction }}{% endif %}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}" class="btn btn-outline-secondary btn-sm">&larr; {{ month_names[prev_month][:3] }}</a>
+        <a href="/calendar" class="btn btn-outline-primary btn-sm ms-1">Today</a>
+        <a href="?year={{ next_year }}&amp;month={{ next_month }}&amp;view={{ view }}{% if filter_jurisdiction %}&amp;jurisdiction={{ filter_jurisdiction }}{% endif %}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}" class="btn btn-outline-secondary btn-sm ms-1">{{ month_names[next_month][:3] }} &rarr;</a>
+    </div>
+    <div class="month-title">{{ month_names[calendar_month] }} {{ calendar_year }}</div>
+    <div class="view-toggle btn-group btn-group-sm">
+        <a href="?view=month&amp;year={{ calendar_year }}&amp;month={{ calendar_month }}{% if filter_jurisdiction %}&amp;jurisdiction={{ filter_jurisdiction }}{% endif %}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}" class="btn {% if view == 'month' %}btn-primary{% else %}btn-outline-secondary{% endif %}">Month</a>
+        <a href="?view=week&amp;year={{ calendar_year }}&amp;month={{ calendar_month }}&amp;day={{ today.day }}{% if filter_jurisdiction %}&amp;jurisdiction={{ filter_jurisdiction }}{% endif %}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}" class="btn {% if view == 'week' %}btn-primary{% else %}btn-outline-secondary{% endif %}">Week</a>
+        <a href="?view=day&amp;year={{ calendar_year }}&amp;month={{ calendar_month }}&amp;day={{ today.day }}{% if filter_jurisdiction %}&amp;jurisdiction={{ filter_jurisdiction }}{% endif %}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}" class="btn {% if view == 'day' %}btn-primary{% else %}btn-outline-secondary{% endif %}">Day</a>
+    </div>
+</div>
+
+{% if total_count == 0 %}
+<div class="alert alert-info">No meetings in this period.</div>
+{% endif %}
+
+{# ── Month grid view (desktop) ── #}
+<div class="calendar-month-view">
+    <div class="calendar-grid">
+        {% for d in day_names %}
+        <div class="calendar-header-cell">{{ d }}</div>
+        {% endfor %}
+        {% for week in calendar_grid %}
+        {% for day in week %}
+        <div class="calendar-day{% if not day.is_current_month %} padding{% endif %}{% if day.is_today %} today{% endif %}">
+            {% if day.day %}
+            <div class="day-number">
+                {{ day.day }}
+                {% set day_meetings = meetings_by_day.get(day.day, []) %}
+                {% if day_meetings %}
+                <span class="day-meeting-count">{{ day_meetings|length }}</span>
+                {% endif %}
+            </div>
+            {% for m in day_meetings[:4] %}
+            <a href="/meetings/{{ m.body }}/{{ m.meeting_id }}" class="meeting-dot {{ m.source_badge }}" title="{{ m.jurisdiction }} — {{ m.source }}">
+                {{ m.short_label }}
+            </a>
+            {% endfor %}
+            {% if day_meetings|length > 4 %}
+            <small class="text-muted" style="font-size:0.6rem;">+{{ day_meetings|length - 4 }} more</small>
+            {% endif %}
+            {% endif %}
+        </div>
+        {% endfor %}
+        {% endfor %}
+    </div>
+</div>
+
+{# ── Week view (mobile default) ── #}
+<div class="calendar-week-view">
+    {% for d in week_days %}
+    {% set day_meetings = meetings_by_day.get(d.day, []) %}
+    <div class="week-day-group">
+        <div class="week-day-label{% if d == today %} today{% endif %}">
+            {{ day_names[d.weekday()] }} {{ month_names[d.month][:3] }} {{ d.day }}{% if d.year != today.year %}, {{ d.year }}{% endif %}
+            <span class="text-muted small">{% if day_meetings %}({{ day_meetings|length }}){% else %}No meetings{% endif %}</span>
+        </div>
+        {% for m in day_meetings %}
+        <div class="week-meeting-card">
+            <a href="/meetings/{{ m.body }}/{{ m.meeting_id }}">
+                <strong>{{ m.source }}</strong> — {{ m.meeting_type or m.title }}
+            </a>
+            <div class="meeting-jurisdiction">{{ m.jurisdiction }} &middot; {{ m.meeting_date }}</div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endfor %}
+</div>
+
+{# ── Day view (selected single day) ── #}
+{% if view == "day" %}
+<div class="day-view-list mt-3">
+    <h5>{{ month_names[calendar_month] }} {{ start_date.split('-')[2] }}, {{ calendar_year }}</h5>
+    {% set day_meetings = meetings_by_day.get(start_date.split('-')[2]|int, []) %}
+    {% if day_meetings %}
+    {% for m in day_meetings %}
+    <div class="day-meeting-card">
+        <a href="/meetings/{{ m.body }}/{{ m.meeting_id }}" class="d-block">
+            <strong>{{ m.source }}</strong> — {{ m.jurisdiction }}
+        </a>
+        <div class="small text-muted">{{ m.meeting_type or m.title }}</div>
+        <div class="mt-1">
+            <span class="badge bg-{{ m.source_badge }}">{{ m.source }}</span>
+            <span class="badge bg-{{ m.badge_class }}">{{ m.sync_status }}</span>
+            {% if m.item_count > 0 %}<span class="badge bg-secondary">{{ m.item_count }} items</span>{% endif %}
+        </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="text-muted">No meetings this day.</p>
+    {% endif %}
+</div>
+{% endif %}
+
+<p class="text-muted small mt-3">{{ total_count }} meeting(s) in this period.</p>
+
+<script>
+/* ── Choices.js: searchable jurisdiction + body selects ── */
+document.addEventListener('DOMContentLoaded', function() {
+    var jurSelect = document.getElementById('jurisdiction');
+    var bodySelect = document.getElementById('body');
+
+    var bodyChoices = null;
+
+    // Initialize jurisdiction
+    var jurChoices = new Choices(jurSelect, {
+        searchEnabled: true,
+        searchPlaceholderValue: 'Type to find a jurisdiction…',
+        itemSelectText: '',
+        shouldSort: false,
+        noResultsText: 'No jurisdictions found',
+    });
+
+    // Load bodies from API
+    function loadBodyOptions(jurisdiction) {
+        fetch('/api/bodies')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var options = [{ value: '', label: 'All bodies' }];
+
+                if (jurisdiction && data[jurisdiction]) {
+                    data[jurisdiction].bodies.forEach(function(b) {
+                        options.push({ value: b.value, label: b.label });
+                    });
+                } else {
+                    Object.keys(data).sort().forEach(function(slug) {
+                        data[slug].bodies.forEach(function(b) {
+                            options.push({ value: b.value, label: data[slug].name + ' — ' + b.label });
+                        });
+                    });
+                }
+
+                if (bodyChoices) { bodyChoices.destroy(); }
+                bodyChoices = new Choices(bodySelect, {
+                    searchEnabled: true,
+                    searchPlaceholderValue: 'Type to search bodies…',
+                    itemSelectText: '',
+                    shouldSort: false,
+                    noResultsText: 'No bodies match your search',
+                    noChoicesText: 'No bodies available',
+                });
+                bodyChoices.setChoices(options, 'value', 'label', true);
+
+                var selectedVal = '{{ filter_body|e }}';
+                if (selectedVal) bodyChoices.setChoiceByValue(selectedVal);
+            });
+    }
+
+    // Auto-submit when a real selection happens
+    var form = jurSelect.closest('form');
+    var settledJur = '{{ filter_jurisdiction|e }}';
+    var settledBody = '{{ filter_body|e }}';
+
+    jurSelect.addEventListener('change', function() {
+        var val = jurSelect.value;
+        if (val !== settledJur && form) {
+            settledJur = val;
+            form.submit();
+        }
+    });
+    bodySelect.addEventListener('change', function() {
+        var val = bodySelect.value;
+        if (val !== settledBody && form) {
+            settledBody = val;
+            form.submit();
+        }
+    });
+
+    // Load initial body options
+    loadBodyOptions(settledJur);
+});
+</script>
+{% endblock %}

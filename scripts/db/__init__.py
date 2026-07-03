@@ -17,7 +17,7 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 # Re-export from submodules
-from db.core import DATABASE_URL, get_engine, set_database_url, get_session
+from db.core import DATABASE_URL, get_engine, set_database_url, get_session, ensure_public_body
 from db.core import _engine, _SessionLocal
 from sqlalchemy import text
 from db.models import (

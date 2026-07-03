@@ -330,7 +330,7 @@ for m in rows:
     except (ValueError, TypeError):
         md = today
     if md >= today:
-        m.next_doc_check_at = date(md.year, md.month, md.day).isoformat() + 'T00:00:00'
+        m.next_doc_check_at = datetime(md.year, md.month, md.day, tzinfo=timezone.utc)
     else:
         m.next_doc_check_at = now + timedelta(days=2)
     seeded += 1

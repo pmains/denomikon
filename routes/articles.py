@@ -407,6 +407,9 @@ def by_tag(tag_slug):
 def search():
     q = request.args.get("q", "").strip()
     scope = request.args.get("scope", "all")  # all, articles, agendas
+    sort = request.args.get("sort", "date")  # date, relevance
+    from_date = request.args.get("from", "").strip() or None
+    to_date = request.args.get("to", "").strip() or None
     articles = []
     agenda_items = []
     tags = []
@@ -421,10 +424,13 @@ def search():
         if scope in ("all", "articles"):
             articles, articles_truncated = search_articles(q)
         if scope in ("all", "agendas"):
-            agenda_items, agenda_truncated = search_agenda_items(q)
+            agenda_items, agenda_truncated = search_agenda_items(
+                q, sort=sort, from_date=from_date, to_date=to_date
+            )
 
     session.close()
-    return render_template("search.html", q=q, scope=scope,
+    return render_template("search.html", q=q, scope=scope, sort=sort,
+                           from_date=from_date or "", to_date=to_date or "",
                            articles=articles, agenda_items=agenda_items,
                            articles_truncated=articles_truncated,
                            agenda_truncated=agenda_truncated,

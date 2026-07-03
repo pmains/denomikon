@@ -15,9 +15,177 @@ from db import (
 )
 from routes import SYNC_STATUS_BADGES, _cache
 
+
+# ── Abbreviation maps for calendar view ──
+
+# Map of short jurisdiction names (from jur_map) to display names
+_JUR_DISPLAY = {
+    "Maricopa County": "Maricopa",
+    "Phoenix": "Phoenix",
+    "Tempe": "Tempe",
+    "Chandler": "Chandler",
+    "Mesa": "Mesa",
+    "Scottsdale": "Scottsdale",
+    "Peoria": "Peoria",
+    "Glendale": "Glendale",
+    "Surprise": "Surprise",
+    "Buckeye": "Buckeye",
+    "Goodyear": "Goodyear",
+    "Avondale": "Avondale",
+    "El Mirage": "El Mirage",
+    "Gilbert": "Gilbert",
+    "Tucson": "Tucson",
+    "Paradise Valley": "Paradise Valley",
+    "Queen Creek": "Queen Creek",
+    "Apache Junction": "Apache Junction",
+    "Fountain Hills": "Fountain Hills",
+    "Wickenburg": "Wickenburg",
+    "Maricopa Association of Governments (MAG)": "MAG",
+    "Tolleson": "Tolleson",
+}
+
+
+_BODY_ABBREV = {
+    "City Council": "City Council",
+    "Town Council": "Town Council",
+    "Board of Supervisors": "BOS",
+    "Formal Meeting": "Formal",
+    "Planning Commission": "Planning",
+    "Planning & Zoning": "P&Z",
+    "Planning & Zoning Commission": "P&Z",
+    "Planning and Zoning": "P&Z",
+    "Planning and Zoning Commission": "P&Z",
+    "Zoning Adjustment": "Zoning Adj",
+    "Board of Adjustment": "BOA",
+    "Development Review Commission": "Dev Review",
+    "Development Review Board": "Dev Review",
+    "Design Review Board": "Dev Review",
+    "Historic Preservation Commission": "Historic",
+    "Historic Preservation": "Historic",
+    "Housing Authority": "Housing Auth",
+    "Parks & Recreation": "Parks",
+    "Parks & Recreation Commission": "Parks",
+    "Parks and Recreation": "Parks",
+    "Airport Commission": "Airport",
+    "Housing & Human Services": "Housing",
+    "Transportation Commission": "Transport",
+    "Industrial Development Authority": "IDA",
+    "Merit Systems Commission": "Merit Comm",
+    "Public Safety Personnel Retirement": "PSPRS",
+    "Emergency Planning": "LEPC",
+    "Audit Advisory": "Audit",
+    "Travel Reduction": "TRP",
+    "Building Code Advisory": "Bldg Code",
+    "Public Safety Funding": "PSF Comm",
+    "Community Action": "Comm Action",
+    "Common Council": "Council",
+    "Transportation Safety": "Trans Safety",
+    "Transportation Review": "Trans Review",
+    "Transportation Policy": "Trans Policy",
+    "Regional Council": "Reg Council",
+    "Management Committee": "Mgmt Comm",
+    "Community Services": "Comm Svcs",
+    "Economic Development": "Econ Dev",
+    "Public Safety": "Pub Safety",
+    "Arts Commission": "Arts Comm",
+    "Library Advisory Board": "Library",
+    "Government Services": "Gov Svcs",
+    "Stadium District": "Stadium",
+    "Advisory Board": "Advisory",
+}
+
+
+def _short_label(jurisdiction, source_name):
+    """Build a compact label like "Maricopa BOS" or "Tempe City Council" for calendar dots.
+    Skips the jurisdiction prefix when the body name already contains the jurisdiction name.
+    """
+    jur = _JUR_DISPLAY.get(jurisdiction, jurisdiction)
+    
+    # Only skip the jurisdiction prefix when it's Maricopa County and the
+    # source/type name already mentions a specific city.
+    # e.g. "Phoenix Fire Pension Board" under Maricopa → just "Phoenix Fire Pension Board"
+    # e.g. "City of Phoenix EPC" under Maricopa → "City of Phoenix EPC"
+    # But "Fountain Hills Community Services" under Fountain Hills → "Fountain Hills Comm Svcs"
+    source_lower = source_name.lower()
+    city_names = ["phoenix", "tempe", "tucson", "chandler", "mesa", "glendale",
+                  "scottsdale", "peoria", "surprise", "buckeye", "avondale",
+                  "goodyear", "el mira", "gilbert", "tolleson", "wickenburg",
+                  "paradise valley", "queen creek", "apache junction", "fountain hills"]
+    redundant = (jur == "Maricopa" or jur == "MAG") and any(city in source_lower for city in city_names)
+    
+    # Try exact match first, then partial match
+    for pattern, abbr in _BODY_ABBREV.items():
+        if pattern in source_name or source_name in pattern:
+            if redundant:
+                return abbr[:26]
+            label = f"{jur} {abbr}"
+            if len(label) > 26:
+                return label[:26] + "…"
+            return label
+    
+    # Last resort
+    name = source_name[:24]
+    if redundant:
+        label = name[:26]
+    else:
+        label = f"{jur} {name}"
+    if len(label) > 26:
+        return label[:26] + "…"
+    return label
+
 log = logging.getLogger(__name__)
 
 meetings_bp = Blueprint("meetings", __name__, url_prefix="")
+
+
+# ── Calendar helpers ────────────────────────────────────────────────────
+
+def _get_month_range(year, month):
+    """Return (start_date, end_date) for the month as "YYYY-MM-DD" strings."""
+    from datetime import date, timedelta
+    if month == 12:
+        start = date(year, 12, 1)
+        end = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        start = date(year, month, 1)
+        end = date(year, month + 1, 1) - timedelta(days=1)
+    return start.isoformat(), end.isoformat()
+
+
+def _get_week_range(year, month, day):
+    """Return (start_date, end_date) for the week containing the given date."""
+    from datetime import date, timedelta
+    d = date(year, month, day)
+    # Monday-start week
+    start = d - timedelta(days=d.weekday())
+    end = start + timedelta(days=6)
+    return start.isoformat(), end.isoformat()
+
+
+def _get_calendar_grid(year, month):
+    """Return a list of weeks, each week being a list of day dicts.
+
+    Each day dict: {"day": int or None (padding), "is_today": bool,
+                     "is_current_month": bool}
+    """
+    import calendar
+    from datetime import date
+
+    cal = calendar.Calendar(firstweekday=6)  # Sunday-start
+    today = date.today()
+
+    weeks = []
+    for week_days in cal.monthdays2calendar(year, month):
+        row = []
+        for day_num, wd in week_days:
+            row.append({
+                "day": day_num if day_num else None,
+                "is_today": (day_num == today.day and month == today.month
+                              and year == today.year) if day_num else False,
+                "is_current_month": bool(day_num),
+            })
+        weeks.append(row)
+    return weeks
 
 
 
@@ -347,6 +515,7 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             5: ("Mesa", "mesa"),
             6: ("Gilbert", "gilbert"),
             7: ("Scottsdale", "scottsdale"),
+            8: ("Tucson", "tucson"),
             10: ("Peoria", "peoria"),
             11: ("Glendale", "glendale"),
             12: ("Surprise", "surprise"),
@@ -354,9 +523,20 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
             14: ("Avondale", "avondale"),
             15: ("El Mirage", "el-mirage"),
             16: ("Goodyear", "goodyear"),
+            17: ("Paradise Valley", "paradise-valley"),
+            18: ("Queen Creek", "queen-creek"),
+            20: ("Maricopa Association of Governments (MAG)", "mag"),
+            21: ("Tolleson", "tolleson"),
+            22: ("Apache Junction", "apache-junction"),
+            23: ("Fountain Hills", "fountain-hills"),
+            19: ("Tucson", "tucson"),
+            20: ("Maricopa Association of Governments (MAG)", "mag"),
+            21: ("Tolleson", "tolleson"),
+            22: ("Apache Junction", "apache-junction"),
+            23: ("Fountain Hills", "fountain-hills"),
             24: ("Wickenburg", "wickenburg"),
         }
-        jur_name, jur_slug = jur_map.get(row.jurisdiction_id, ("Maricopa County", "maricopa-county"))
+        jur_name, jur_slug = jur_map.get(row.jurisdiction_id, ("", ""))
 
         meetings_list.append({
             "body": body_val,
@@ -388,6 +568,32 @@ def meetings():
     end_date = request.args.get("end_date", "")
     jurisdiction = request.args.get("jurisdiction", "")
     hide_upcoming = request.args.get("hide_upcoming", "") == "1"
+
+    # Auto-detect jurisdiction from body if not provided
+    if body and not jurisdiction:
+        body_to_jur = {
+            "bos": "maricopa-county", "pz": "maricopa-county",
+            "adj": "maricopa-county", "drain": "maricopa-county",
+            "health": "maricopa-county", "tab": "maricopa-county",
+            "ida": "maricopa-county",
+            "tempe": "tempe", "mesa": "mesa",
+            "chandler": "chandler", "gilbert": "gilbert",
+            "scottsdale": "scottsdale", "peoria": "peoria",
+            "glendale": "glendale", "surprise": "surprise",
+            "buckeye": "buckeye", "goodyear": "goodyear",
+            "phoenix": "phoenix", "avondale": "avondale",
+            "el-mirage": "el-mirage", "tucson": "tucson",
+            "paradise-valley": "paradise-valley",
+            "queen-creek": "queen-creek",
+            "apache-junction": "apache-junction",
+            "fountain-hills": "fountain-hills",
+            "wickenburg": "wickenburg",
+        }
+        # Body codes are prefixed with jurisdiction (e.g. apache-junction-cc)
+        for prefix, jur_slug in body_to_jur.items():
+            if body.startswith(prefix):
+                jurisdiction = jur_slug
+                break
 
     # Default end_date to today when hide_upcoming is active
     if hide_upcoming and not end_date:
@@ -435,6 +641,128 @@ def meetings():
         total_count=total_count,
         total_pages=total_pages,
     )
+
+
+# ── Calendar route ────────────────────────────────────────────────────
+
+
+@meetings_bp.route("/calendar")
+@_cache(timeout=120, query_string=True)
+def calendar_view():
+    """Render a month/week/day calendar view of meetings."""
+    from datetime import date
+
+    today = date.today()
+    year = request.args.get("year", today.year, type=int)
+    month = request.args.get("month", today.month, type=int)
+    view = request.args.get("view", "month")  # month | week | day
+    jurisdiction = request.args.get("jurisdiction", "")
+    body = request.args.get("body", "")
+
+    if month < 1:
+        month, year = 12, year - 1
+    elif month > 12:
+        month, year = 1, year + 1
+
+    if view == "day":
+        day = request.args.get("day", today.day, type=int)
+        start_date = f"{year:04d}-{month:02d}-{day:02d}"
+        end_date = start_date
+    elif view == "week":
+        day = request.args.get("day", today.day, type=int)
+        start_date, end_date = _get_week_range(year, month, day)
+    else:
+        start_date, end_date = _get_month_range(year, month)
+
+    meetings_list, total_count, _, _ = get_filtered_meetings(
+        body=body or None,
+        start_date=start_date,
+        end_date=end_date,
+        jurisdiction=jurisdiction or None,
+        page=1,
+        per_page=500,
+    )
+
+    meetings_by_day: dict[int, list] = {}
+    for m in meetings_list:
+        try:
+            d = date.fromisoformat(m["meeting_date"])
+            m["short_label"] = _short_label(m["jurisdiction"], m["source"])
+            meetings_by_day.setdefault(d.day, []).append(m)
+        except (ValueError, TypeError):
+            pass
+
+    calendar_grid = _get_calendar_grid(year, month)
+
+    if month == 1:
+        prev_month, prev_year = 12, year - 1
+    else:
+        prev_month, prev_year = month - 1, year
+    if month == 12:
+        next_month, next_year = 1, year + 1
+    else:
+        next_month, next_year = month + 1, year
+
+    from datetime import timedelta
+    week_start = date.fromisoformat(start_date)
+    week_end = date.fromisoformat(end_date)
+    # Pre-compute week days for the template (avoids Jinja2 date math)
+    week_days = [(week_start + timedelta(days=i)) for i in range(7)]
+
+    return render_template(
+        "calendar.html",
+        calendar_year=year,
+        calendar_month=month,
+        calendar_grid=calendar_grid,
+        meetings_by_day=meetings_by_day,
+        view=view,
+        start_date=start_date,
+        end_date=end_date,
+        week_start=week_start,
+        week_end=week_end,
+        week_days=week_days,
+        prev_year=prev_year,
+        prev_month=prev_month,
+        next_year=next_year,
+        next_month=next_month,
+        filter_jurisdiction=jurisdiction,
+        filter_body=body,
+        total_count=total_count,
+        today=today,
+    )
+
+
+# ── API endpoint for filter dropdowns ──
+
+
+@meetings_bp.route("/api/bodies")
+@_cache(timeout=300, query_string=True)
+def api_bodies():
+    """Return JSON of jurisdiction → body options for filter dropdowns."""
+    from db import get_session
+    from sqlalchemy import select, text
+
+    session = get_session()
+    rows = session.execute(text("""
+        SELECT DISTINCT j.slug, j.name, m.body, COALESCE(pb.name, m.body) as display_name
+        FROM meetings m
+        JOIN jurisdictions j ON m.jurisdiction_id = j.id
+        LEFT JOIN public_bodies pb ON m.public_body_id = pb.id
+        ORDER BY j.slug, m.body
+    """)).fetchall()
+    session.close()
+
+    result = {}
+    for jur_slug, jur_name, body_code, display_name in rows:
+        if jur_slug not in result:
+            result[jur_slug] = {"name": jur_name, "bodies": []}
+        result[jur_slug]["bodies"].append({
+            "value": body_code,
+            "label": display_name or body_code,
+        })
+
+    from flask import jsonify
+    return jsonify(result)
 
 
 @meetings_bp.route("/meetings/<path:meeting_id>")

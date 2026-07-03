@@ -4,7 +4,7 @@
 <h1 class="mb-3">Search</h1>
 
 <form method="GET" action="/search" class="mb-4">
-  <div class="input-group">
+  <div class="input-group mb-2">
     <input type="text" class="form-control" name="q" value="{{ q }}" placeholder="Search agendas and articles…" autofocus>
     <select name="scope" class="form-select" style="max-width:150px">
       <option value="all" {% if scope == 'all' %}selected{% endif %}>All</option>
@@ -12,6 +12,37 @@
       <option value="agendas" {% if scope == 'agendas' %}selected{% endif %}>Agendas</option>
     </select>
     <button class="btn btn-primary" type="submit">Search</button>
+  </div>
+
+  <div class="row g-2 align-items-center">
+    <div class="col-auto">
+      <label class="col-form-label small">Sort:</label>
+    </div>
+    <div class="col-auto">
+      <div class="btn-group btn-group-sm" role="group">
+        <input type="radio" class="btn-check" name="sort" id="sort-date" value="date" {% if sort == 'date' %}checked{% endif %} onchange="this.form.submit()">
+        <label class="btn btn-outline-secondary" for="sort-date">Recency</label>
+        <input type="radio" class="btn-check" name="sort" id="sort-relevance" value="relevance" {% if sort == 'relevance' %}checked{% endif %} onchange="this.form.submit()">
+        <label class="btn btn-outline-secondary" for="sort-relevance">Relevance</label>
+      </div>
+    </div>
+    <div class="col-auto">
+      <label class="col-form-label small">From:</label>
+    </div>
+    <div class="col-auto">
+      <input type="date" class="form-control form-control-sm" name="from" value="{{ from_date }}" style="width:150px" onchange="this.form.submit()">
+    </div>
+    <div class="col-auto">
+      <label class="col-form-label small">To:</label>
+    </div>
+    <div class="col-auto">
+      <input type="date" class="form-control form-control-sm" name="to" value="{{ to_date }}" style="width:150px" onchange="this.form.submit()">
+    </div>
+    {% if from_date or to_date or sort == 'date' %}
+    <div class="col-auto">
+      <a href="/search?q={{ q|urlencode }}&scope={{ scope }}" class="btn btn-sm btn-outline-danger">Clear filters</a>
+    </div>
+    {% endif %}
   </div>
 </form>
 
@@ -45,7 +76,12 @@
         <div>
           <h6 class="mb-1"><a href="/meetings/{{ item.body }}/{{ item.meeting_id }}" class="text-decoration-none">{{ item.title }}</a></h6>
           <p class="mb-0 small text-muted">{{ item.text }}</p>
-          <small class="text-muted">{{ item.body }} · Meeting {{ item.meeting_id }} · Item {{ item.agenda_item_number }}</small>
+          <small class="text-muted">
+            {{ item.meeting_date or "—" }} ·
+            {{ item.body | replace("_"," ") | replace("-"," ") | title }}
+            {% if item.meeting_id %} · Meeting {{ item.meeting_id }}{% endif %}
+            {% if item.agenda_item_number %} · Item {{ item.agenda_item_number }}{% endif %}
+          </small>
         </div>
       </div>
     </div>

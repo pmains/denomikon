@@ -480,9 +480,23 @@ async def main() -> int:
         meeting_count = len(meetings)
 
         # Pre-resolve public_body_id to avoid per-meeting DB lookups
-        pb_map = {}
+        pb_map: dict[str, PublicBodyModel] = {}
         for pb in session.execute(select(PublicBodyModel)).scalars().all():
             pb_map[pb.body_code] = pb
+
+        def _resolve_pb(body_code: str) -> PublicBodyModel | None:
+            """Look up a PublicBody by code, auto-registering if missing."""
+            pb = pb_map.get(body_code)
+            if pb is not None:
+                return pb
+            from db import ensure_public_body
+            pb_id = ensure_public_body(session, body_code)
+            if pb_id:
+                # Reload fresh row
+                pb = session.get(PublicBodyModel, pb_id)
+                pb_map[body_code] = pb
+                return pb
+            return None
 
         # Pre-resolve jurisdiction_id
         from db import Jurisdiction as JurisdictionModel
@@ -559,7 +573,7 @@ async def main() -> int:
                     db_m.last_attempted_at = None
                     db_m.updated_at = dt.datetime.now(dt.timezone.utc)
                 else:
-                    pb = pb_map.get(body_code)
+                    pb = _resolve_pb(body_code)
                     meeting_row = MeetingModel(
                         body=body_code,
                         meeting_id=meeting_id,
@@ -597,7 +611,7 @@ async def main() -> int:
                 session.flush()
                 meeting_row = db_m
             else:
-                pb = pb_map.get(body_code)
+                pb = _resolve_pb(body_code)
                 meeting_row = MeetingModel(
                     body=body_code,
                     meeting_id=meeting_id,
@@ -1181,6 +1195,20 @@ async def main() -> int:
             page.set_default_timeout(60000)
             try:
                 grand_total_items = 0
+                def _resolve_pb(body_code: str) -> PublicBodyModel | None:
+                    """Look up a PublicBody by code, auto-registering if missing."""
+                    pb = pb_map.get(body_code)
+                    if pb is not None:
+                        return pb
+                    from db import ensure_public_body
+                    from db import PublicBody as _PBM
+                    pb_id = ensure_public_body(session, body_code)
+                    if pb_id:
+                        pb = session.get(_PBM, pb_id)
+                        pb_map[body_code] = pb
+                        return pb
+                    return None
+
                 grand_total_meetings = 0
 
                 for body_code in body_codes:
@@ -1211,7 +1239,7 @@ async def main() -> int:
                     session = get_session()
                     total_items = 0
 
-                    pb = pb_map.get(body_code)
+                    pb = _resolve_pb(body_code)
 
                     for idx, meeting in enumerate(meetings, 1):
                         meeting_dict = {

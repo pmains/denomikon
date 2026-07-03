@@ -69,3 +69,57 @@ def get_session() -> Session:
     if _SessionLocal is None:
         _SessionLocal = sessionmaker(bind=get_engine(), future=True)
     return _SessionLocal()
+
+
+def ensure_public_body(session, body_code: str, name_hint: str = "",
+                       jurisdiction_id: int | None = None) -> int | None:
+    """Ensure a PublicBody row exists for the given body_code.
+
+    Returns the public_body.id, or None if no jurisdiction can be resolved.
+    Used by scrapers to auto-register body codes found in meeting data
+    that don't yet exist in the public_bodies table.
+    """
+    from db.models import PublicBody, Jurisdiction
+    from sqlalchemy import select
+
+    existing = session.execute(
+        select(PublicBody).where(PublicBody.body_code == body_code)
+    ).scalar_one_or_none()
+    if existing:
+        return existing.id
+
+    # Resolve jurisdiction from jurisdiction_id or slug prefixes
+    if not jurisdiction_id:
+        # Extract jurisdiction slug from body_code prefix (e.g. "chandler-cc" → "chandler")
+        prefix = body_code.split("-")[0] if "-" in body_code else ""
+        jur = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == prefix)
+        ).scalar_one_or_none()
+        if not jur and prefix:
+            # Maybe it's a state-county style (e.g. "az-maricopa")
+            jur = session.execute(select(Jurisdiction)).first()
+        if jur:
+            jurisdiction_id = jur.id
+
+    if not jurisdiction_id:
+        return None
+
+    # Build a display name from the body_code or name_hint
+    name = name_hint.strip() if name_hint.strip() else body_code.replace("-", " ").title()
+
+    def _make_slug(name: str) -> str:
+        import re
+        s = name.lower().replace("&", "and").replace("/", "-")
+        s = re.sub(r"[^a-z0-9-]+", "-", s).strip("-")
+        return s[:64]
+
+    pb = PublicBody(
+        jurisdiction_id=jurisdiction_id,
+        name=name,
+        slug=slugify(name)[:64],
+        body_code=body_code,
+        body_type="advisory_general",
+    )
+    session.add(pb)
+    session.flush()
+    return pb.id

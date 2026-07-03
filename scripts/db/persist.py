@@ -916,6 +916,12 @@ def persist_votes(
                     sup_id = existing_sup.id
                     supervisor_map[norm_name] = sup_id
                 else:
+                    # Guard against text fragments parsed as names from minutes PDFs
+                    if not _name_looks_like_a_person(name):
+                        log.warning(
+                            "persist_votes[sv] skipping non-person name: %r", name
+                        )
+                        continue
                     # Create a new supervisor record for this name (with fuzzy dedup)
                     person, _ = _find_or_create_person(
                         session, name, norm_name,

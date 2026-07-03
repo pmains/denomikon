@@ -47,8 +47,17 @@ Thumbs.db
 *.sqlite
 *.sqlite3
 
-# Sync script
-sync.sh
+# Dev/test scripts (not production code)
+scripts/check_meetings*.py
+scripts/test_berry.py
+scripts/berry_verify_*.py
+scripts/get_*
+scripts/setup_postgres_windows.ps1
+
+# Private workspace docs (internal process, not public source control)
+DEVELOPMENT_LOG.md
+NOTES.md
+REMEDIATION.md
 
 # Flask cache
 .cache/
@@ -77,3 +86,4 @@ scripts/run_daily_sync.sh
 SYNC.md
 *.zip
 drafts/
+scraper-error-log-2026-06-14.md

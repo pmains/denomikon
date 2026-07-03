@@ -183,8 +183,12 @@ FTS_TABLES = {}
 
 
 def init_fts():
-    """Create FTS5 virtual tables for full-text search if they don't exist."""
+    """Create FTS5 virtual tables for full-text search if they don't exist.
+    FTS5 is SQLite-only; PostgreSQL uses its own full-text search via tsvector.
+    """
     engine = get_engine()
+    if engine.dialect.name != "sqlite":
+        return
     conn = engine.raw_connection()
 
     # Articles FTS (standalone — no content-sync, tags are in association table)
@@ -238,8 +242,13 @@ def sync_article_fts(article_id: int):
     session.close()
 
 
-def search_agenda_items(query: str, limit: int = 50, _fetch_extra: bool = True) -> tuple[list[dict], bool]:
+def search_agenda_items(query: str, limit: int = 50, _fetch_extra: bool = True,
+                         sort: str = "date", from_date: str = None,
+                         to_date: str = None) -> tuple[list[dict], bool]:
     """Full-text search across agenda items.
+
+    Accepts optional sort direction ('date' or 'relevance')
+    and optional from_date/to_date (YYYY-MM-DD strings) for time-frame filtering.
 
     Returns (results, truncated) where truncated is True when more
     results exist beyond the limit.
@@ -247,20 +256,41 @@ def search_agenda_items(query: str, limit: int = 50, _fetch_extra: bool = True) 
     engine = get_engine()
     conn = engine.raw_connection()
     fetch_limit = limit + 1 if _fetch_extra else limit
+
+    params = []
+    where_clauses = ["agenda_items_fts MATCH ?"]
+    params.append(query)
+
+    if from_date:
+        where_clauses.append("m.meeting_date >= ?")
+        params.append(from_date)
+    if to_date:
+        where_clauses.append("m.meeting_date <= ?")
+        params.append(to_date)
+
+    where_sql = " AND ".join(where_clauses)
+
+    if sort == "date":
+        order_sql = "ORDER BY m.meeting_date DESC, rank"
+    else:
+        order_sql = "ORDER BY rank"
+
     try:
         rows = conn.execute(
-            """SELECT f.rowid, a.body, a.meeting_id, a.agenda_item_number,
+            f"""SELECT f.rowid, a.body, a.meeting_id, a.agenda_item_number,
                       a.agenda_item_title, a.agenda_item_text,
                       a.source_url,
-                      rank
+                      rank,
+                      m.meeting_date
                FROM agenda_items_fts f
                JOIN agenda_items a ON a.id = f.rowid
-               WHERE agenda_items_fts MATCH ?
-               ORDER BY rank
+               JOIN meetings m ON m.id = a.meeting_db_id
+               WHERE {where_sql}
+               {order_sql}
                LIMIT ?""",
-            (query, fetch_limit),
+            (*params, fetch_limit),
         ).fetchall()
-    except Exception:
+    except Exception as exc:
         rows = []
     conn.close()
 
@@ -273,6 +303,7 @@ def search_agenda_items(query: str, limit: int = 50, _fetch_extra: bool = True) 
             "id": r[0], "body": r[1], "meeting_id": r[2],
             "agenda_item_number": r[3], "title": r[4], "text": r[5][:300],
             "source_url": r[6], "rank": r[7],
+            "meeting_date": r[8],
         })
     return results, truncated
 

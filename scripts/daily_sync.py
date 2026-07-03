@@ -236,6 +236,15 @@ def main():
         except Exception as e:
             log.warning("  %s backfill skipped: %s", jname, e)
 
+    # ── Rebuild FTS search index ──
+    log.info("--- Rebuilding FTS search index ---")
+    try:
+        from db.newsroom import rebuild_fts
+        rebuild_fts()
+        log.info("  ✅ FTS search index rebuilt")
+    except Exception as e:
+        log.warning("  FTS index rebuild skipped: %s", e, exc_info=True)
+
     # ── Summary ──
     log.info("=== Daily sync complete ===")
     log.info("  %d jurisdictions synced today, %d on Sunday",

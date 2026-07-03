@@ -88,5 +88,10 @@ else:
     raise SystemExit(1)
 
 # Final check — validate the URL was resolved
-if not DATABASE_URL.startswith("sqlite:///"):
+if not (DATABASE_URL.startswith("sqlite:///") or DATABASE_URL.startswith("postgresql://")):
     raise RuntimeError(f"Unexpected DATABASE_URL format: {DATABASE_URL}")
+
+if DATABASE_URL.startswith("postgresql://"):
+    from urllib.parse import urlparse
+    parsed = urlparse(DATABASE_URL)
+    print(f"  [config] Using PostgreSQL: {parsed.hostname}:{parsed.port}/{parsed.path.lstrip('/')}")

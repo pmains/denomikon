@@ -115,7 +115,7 @@ def drafts_list():
     session = get_session()
     drafts = session.execute(
         select(Article).where(Article.status == "draft")
-        .order_by(desc(Article.priority), desc(Article.updated_at))
+        .order_by(desc(Article.created_at), desc(Article.priority))
     ).scalars().all()
     counts = _get_all_counts(session)
     session.close()
