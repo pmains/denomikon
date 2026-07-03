@@ -7,13 +7,13 @@
 <link rel="canonical" href="https://poliscopic.com/calendar">
 {% endblock %}
 {% block extra_css %}
+<style>
 /* Choices.js overrides for calendar filter */
 .choices__inner { font-size: 0.8rem; min-height: 32px; }
 .choices__list--dropdown .choices__item { font-size: 0.8rem; white-space: nowrap; }
 .choices[data-type*=select-one] .choices__inner { padding: 3px 8px; }
 .choices__list--single { padding: 2px 16px 2px 4px; }
 .choices__list--dropdown { min-width: 200px; }
-<style>
 /* ── Calendar grid ── */
 .calendar-grid {
     display: grid;
@@ -57,6 +57,40 @@
 .calendar-day.today .day-number {
     color: var(--bs-primary, #0d6efd);
 }
+
+/* ── Week view: each cell takes more vertical space ── */
+.calendar-grid.week-view .calendar-day {
+    min-height: 300px;
+}
+.calendar-grid.week-view .calendar-day .meeting-dot {
+    font-size: 0.8rem;
+    line-height: 1.4;
+    padding: 2px 5px;
+}
+.calendar-grid.week-view .calendar-day .day-number {
+    font-size: 1rem;
+    font-weight: 700;
+}
+
+/* ── Day view: single full-width column, lots of room ── */
+.calendar-grid.day-view {
+    grid-template-columns: 1fr;
+}
+.calendar-grid.day-view .calendar-day {
+    min-height: 400px;
+}
+.calendar-grid.day-view .calendar-day .meeting-dot {
+    font-size: 0.9rem;
+    line-height: 1.5;
+    padding: 4px 8px;
+    margin-bottom: 3px;
+}
+.calendar-grid.day-view .calendar-day .day-number {
+    font-size: 1.2rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+
 .calendar-day .meeting-dot {
     display: block;
     font-size: 0.65rem;
@@ -195,7 +229,7 @@
 {% set day_names = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}
 
 <h1 class="mb-2">Public Meetings Calendar</h1>
-<p class="text-muted mb-3">Browse upcoming and past public meetings across Arizona. <a href="/meetings" class="text-decoration-none">Switch to table view</a>.</p>
+<p class="text-muted mb-3">Browse upcoming and past public meetings across Arizona. <a href="/meetings?start_date={{ start_date }}&amp;end_date={{ end_date }}{% if filter_jurisdiction %}&amp;jurisdiction={{ filter_jurisdiction }}{% endif %}{% if filter_body %}&amp;body={{ filter_body }}{% endif %}" class="text-decoration-none">Switch to table view</a>.</p>
 
 {# ── Filters ── #}
 <form method="GET" action="/calendar" class="filter-row row g-2 align-items-end">
@@ -268,28 +302,35 @@
 
 {# ── Month grid view (desktop) ── #}
 <div class="calendar-month-view">
-    <div class="calendar-grid">
+    <div class="calendar-grid{% if view == 'week' %} week-view{% elif view == 'day' %} day-view{% endif %}">
+        {% if view != "day" %}
         {% for d in day_names %}
         <div class="calendar-header-cell">{{ d }}</div>
         {% endfor %}
+        {% endif %}
         {% for week in calendar_grid %}
         {% for day in week %}
         <div class="calendar-day{% if not day.is_current_month %} padding{% endif %}{% if day.is_today %} today{% endif %}">
             {% if day.day %}
             <div class="day-number">
+                {% if view == "day" %}
+                {{ month_names[calendar_month] }} {{ day.day }}, {{ calendar_year }}
+                {% else %}
                 {{ day.day }}
+                {% endif %}
                 {% set day_meetings = meetings_by_day.get(day.day, []) %}
                 {% if day_meetings %}
                 <span class="day-meeting-count">{{ day_meetings|length }}</span>
                 {% endif %}
             </div>
-            {% for m in day_meetings[:4] %}
+            {% set max_shown = 999 if view in ("day", "week") else 4 %}
+            {% for m in day_meetings[:max_shown] %}
             <a href="/meetings/{{ m.body }}/{{ m.meeting_id }}" class="meeting-dot {{ m.source_badge }}" title="{{ m.jurisdiction }} — {{ m.source }}">
-                {{ m.short_label }}
+                {% if view == "day" %}{{ m.jurisdiction }} — {% endif %}{{ m.short_label }}
             </a>
             {% endfor %}
-            {% if day_meetings|length > 4 %}
-            <small class="text-muted" style="font-size:0.6rem;">+{{ day_meetings|length - 4 }} more</small>
+            {% if day_meetings|length > max_shown %}
+            <small class="text-muted" style="font-size:0.7rem;">+{{ day_meetings|length - max_shown }} more</small>
             {% endif %}
             {% endif %}
         </div>

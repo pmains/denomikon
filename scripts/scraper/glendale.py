@@ -875,16 +875,26 @@ def search_glendale_meetings_by_body(body_label: str) -> list[dict]:
 
 def search_glendale_meetings_sync(
     body_slugs: Optional[list[str]] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> list[dict]:
     """Search for Glendale meetings using synchronous HTTP.
 
     Uses ASP.NET POST to filter by the first body slug in *body_slugs*.
     Falls back to a simple GET if POST filtering fails.
 
+    If *start_date* and *end_date* are provided (ISO-8601), results are
+    post-filtered to that date range since Legistar doesn't expose a
+    server-side date filter.
+
     Parameters
     ----------
     body_slugs : list[str], optional
         Body slugs to include.  Defaults to ``["glendale-city-council"]``.
+    start_date : str, optional
+        ISO-8601 start date (e.g. "2026-06-30").  Requires *end_date*.
+    end_date : str, optional
+        ISO-8601 end date (e.g. "2026-07-03").  Requires *start_date*.
 
     Returns
     -------
@@ -916,9 +926,27 @@ def search_glendale_meetings_sync(
     # Filter to requested body slugs
     filtered = [m for m in meetings if m.get("body_slug") in body_slugs]
 
+    # Post-filter by date range if provided
+    if start_date and end_date:
+        sd_str = start_date.replace("-", "")
+        ed_str = end_date.replace("-", "")
+
+        def _meeting_key(md: str) -> str:
+            """Turn a Legistar meeting date (MM/DD/YYYY) into YYYYMMDD."""
+            parts = md.split("/")
+            if len(parts) == 3:
+                return f"{parts[2]}{int(parts[0]):02d}{int(parts[1]):02d}"
+            return md.replace("-", "")
+
+        filtered = [
+            m for m in filtered
+            if sd_str <= _meeting_key(m.get("meeting_date", "")) <= ed_str
+        ]
+
     log.info(
-        "Found %d Glendale meeting(s) via sync HTTP (%d total)",
+        "Found %d Glendale meeting(s) via sync HTTP (%d total, %s)",
         len(filtered), len(meetings),
+        f"date range {start_date}–{end_date}" if start_date else "no date filter",
     )
     return filtered
 

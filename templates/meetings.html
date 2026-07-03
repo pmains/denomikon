@@ -86,7 +86,7 @@
         <a href="/meetings" class="btn btn-outline-secondary btn-sm w-100">Clear</a>
     </div>
     <div class="col-md-1">
-        <a href="/calendar{% if filter_jurisdiction %}?jurisdiction={{ filter_jurisdiction }}{% endif %}" class="btn btn-outline-info btn-sm w-100">Calendar</a>
+        <a href="/calendar{% if filter_start or filter_end %}?start_date={{ filter_start }}&amp;end_date={{ filter_end }}{% if filter_jurisdiction %}&amp;jurisdiction={{ filter_jurisdiction }}{% endif %}{% elif filter_jurisdiction %}?jurisdiction={{ filter_jurisdiction }}{% endif %}" class="btn btn-outline-primary btn-sm w-100">Calendar</a>
     </div>
     <div class="col-md-2">
         <div class="form-check mt-2">

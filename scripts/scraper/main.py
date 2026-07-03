@@ -819,18 +819,44 @@ async def main() -> int:
         else:
             body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
 
-        year_val = getattr(args, "year", None)
-        if year_val:
-            year = int(year_val)
-        else:
-            year = _dt.date.today().year
+        # ── Determine search scope: date range → month range, or full year ──
+        have_date_range = bool(getattr(args, "start_date", None) and getattr(args, "end_date", None))
 
-        meetings = search_chandler_meetings(year, body_slugs=body_slugs)
+        if have_date_range:
+            sd = _dt.date.fromisoformat(args.start_date)
+            ed = _dt.date.fromisoformat(args.end_date)
+            year = sd.year
+            start_month = sd.month
+            end_month = ed.month
+            meetings = search_chandler_meetings(
+                year, body_slugs=body_slugs,
+                start_month=start_month, end_month=end_month,
+            )
+            print(f"Chandler search: {args.start_date} to {args.end_date} (year={year}, months={start_month}–{end_month})")
+        else:
+            year_val = getattr(args, "year", None)
+            year = int(year_val) if year_val else _dt.date.today().year
+            meetings = search_chandler_meetings(year, body_slugs=body_slugs)
+
         if not meetings:
-            print("No Chandler meetings found for %d." % year)
+            if have_date_range:
+                print("No Chandler meetings found in date range %s – %s." % (args.start_date, args.end_date))
+            else:
+                print("No Chandler meetings found for %d." % year)
             return 0
         if args.limit:
             meetings = meetings[:args.limit]
+
+        # Post-filter by exact date within the month(s) to match the window precisely
+        if have_date_range:
+            sd_str = args.start_date.replace("-", "")
+            ed_str = args.end_date.replace("-", "")
+            meetings = [
+                m for m in meetings
+                if sd_str <= m.get("meeting_date", "").replace("-", "") <= ed_str
+            ]
+            print(f"Chandler: {len(meetings)} meeting(s) after date filter")
+
         print("Found %d Chandler meeting(s)" % len(meetings))
 
         session = get_session()
@@ -1818,18 +1844,39 @@ async def main() -> int:
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
         body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
 
+        # ── Determine search scope: date range, year, or default ──
+        have_date_range = bool(getattr(args, "start_date", None) and getattr(args, "end_date", None))
         year_val = getattr(args, "year", None)
-        year = int(year_val) if year_val else _dt.date.today().year
 
-        meetings = search_mesa_meetings(body_slugs=body_slugs, year=year)
+        if have_date_range:
+            sd = args.start_date
+            ed = args.end_date
+            meetings = search_mesa_meetings(
+                body_slugs=body_slugs,
+                start_date=sd,
+                end_date=ed,
+            )
+            print(f"Mesa search: {sd} to {ed}")
+        elif year_val:
+            year = int(year_val)
+            meetings = search_mesa_meetings(body_slugs=body_slugs, year=year)
+        else:
+            year = _dt.date.today().year
+            meetings = search_mesa_meetings(body_slugs=body_slugs, year=year)
+
         if not meetings:
-            print("No Mesa meetings found for %d." % year)
+            if have_date_range:
+                print("No Mesa meetings found in date range %s – %s." % (args.start_date, args.end_date))
+            else:
+                print("No Mesa meetings found for %d." % year)
             return 0
         if args.limit:
             meetings = meetings[:args.limit]
         print("Found %d Mesa meeting(s)" % len(meetings))
 
         from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
+        from db import Meeting as MeetingModel
+        from sqlalchemy import select
 
         session = get_session()
         total_items = 0
@@ -1860,6 +1907,17 @@ async def main() -> int:
             # Include minutes URL if available (for vote extraction)
             if m.get("minutes_url"):
                 meeting_dict["minutes_url"] = m["minutes_url"]
+
+            # ── Skip already-complete meetings (unless --force) ──
+            existing = session.execute(
+                select(MeetingModel).where(
+                    MeetingModel.body == body_code,
+                    MeetingModel.meeting_id == meeting_id,
+                )
+            ).scalar_one_or_none()
+            if existing and existing.sync_status == "complete" and not args.force:
+                print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
+                continue
 
             try:
                 items = await fetch_agenda_items_async(detail_url, meeting_id, body_code)
@@ -1981,12 +2039,28 @@ async def main() -> int:
         init_db()
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
         body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
-        year_val = getattr(args, "year", None)
-        year = int(year_val) if year_val else _dt.date.today().year
-        print("Searching Glendale meetings for %d..." % year)
-        meetings = search_glendale_meetings_sync(body_slugs=body_slugs)
+
+        have_date_range = bool(getattr(args, "start_date", None) and getattr(args, "end_date", None))
+        if have_date_range:
+            sd = args.start_date
+            ed = args.end_date
+            meetings = search_glendale_meetings_sync(
+                body_slugs=body_slugs,
+                start_date=sd,
+                end_date=ed,
+            )
+            print(f"Glendale search: {sd} to {ed}")
+        else:
+            year_val = getattr(args, "year", None)
+            year = int(year_val) if year_val else _dt.date.today().year
+            print("Searching Glendale meetings for %d..." % year)
+            meetings = search_glendale_meetings_sync(body_slugs=body_slugs)
+
         if not meetings:
-            print("No Glendale meetings found for %d." % year)
+            if have_date_range:
+                print("No Glendale meetings found in date range %s – %s." % (args.start_date, args.end_date))
+            else:
+                print("No Glendale meetings found for %d." % year)
             return 0
         print("Found %d Glendale meeting(s)" % len(meetings))
         session = get_session()

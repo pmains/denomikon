@@ -133,12 +133,14 @@ def _short_label(jurisdiction, source_name):
         return label[:26] + "…"
     return label
 
+
 log = logging.getLogger(__name__)
 
 meetings_bp = Blueprint("meetings", __name__, url_prefix="")
 
 
 # ── Calendar helpers ────────────────────────────────────────────────────
+
 
 def _get_month_range(year, month):
     """Return (start_date, end_date) for the month as "YYYY-MM-DD" strings."""
@@ -503,7 +505,15 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
 
         # Badge text: full body name with jurisdiction stripped (shown in separate column)
         body_name = row.body_name or row.meeting_type or body_val
-        source = _strip_jurisdiction(body_name)
+
+        # For body codes that are generic catch-alls (like phoenix-aem where
+        # the meeting_type IS the actual meeting name), prefer meeting_type
+        # as the display source.
+        generic_bodies = ["phoenix-aem"]
+        if body_val in generic_bodies and row.meeting_type:
+            source = _strip_jurisdiction(row.meeting_type)
+        else:
+            source = _strip_jurisdiction(body_name)
         source_badge = _BODY_TYPE_BADGE.get(body_type, "dark")
 
         # Resolve jurisdiction name from meeting.jurisdiction_id
@@ -683,6 +693,19 @@ def calendar_view():
         per_page=500,
     )
 
+    # ── Priority ordering for calendar items ──
+    # 1 = BOS / City / Town Council (highest)
+    # 2 = P&Z, DRC, BOA, Historic Preservation
+    # 3 = Everything else
+    _PRIORITY_TIER = {
+        "primary": 1,
+        "land_use": 2,
+    }
+
+    def _meeting_sort_key(m):
+        tier = _PRIORITY_TIER.get(m.get("source_badge"), 3)
+        return (tier, m.get("source", ""), m.get("meeting_date", ""))
+
     meetings_by_day: dict[int, list] = {}
     for m in meetings_list:
         try:
@@ -692,7 +715,38 @@ def calendar_view():
         except (ValueError, TypeError):
             pass
 
+    # Sort each day's meetings by priority tier
+    for day, mlist in meetings_by_day.items():
+        mlist.sort(key=_meeting_sort_key)
+
     calendar_grid = _get_calendar_grid(year, month)
+
+    # For week/day views, replace the month grid with only the relevant days
+    if view == "week":
+        ws = date.fromisoformat(start_date)
+        # Build a clean 7-day grid starting from week_start
+        # Each cell's day number might be in prev/next month — mark padding accordingly
+        import calendar as _cal
+        _days_in_month = _cal.monthrange(year, month)[1]
+        from datetime import timedelta as _td
+        week_grid = []
+        for i in range(7):
+            cd = ws + _td(days=i)
+            is_current = cd.month == month
+            week_grid.append({
+                "day": cd.day,
+                "is_today": cd == today,
+                "is_current_month": is_current,
+            })
+        calendar_grid = [week_grid]
+    elif view == "day":
+        day = request.args.get("day", today.day, type=int)
+        # Single-cell grid — CSS grid-template-columns: 1fr fills the width
+        calendar_grid = [[{
+            "day": day,
+            "is_today": date(year, month, day) == today,
+            "is_current_month": True,
+        }]]
 
     if month == 1:
         prev_month, prev_year = 12, year - 1

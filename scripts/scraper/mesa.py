@@ -660,6 +660,8 @@ def fetch_page(url: str, timeout: int = 30) -> str:
 def search_mesa_meetings(
     body_slugs: Optional[list[str]] = None,
     year: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> list[dict]:
     """Search for Mesa meetings on the Legistar Calendar page.
 
@@ -669,21 +671,69 @@ def search_mesa_meetings(
     If *year* is given, uses ASP.NET POST to set the date-range combo box
     to that year, returning meetings from that year (max 100).
 
+    If *start_date* and *end_date* are given (ISO-8601 format), fetches the
+    relevant year(s) and returns only meetings within that date range.
+
+    When both *year* and date range are omitted, returns the current default
+    view (typically recent meetings).
+
     Parameters
     ----------
     body_slugs : list[str], optional
         Only return meetings for these body slugs.  Defaults to ``["mesa-city-council"]``.
     year : int, optional
         Year to search for (e.g. 2025). Uses POST-based date range filtering.
+    start_date : str, optional
+        ISO-8601 start date (e.g. "2026-06-30").  Requires *end_date*.
+    end_date : str, optional
+        ISO-8601 end date (e.g. "2026-07-03").  Requires *start_date*.
 
     Returns
     -------
     list[dict]
         Meeting dicts as returned by ``parse_meetings_from_html()``.
     """
+    from datetime import date as _Date
+
     if body_slugs is None:
         body_slugs = DEFAULT_BODY_SLUGS
 
+    # ── Date-range mode: fetch needed year(s), then filter ──
+    if start_date and end_date:
+        # Parse the ISO-8601 bounds from the CLI args
+        sd_str = start_date.replace("-", "")  # YYYYMMDD for lex comparison
+        ed_str = end_date.replace("-", "")
+        sd_year = int(start_date[:4])
+        ed_year = int(end_date[:4])
+        years_to_fetch = set(range(sd_year, ed_year + 1))
+
+        all_meetings: list[dict] = []
+        for y in sorted(years_to_fetch):
+            all_meetings.extend(search_mesa_meetings_by_year(y))
+
+        def _meeting_key(md: str) -> str:
+            """Turn a Legistar meeting date (MM/DD/YYYY) into YYYYMMDD for
+            string comparison."""
+            parts = md.split("/")
+            if len(parts) == 3:
+                return f"{parts[2]}{int(parts[0]):02d}{int(parts[1]):02d}"
+            return md.replace("-", "")
+
+        # Filter by body slug AND date range
+        filtered = [
+            m for m in all_meetings
+            if m.get("body_slug") in body_slugs
+            and sd_str <= _meeting_key(m.get("meeting_date", "")) <= ed_str
+        ]
+
+        log.info(
+            "Found %d Mesa meeting(s) in date range %s – %s (%d fetched, %d within bodies)",
+            len(filtered), start_date, end_date, len(all_meetings),
+            len(filtered),
+        )
+        return filtered
+
+    # ── Year mode ──
     if year is not None:
         all_meetings = search_mesa_meetings_by_year(year)
     else:

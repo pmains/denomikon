@@ -197,15 +197,12 @@ def create_app():
     from routes.admin import admin_bp
     from routes.articles import articles_bp
     from routes.themes import themes_bp
-    from routes.housing import housing_bp
-
     app.register_blueprint(meetings_bp)
     app.register_blueprint(bodies_bp)
     app.register_blueprint(permits_bp)
     app.register_blueprint(members_bp)
     app.register_blueprint(codes_bp)
     app.register_blueprint(articles_bp)
-    app.register_blueprint(housing_bp)
     app.register_blueprint(themes_bp)
 
     # Admin and auth are only registered when admin is enabled
