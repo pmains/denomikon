@@ -32,7 +32,7 @@
       <label class="col-form-label small">Jurisdiction:</label>
     </div>
     <div class="col-auto">
-      <select name="jurisdiction" class="form-select form-select-sm" style="width:auto;min-width:160px" onchange="document.getElementsByName('body')[0].value='';this.form.submit()">
+      <select name="jurisdiction" class="form-select form-select-sm" style="width:auto;min-width:160px" onchange="document.getElementsByName('body')[0].value=''">
         <option value="">All</option>
         {% for j in jurisdictions %}
         <option value="{{ j.slug }}" {% if jurisdiction == j.slug %}selected{% endif %}>{{ j.name }}</option>
@@ -44,7 +44,7 @@
       <label class="col-form-label small">Body:</label>
     </div>
     <div class="col-auto">
-      <select name="body" class="form-select form-select-sm" style="width:auto;min-width:200px" onchange="this.form.submit()">
+      <select name="body" class="form-select form-select-sm" style="width:auto;min-width:200px">
         <option value="">All</option>
         {% for b in all_bodies %}
         <option value="{{ b.slug }}" {% if body == b.slug %}selected{% endif %}>{{ b.name }}</option>
@@ -56,13 +56,13 @@
       <label class="col-form-label small">From:</label>
     </div>
     <div class="col-auto">
-      <input type="date" class="form-control form-control-sm" name="from" value="{{ from_date }}" style="width:150px" onchange="this.form.submit()">
+      <input type="date" class="form-control form-control-sm" name="from" value="{{ from_date }}" style="width:150px">
     </div>
     <div class="col-auto">
       <label class="col-form-label small">To:</label>
     </div>
     <div class="col-auto">
-      <input type="date" class="form-control form-control-sm" name="to" value="{{ to_date }}" style="width:150px" onchange="this.form.submit()">
+      <input type="date" class="form-control form-control-sm" name="to" value="{{ to_date }}" style="width:150px">
     </div>
     {% if from_date or to_date or jurisdiction or body %}
     <div class="col-auto">

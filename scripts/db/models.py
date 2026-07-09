@@ -3,6 +3,7 @@
 import logging
 from datetime import datetime, timezone
 
+import os
 from sqlalchemy import (
     Boolean,
     Column,
@@ -12,9 +13,22 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    TypeDecorator,
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase
+
+# tsvector column type — PostgreSQL native, Text fallback for SQLite
+# Managed by database trigger on supporting_documents
+class _TSVector(TypeDecorator):
+    """Abstraction for tsvector — PG native type, TEXT for SQLite."""
+    impl = Text
+    cache_ok = True
+    def load_dialect_impl(self, dialect):
+        if dialect.name == 'postgresql':
+            from sqlalchemy.dialects.postgresql import TSVECTOR
+            return dialect.type_descriptor(TSVECTOR())
+        return dialect.type_descriptor(Text())
 
 log = logging.getLogger(__name__)
 
@@ -404,7 +418,7 @@ class SupportingDocument(Base):
     text_extracted_at = Column(DateTime(timezone=True), nullable=True, default=None)
     text_extraction_method = Column(String(32), nullable=True, default=None)
     extraction_duration_ms = Column(Integer, nullable=True, default=None)
-    search_vector = Column(Text, nullable=True, default=None)
+    search_vector = Column(_TSVector, nullable=True, default=None)  # PG tsvector, SQLite text — auto-populated by trigger
     jurisdiction_id = Column(Integer, nullable=True, default=None, index=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)

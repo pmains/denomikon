@@ -325,13 +325,40 @@ def extract_supporting_docs(pdf_bytes: bytes, items: Optional[list[dict]] = None
                             log.debug("Text extraction from link rect failed: %s", ve)
 
                     if link_text:
+                        # Normalize dashes and nbsp so PDF-extracted text matches parsed titles
+                        def _norm(s):
+                            return s.replace('\u2013', '-').replace('\u2014', '-').replace('\u00a0', ' ')
+                        n_link = _norm(link_text)
                         for item in items:
                             title = item.get("agenda_item_title", "")
-                            if title and link_text in title:
+                            if not title:
+                                continue
+                            n_title = _norm(title)
+                            # Check both directions: link_text may be a truncated title
+                            # or may include trailing text the annotation rectangle overlapped
+                            if n_link in n_title or n_title in n_link:
                                 item_num = str(item.get("agenda_item_number", "0"))
                                 log.debug(
                                     "Matched doc %s to item %s via link text %r",
                                     doc_id[:8], item_num, link_text[:40]
+                                )
+                                break
+                            # Fallback: long shared prefix with short remainder = match
+                            # Handles cases where link rectangle captures adjacent text
+                            # (e.g. 'Request') while title continues differently
+                            # (e.g. '– Approved on Consent.')
+                            i = 0
+                            shorter_len = min(len(n_link), len(n_title))
+                            while i < shorter_len and n_link[i] == n_title[i]:
+                                i += 1
+                            remainder = shorter_len - i
+                            # Require 30+ shared chars AND either short remainder OR
+                            # shared prefix dominates (>= 70% of shorter string)
+                            if i >= 30 and (remainder <= 20 or (shorter_len > 0 and i / shorter_len >= 0.70)):
+                                item_num = str(item.get("agenda_item_number", "0"))
+                                log.debug(
+                                    "Matched doc %s to item %s via prefix (%d/%d chars)",
+                                    doc_id[:8], item_num, i, shorter_len
                                 )
                                 break
 
