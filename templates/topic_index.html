@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Topics — Poliscopic{% endblock %}
+{% block content %}
+<div class="container mt-4">
+    <h1>Topics</h1>
+    <p class="text-muted">Weekly intelligence reports on regional civic activity across Maricopa County.</p>
+
+    <div class="row mt-4">
+        {% for t in topics %}
+        <div class="col-md-6 col-lg-4 mb-4">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h5 class="card-title">
+                        <a href="/topics/{{ t.slug }}" class="text-decoration-none stretched-link">{{ t.title }}</a>
+                    </h5>
+                    <p class="card-text text-muted">{{ t.description }}</p>
+                    <small class="text-secondary">
+                        {{ t.report_count }} report{% if t.report_count != 1 %}s{% endif %}
+                        {% if t.latest_report_date %}
+                        &middot; Latest: {{ t.latest_report_date }}
+                        {% endif %}
+                    </small>
+                </div>
+            </div>
+        </div>
+        {% else %}
+        <div class="col-12">
+            <p class="text-muted">No topics have been configured yet.</p>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

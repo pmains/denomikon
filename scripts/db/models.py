@@ -107,31 +107,6 @@ class AgendaItemVote(Base):
     )
 
 
-class SupervisorVote(Base):
-    __tablename__ = "supervisor_votes"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    agenda_item_vote_id = Column(Integer, nullable=False, index=True)
-    supervisor_id = Column(Integer, nullable=False, index=True)
-    vote = Column(String(32), nullable=False, default="unknown", index=True)
-    raw_vote_text = Column(String(64), nullable=True, default=None)
-    is_dissent = Column(Boolean, nullable=True, default=None,
-                        comment="True if supervisor voted against the majority")
-    created_at = Column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
-    )
-    updated_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
-    )
-
-    __table_args__ = (
-        UniqueConstraint("agenda_item_vote_id", "supervisor_id", name="uq_supervisor_vote"),
-    )
-
-
 class Meeting(Base):
     __tablename__ = "meetings"
 
@@ -425,6 +400,11 @@ class SupportingDocument(Base):
     local_path = Column(String(512), nullable=True, default=None)
     content_hash = Column(String(64), nullable=True, default=None)
     scraped_at = Column(DateTime(timezone=True), nullable=True, default=None)
+    text_content = Column(Text, nullable=True, default=None)
+    text_extracted_at = Column(DateTime(timezone=True), nullable=True, default=None)
+    text_extraction_method = Column(String(32), nullable=True, default=None)
+    extraction_duration_ms = Column(Integer, nullable=True, default=None)
+    search_vector = Column(Text, nullable=True, default=None)
     jurisdiction_id = Column(Integer, nullable=True, default=None, index=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
@@ -438,32 +418,6 @@ class SupportingDocument(Base):
 
     __table_args__ = (
         UniqueConstraint("agenda_item_id", "document_url", name="uq_supporting_doc_item_url"),
-    )
-
-
-class PermitReport(Base):
-    """A single weekly permit activity report (one XLSX file)."""
-    __tablename__ = "permit_reports"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    report_date = Column(String(16), nullable=False, index=True)
-    adid = Column(String(16), nullable=False, unique=True, index=True)
-    report_title = Column(String(256), nullable=False, default="")
-    file_type = Column(String(16), nullable=True, default=None)
-    file_name = Column(String(256), nullable=True, default=None)
-    source_url = Column(String(512), nullable=False, default="")
-    local_path = Column(String(512), nullable=True, default=None)
-    content_hash = Column(String(64), nullable=True, default=None)
-    downloaded_at = Column(DateTime(timezone=True), nullable=True, default=None)
-    row_count = Column(Integer, nullable=True, default=None)
-    created_at = Column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
-    )
-    updated_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
     )
 
 
@@ -584,80 +538,3 @@ class BodyMembership(Base):
     )
 
 
-class Permit(Base):
-    """Individual permit row extracted from a weekly permit report."""
-    __tablename__ = "permits"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    report_date = Column(String(16), nullable=False, index=True)
-    report_adid = Column(String(16), nullable=False, index=True)
-    source_file = Column(String(256), nullable=True, default=None)
-    permit_type = Column(Text, nullable=True, default=None)
-    work_class = Column(Text, nullable=True, default=None)
-    permit_number = Column(String(64), nullable=True, default=None, index=True)
-    permit_issue_date = Column(String(32), nullable=True, default=None)
-    permit_description = Column(Text, nullable=True, default=None)
-    permit_valuation = Column(String(32), nullable=True, default=None)
-    permit_square_feet = Column(String(32), nullable=True, default=None)
-    parcel_no = Column(String(32), nullable=True, default=None)
-    no_units = Column(String(16), nullable=True, default=None)
-    job_address = Column(Text, nullable=True, default=None)
-    subdivision = Column(Text, nullable=True, default=None)
-    lot = Column(String(32), nullable=True, default=None)
-    job_city = Column(String(128), nullable=True, default=None)
-    job_state = Column(String(16), nullable=True, default=None)
-    job_zip = Column(String(16), nullable=True, default=None)
-    owner_name = Column(Text, nullable=True, default=None)
-    contractor_name = Column(Text, nullable=True, default=None)
-    contractor_phone = Column(String(64), nullable=True, default=None)
-    contractor_email = Column(String(256), nullable=True, default=None)
-    jurisdiction = Column(String(64), nullable=True, default=None, index=True)
-    application_date = Column(String(32), nullable=True, default=None)
-    height_stories = Column(String(32), nullable=True, default=None)
-    permit_status = Column(String(64), nullable=True, default=None, comment="Permit status: Issued, Finaled, Expired, etc.")
-    permit_last_inspection_date = Column(String(32), nullable=True, default=None, comment="Date of last inspection (indicates completion)")
-    permit_expiration_date = Column(String(32), nullable=True, default=None, comment="Permit expiration date")
-    assessor_code = Column(String(64), nullable=True, default=None, comment="Assessor's property classification code")
-    native_type = Column(Text, nullable=True, default=None, comment="Original jurisdiction-specific permit type label")
-    native_category = Column(Text, nullable=True, default=None, comment="Original jurisdiction-specific category label")
-    normalized_category = Column(String(64), nullable=True, default=None, index=True, comment="Cross-jurisdiction category: Residential, Commercial, Industrial, Mixed-Use, Other")
-    work_type = Column(String(32), nullable=True, default=None, index=True, comment="New Construction, Addition, Alteration, Trade, Demolition, Infrastructure, Unknown")
-    applied_date = Column(String(32), nullable=True, default=None)
-    completed_date = Column(String(32), nullable=True, default=None)
-    certificate_of_occupancy_date = Column(String(32), nullable=True, default=None)
-    units = Column(String(16), nullable=True, default=None, comment="Total housing units from source")
-    project_name = Column(Text, nullable=True, default=None)
-    fee = Column(String(32), nullable=True, default=None)
-    latitude = Column(String(32), nullable=True, default=None)
-    longitude = Column(String(32), nullable=True, default=None)
-    raw_permit_type = Column(Text, nullable=True, default=None)
-    raw_permit_type_description = Column(Text, nullable=True, default=None)
-    raw_permit_class = Column(String(64), nullable=True, default=None)
-    struct_class = Column(String(8), nullable=True, default=None)
-    zone = Column(String(64), nullable=True, default=None)
-    source_system = Column(String(64), nullable=True, default=None, index=True)
-    source_record_id = Column(String(64), nullable=True, default=None, index=True)
-    contractor_license = Column(String(64), nullable=True, default=None)
-    row_hash = Column(String(64), nullable=False, index=True)
-    created_at = Column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
-    )
-    updated_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
-    )
-
-    __table_args__ = (
-        UniqueConstraint("report_adid", "row_hash", name="uq_permit_per_report"),
-        UniqueConstraint("source_system", "source_record_id", name="uq_permit_source"),
-        Index("ix_permits_issue_date", "permit_issue_date"),
-        Index("ix_permits_issue_date_category", "permit_issue_date", "normalized_category"),
-        Index("ix_permits_issue_date_jurisdiction", "permit_issue_date", "jurisdiction"),
-        Index("ix_permits_native_type", "native_type"),
-        Index("ix_permits_valuation", "permit_valuation"),
-        Index("ix_permits_square_feet", "permit_square_feet"),
-        Index("ix_permits_jur_cat_wt_issuedate", "jurisdiction", "normalized_category", "work_type", "permit_issue_date"),
-        Index("ix_permits_dedup_parts", "permit_number", "row_hash", "permit_square_feet"),
-    )

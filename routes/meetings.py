@@ -6,10 +6,11 @@ from typing import Optional
 
 from flask import Blueprint, render_template, request, redirect, jsonify
 from sqlalchemy import select, func, or_, text as sa_text, and_
+from sqlalchemy.orm import Session
 
 from db import (
     get_session, Meeting, AgendaItem, SupportingDocument,
-    AgendaItemVote, SupervisorVote, Supervisor, MeetingSupervisor,
+    AgendaItemVote, MemberVote, Supervisor, MeetingSupervisor,
     PZItemDetail, BodyMembership, Person, _enhance_member_for_template,
     Case, CaseEvent, Jurisdiction, PublicBody,
 )
@@ -95,8 +96,10 @@ _BODY_ABBREV = {
 }
 
 
-def _short_label(jurisdiction, source_name):
-    """Build a compact label like "Maricopa BOS" or "Tempe City Council" for calendar dots.
+def _short_label(jurisdiction: str, source_name: str) -> str:
+    """Build a compact label for calendar dots.
+
+    Returns a string like "Maricopa BOS" or "Tempe City Council" within 26 characters.
     Skips the jurisdiction prefix when the body name already contains the jurisdiction name.
     """
     jur = _JUR_DISPLAY.get(jurisdiction, jurisdiction)
@@ -142,7 +145,7 @@ meetings_bp = Blueprint("meetings", __name__, url_prefix="")
 # ── Calendar helpers ────────────────────────────────────────────────────
 
 
-def _get_month_range(year, month):
+def _get_month_range(year: int, month: int) -> tuple[str, str]:
     """Return (start_date, end_date) for the month as "YYYY-MM-DD" strings."""
     from datetime import date, timedelta
     if month == 12:
@@ -154,8 +157,8 @@ def _get_month_range(year, month):
     return start.isoformat(), end.isoformat()
 
 
-def _get_week_range(year, month, day):
-    """Return (start_date, end_date) for the week containing the given date."""
+def _get_week_range(year: int, month: int, day: int) -> tuple[str, str]:
+    """Return (start_date, end_date) for the week containing the given date (Monday-start)."""
     from datetime import date, timedelta
     d = date(year, month, day)
     # Monday-start week
@@ -164,11 +167,11 @@ def _get_week_range(year, month, day):
     return start.isoformat(), end.isoformat()
 
 
-def _get_calendar_grid(year, month):
-    """Return a list of weeks, each week being a list of day dicts.
+def _get_calendar_grid(year: int, month: int) -> list[list[dict]]:
+    """Build a month grid for the calendar view.
 
-    Each day dict: {"day": int or None (padding), "is_today": bool,
-                     "is_current_month": bool}
+    Returns a list of weeks, each week being a list of day dicts:
+    {"day": int or None (padding), "is_today": bool, "is_current_month": bool}
     """
     import calendar
     from datetime import date
@@ -192,8 +195,8 @@ def _get_calendar_grid(year, month):
 
 
 
-def get_distinct_meeting_types(body=None, jurisdiction=None):
-    """Get all distinct meeting_type values from the database, optionally filtered by body."""
+def get_distinct_meeting_types(body: Optional[str] = None, jurisdiction: Optional[str] = None) -> list[str]:
+    """Get all distinct meeting_type values from the database, optionally filtered by body/jurisdiction."""
     session = get_session()
     q = select(Meeting.meeting_type).distinct().order_by(Meeting.meeting_type)
 
@@ -330,8 +333,21 @@ def _strip_jurisdiction(body_name: str) -> str:
     return body_name
 
 
-def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_date=None, page=1, per_page=25, jurisdiction=None, hide_upcoming=False):
-    """Query meetings with optional filters and pagination. Returns (meetings_list, total_count, page, total_pages)."""
+def get_filtered_meetings(
+    body: Optional[str] = None,
+    meeting_type: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    page: int = 1,
+    per_page: int = 25,
+    jurisdiction: Optional[str] = None,
+    hide_upcoming: bool = False,
+    hide_canceled: bool = False,
+) -> tuple[list[dict], int, int, int]:
+    """Query meetings with optional filters and pagination.
+
+    Returns (meetings_list, total_count, page, total_pages).
+    """
     session = get_session()
 
     # Build base query (no LIMIT/OFFSET yet)
@@ -460,6 +476,13 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
     if hide_upcoming:
         base_q = base_q.where(Meeting.meeting_date <= str(date.today()))
 
+    # Hide canceled meetings (meetings with no items)
+    if hide_canceled:
+        base_q = base_q.where(
+            Meeting.item_count_actual.isnot(None),
+            Meeting.item_count_actual > 0,
+        )
+
     if meeting_type and meeting_type.lower() != "all":
         # Normalise the filter value: "planning" → "Planning & Zoning",
         # but pass through actual meeting_type values like
@@ -571,13 +594,15 @@ def get_filtered_meetings(body=None, meeting_type=None, start_date=None, end_dat
 
 @meetings_bp.route("/meetings")
 @_cache(timeout=60, query_string=True)
-def meetings():
+def meetings() -> str:
+    """Browse meetings page. Supports filtering by body, type, date range, jurisdiction."""
     body = request.args.get("body", "")
     meeting_type = request.args.get("type", "")
     start_date = request.args.get("start_date", "")
     end_date = request.args.get("end_date", "")
     jurisdiction = request.args.get("jurisdiction", "")
     hide_upcoming = request.args.get("hide_upcoming", "") == "1"
+    hide_canceled = request.args.get("hide_canceled", "") == "1"
 
     # Auto-detect jurisdiction from body if not provided
     if body and not jurisdiction:
@@ -605,10 +630,6 @@ def meetings():
                 jurisdiction = jur_slug
                 break
 
-    # Default end_date to today when hide_upcoming is active
-    if hide_upcoming and not end_date:
-        end_date = str(date.today())
-
     try:
         page = int(request.args.get("page", "1"))
     except ValueError:
@@ -630,6 +651,7 @@ def meetings():
         end_date=end_date or None,
         jurisdiction=jurisdiction or None,
         hide_upcoming=hide_upcoming,
+        hide_canceled=hide_canceled,
         page=page,
         per_page=per_page,
     )
@@ -646,6 +668,7 @@ def meetings():
         filter_end=end_date,
         filter_jurisdiction=jurisdiction,
         hide_upcoming=hide_upcoming,
+        hide_canceled=hide_canceled,
         page=current_page,
         per_page=per_page,
         total_count=total_count,
@@ -658,7 +681,7 @@ def meetings():
 
 @meetings_bp.route("/calendar")
 @_cache(timeout=120, query_string=True)
-def calendar_view():
+def calendar_view() -> str:
     """Render a month/week/day calendar view of meetings."""
     from datetime import date
 
@@ -791,18 +814,29 @@ def calendar_view():
 
 @meetings_bp.route("/api/bodies")
 @_cache(timeout=300, query_string=True)
-def api_bodies():
+def api_bodies() -> str:
+    """API endpoint returning jurisdiction and body filter options."""
     """Return JSON of jurisdiction → body options for filter dropdowns."""
     from db import get_session
     from sqlalchemy import select, text
 
     session = get_session()
     rows = session.execute(text("""
-        SELECT DISTINCT j.slug, j.name, m.body, COALESCE(pb.name, m.body) as display_name
-        FROM meetings m
-        JOIN jurisdictions j ON m.jurisdiction_id = j.id
-        LEFT JOIN public_bodies pb ON m.public_body_id = pb.id
-        ORDER BY j.slug, m.body
+        WITH body_jur AS (
+            SELECT DISTINCT m.body,
+                   COALESCE(
+                       (SELECT pb.jurisdiction_id FROM public_bodies pb WHERE pb.body_code = m.body OR pb.id = m.public_body_id LIMIT 1),
+                       m.jurisdiction_id
+                   ) AS jur_id
+            FROM meetings m
+        )
+        SELECT DISTINCT j.slug, j.name,
+                        bj.body AS body_code,
+                        COALESCE(pb.name, bj.body) AS display_name
+        FROM body_jur bj
+        JOIN jurisdictions j ON j.id = bj.jur_id
+        LEFT JOIN public_bodies pb ON pb.body_code = bj.body
+        ORDER BY j.slug, bj.body
     """)).fetchall()
     session.close()
 
@@ -822,7 +856,8 @@ def api_bodies():
 @meetings_bp.route("/meetings/<path:meeting_id>")
 @meetings_bp.route("/meetings/<body>/<path:meeting_id>")
 @_cache(timeout=120, query_string=True)
-def meeting_detail(meeting_id, body=None):
+def meeting_detail(meeting_id: str, body: Optional[str] = None) -> str:
+    """Render the detail page for a single meeting, including agenda items and votes."""
     session = get_session()
 
     # --- Meeting header ---
@@ -900,9 +935,9 @@ def meeting_detail(meeting_id, body=None):
     supervisor_votes_by_vote: dict[int, list] = {}
     if vote_ids:
         sv_rows = session.execute(
-            select(SupervisorVote, Supervisor.name, Supervisor.normalized_name)
-            .join(Supervisor, SupervisorVote.supervisor_id == Supervisor.id)
-            .where(SupervisorVote.agenda_item_vote_id.in_(vote_ids))
+            select(MemberVote, Person.name, Person.normalized_name)
+            .join(Person, MemberVote.member_id == Person.id)
+            .where(MemberVote.agenda_item_vote_id.in_(vote_ids))
         ).all()
         for sv, sname, snorm in sv_rows:
             slug = snorm.replace(" ", "-") if snorm else ""
@@ -913,10 +948,9 @@ def meeting_detail(meeting_id, body=None):
 
         # For PZ meetings, also load MemberVote records
         if meeting_body_val == "pz":
-            from db.models import MemberVote, Person as _Person
             mv_rows = session.execute(
-                select(MemberVote, _Person.name, _Person.normalized_name)
-                .join(_Person, MemberVote.member_id == _Person.id)
+                select(MemberVote, Person.name, Person.normalized_name)
+                .join(Person, MemberVote.member_id == Person.id)
                 .where(MemberVote.agenda_item_vote_id.in_(vote_ids))
             ).all()
             for mv, pname, pnorm in mv_rows:
@@ -1013,8 +1047,49 @@ def meeting_detail(meeting_id, body=None):
     )
 
 
+@meetings_bp.route("/documents/<int:doc_id>")
+@_cache(timeout=120)
+def document_detail(doc_id: int) -> str:
+    """Show the full text of a supporting document."""
+    session = get_session()
+    doc = session.execute(
+        select(SupportingDocument).where(SupportingDocument.id == doc_id)
+    ).scalar_one_or_none()
+
+    if not doc:
+        session.close()
+        return render_template("404.html"), 404
+
+    # Fetch the associated meeting for context
+    meeting = session.execute(
+        select(Meeting).where(Meeting.id == doc.meeting_db_id)
+    ).scalar_one_or_none()
+
+    meeting_info = None
+    if meeting:
+        jur = session.execute(
+            select(Jurisdiction).where(Jurisdiction.id == meeting.jurisdiction_id)
+        ).scalar_one_or_none()
+        meeting_info = {
+            "body": meeting.body,
+            "meeting_id": meeting.meeting_id,
+            "meeting_date": meeting.meeting_date,
+            "meeting_type": meeting.meeting_type,
+            "jurisdiction_name": jur.name if jur else "",
+        }
+
+    session.close()
+    return render_template(
+        "document.html",
+        doc=doc,
+        meeting=meeting_info,
+        text_content=doc.text_content or "",
+    )
+
+
 @meetings_bp.route("/c-number/<c_number_base>")
-def c_number_revisions(c_number_base):
+def c_number_revisions(c_number_base: str) -> str:
+    """Render a page showing all revisions of a given case number."""
     """Show all agenda items sharing the same c_number_base."""
     session = get_session()
 
@@ -1044,21 +1119,19 @@ def c_number_revisions(c_number_base):
     ).all()
 
     # Batch-load supporting docs and vote data
-    from db.models import SupportingDocument as _SD, AgendaItemVote, SupervisorVote, Person as _Person, MemberVote
-
     doc_keys = [(r.meeting_id, r.agenda_item_number) for r in items]
     docs_by_item: dict[str, list] = {}
     if doc_keys:
         from sqlalchemy import or_ as _or
         conditions = [
-            (_SD.body == Meeting.body) &
-            (_SD.meeting_id == k[0]) &
-            (_SD.agenda_item_number == k[1])
+            (SupportingDocument.body == Meeting.body) &
+            (SupportingDocument.meeting_id == k[0]) &
+            (SupportingDocument.agenda_item_number == k[1])
             for k in doc_keys
         ]
         all_docs = session.execute(
-            select(_SD, Meeting.body)
-            .join(Meeting, and_(Meeting.meeting_id == _SD.meeting_id, Meeting.body == _SD.body))
+            select(SupportingDocument, Meeting.body)
+            .join(Meeting, and_(Meeting.meeting_id == SupportingDocument.meeting_id, Meeting.body == SupportingDocument.body))
             .where(or_(*conditions))
         ).all()
         for sd, body_code in all_docs:
@@ -1079,8 +1152,8 @@ def c_number_revisions(c_number_base):
             member_votes = []
             if aiv.body == "pz":
                 mv_rows = session.execute(
-                    select(MemberVote, _Person.name, _Person.normalized_name)
-                    .join(_Person, MemberVote.member_id == _Person.id)
+                    select(MemberVote, Person.name, Person.normalized_name)
+                    .join(Person, MemberVote.member_id == Person.id)
                     .where(MemberVote.agenda_item_vote_id == aiv.id)
                 ).all()
                 for mv, pname, pnorm in mv_rows:
@@ -1088,9 +1161,9 @@ def c_number_revisions(c_number_base):
                                          "slug": pnorm.replace(" ", "-") if pnorm else ""})
             else:
                 sv_rows = session.execute(
-                    select(SupervisorVote, _Person.name, _Person.normalized_name)
-                    .join(_Person, SupervisorVote.supervisor_id == _Person.id)
-                    .where(SupervisorVote.agenda_item_vote_id == aiv.id)
+                    select(MemberVote, Person.name, Person.normalized_name)
+                    .join(Person, MemberVote.member_id == Person.id)
+                    .where(MemberVote.agenda_item_vote_id == aiv.id)
                 ).all()
                 for sv, pname, pnorm in sv_rows:
                     member_votes.append({"name": pname, "vote": sv.vote,
@@ -1114,7 +1187,8 @@ def c_number_revisions(c_number_base):
     )
 
 
-def get_related_case_events(case_number):
+def get_related_case_events(case_number: str) -> list[dict]:
+    """Fetch case events related to a case number for the meeting detail template."""
     """Get all CaseEvents for a case number, with meeting metadata."""
     from db import Case as CaseModel
     session = get_session()
@@ -1148,13 +1222,15 @@ def get_related_case_events(case_number):
     return result
 
 
-def get_related_bos_items_for_case(case_number):
+def get_related_bos_items_for_case(case_number: str) -> list[dict]:
+    """Fetch BOS agenda items related to a given case number."""
     """Get BOS agenda items related to a case number via case_events."""
     events = get_related_case_events(case_number)
     return [e for e in events if e.get("source_label") == "BOS"]
 
 
-def get_related_pz_items_for_case(case_number):
+def get_related_pz_items_for_case(case_number: str) -> list[dict]:
+    """Fetch P&Z agenda items related to a given case number."""
     """Get PZ-related events for a case number."""
     events = get_related_case_events(case_number)
     return [e for e in events if e.get("source_label") == "PZ"]

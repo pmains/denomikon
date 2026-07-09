@@ -8,7 +8,7 @@ Queries:         ``db.queries`` (all get_* read functions)
 Vote persistence: ``db.persist`` (persist_meeting, persist_votes, upsert)
 Vote analysis:   ``db.votes`` (tallying, majority, controversy, swing votes)
 
-Usage: ``from db import get_session, Meeting, Permit, init_db, ...``
+Usage: ``from db import get_session, Meeting, init_db, ...``
 """
 
 import logging
@@ -22,11 +22,11 @@ from db.core import _engine, _SessionLocal
 from sqlalchemy import text
 from db.models import (
     Base,
-    Person, Supervisor, MeetingSupervisor, AgendaItemVote, SupervisorVote,
+    Person, Supervisor, MeetingSupervisor, AgendaItemVote, MemberVote,
     Meeting, Case, PZItemDetail, CaseEvent, AgendaItem,
     PublicBodyMember, MeetingAttendance, MemberVote,
     ExecutiveSessionParticipant, SupportingDocument,
-    PermitReport, Jurisdiction, PublicBody, BodySeat, BodyMembership, Permit,
+     Jurisdiction, PublicBody, BodySeat, BodyMembership,
 )
 from db.helper import _parse_date
 from db.meeting_utils import (
@@ -39,7 +39,7 @@ from db.migrations import (
     backfill_multi_jurisdiction_columns, backfill_body_column,
     _migrate_table, _migrate_col, _ensure_index,
     _migrate_supervisors_to_public_body_members, seed_default_jurisdictions,
-    _migrate_permit_normalized_fields, _drop_deprecated_person_columns,
+    _drop_deprecated_person_columns,
     _migrate_membership_model,
 )
 from db.persist import (

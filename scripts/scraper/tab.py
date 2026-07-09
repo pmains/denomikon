@@ -101,7 +101,7 @@ async def extract_tab_meetings(page, search_url: str) -> list[Meeting]:
         seen_ids.add(m.meeting_id)
 
     year_tabs = await page.evaluate(
-        """
+        r"""
         () => {
             const seen = new Set();
             const years = [];

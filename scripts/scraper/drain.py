@@ -84,7 +84,7 @@ async def extract_drain_meetings(page, search_url: str) -> list[Meeting]:
 
     # Find available year tabs (e.g. changeYear(2023, 19, ...), changeYear(2024, 19, ...))
     year_tabs = await page.evaluate(
-        """
+        r"""
         () => {
             const seen = new Set();
             const years = [];

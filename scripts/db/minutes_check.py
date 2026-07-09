@@ -17,6 +17,8 @@ import re
 import urllib.request
 from typing import Optional
 
+from sqlalchemy import text
+
 log = logging.getLogger(__name__)
 
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
@@ -49,13 +51,18 @@ LEGISTAR_INSTANCES: list[tuple[str, str, str]] = [
 ]
 
 
+def _connect(engine):
+    """Return a SQLAlchemy connection (works on SQLite and PostgreSQL)."""
+    return engine.connect()
+
+
 def check_granicus(engine) -> int:
     """Check Granicus RSS minutes feeds for newly-published minutes.
 
     Returns the number of meetings updated with a minutes_url.
     """
     found = 0
-    conn = engine.raw_connection()
+    conn = _connect(engine)
 
     for host, view_id, body_codes in GRANICUS_INSTANCES:
         url = f"https://{host}/ViewPublisherRSS.php?view_id={view_id}&mode=minutes"
@@ -77,18 +84,17 @@ def check_granicus(engine) -> int:
             if not event_id:
                 continue
 
-            cursor = conn.execute(
-                "SELECT body, meeting_id FROM meetings "
-                "WHERE meeting_id = ? AND minutes_url IS NULL",
-                (event_id,)
-            )
-            row = cursor.fetchone()
+            row = conn.execute(
+                text("SELECT body, meeting_id FROM meetings "
+                     "WHERE meeting_id = :mid AND minutes_url IS NULL"),
+                {"mid": event_id}
+            ).fetchone()
             if row:
                 body_code, mid = row
                 conn.execute(
-                    "UPDATE meetings SET minutes_url = ? "
-                    "WHERE body = ? AND meeting_id = ?",
-                    (link, body_code, mid)
+                    text("UPDATE meetings SET minutes_url = :url "
+                         "WHERE body = :body AND meeting_id = :mid"),
+                    {"url": link, "body": body_code, "mid": mid}
                 )
                 found += 1
                 log.info("   minutes: %s %s → %s", body_code, event_id, link[:60])
@@ -114,12 +120,12 @@ def check_chandler_agendaquick(engine) -> int:
         log.warning("  Chandler scraper not available — skipping")
         return 0
 
-    conn = engine.raw_connection()
+    conn = _connect(engine)
     rows = conn.execute(
-        "SELECT body, meeting_id FROM meetings "
-        "WHERE body LIKE 'chandler-%' AND minutes_url IS NULL "
-        "AND meeting_date >= '2024-01-01' "
-        "ORDER BY meeting_date DESC LIMIT 500"
+        text("SELECT body, meeting_id FROM meetings "
+             "WHERE body LIKE 'chandler-%' AND minutes_url IS NULL "
+             "AND meeting_date >= '2024-01-01' "
+             "ORDER BY meeting_date DESC LIMIT 500")
     ).fetchall()
     conn.close()
 
@@ -129,12 +135,11 @@ def check_chandler_agendaquick(engine) -> int:
     log.info("  Checking %d Chandler meetings for minutes...", len(rows))
     found = 0
     for body, meeting_id in rows:
-        meeting_seq = meeting_id
         # Parse date from a meeting row lookup
-        conn2 = engine.raw_connection()
+        conn2 = _connect(engine)
         date_row = conn2.execute(
-            "SELECT meeting_date FROM meetings WHERE body = ? AND meeting_id = ?",
-            (body, meeting_id)
+            text("SELECT meeting_date FROM meetings WHERE body = :body AND meeting_id = :mid"),
+            {"body": body, "mid": meeting_id}
         ).fetchone()
         conn2.close()
         if not date_row:
@@ -142,15 +147,15 @@ def check_chandler_agendaquick(engine) -> int:
         meeting_date = date_row[0]
 
         try:
-            att_url = build_attachments_url(meeting_seq, meeting_date)
+            att_url = build_attachments_url(meeting_id, meeting_date)
             att_html = fetch_attachments_page(att_url)
             if att_html:
-                pdfs = parse_attachments_for_minutes(att_html, meeting_seq)
+                pdfs = parse_attachments_for_minutes(att_html, meeting_id)
                 if pdfs:
-                    conn3 = engine.raw_connection()
+                    conn3 = _connect(engine)
                     conn3.execute(
-                        "UPDATE meetings SET minutes_url = ? WHERE body = ? AND meeting_id = ?",
-                        (pdfs[0], body, meeting_id)
+                        text("UPDATE meetings SET minutes_url = :url WHERE body = :body AND meeting_id = :mid"),
+                        {"url": pdfs[0], "body": body, "mid": meeting_id}
                     )
                     conn3.commit()
                     conn3.close()
@@ -177,13 +182,20 @@ def check_tempe_onbase(engine) -> int:
         log.warning("  Tempe scraper not available — skipping")
         return 0
 
-    conn = engine.raw_connection()
+    # Only check integer meeting_ids; use SQLAlchemy's CAST syntax
+    dialect = engine.dialect.name
+    if dialect == "postgresql":
+        cast_expr = "CAST(meeting_id AS INTEGER) > 0"
+    else:
+        cast_expr = "CAST(meeting_id AS INTEGER) > 0"
+
+    conn = _connect(engine)
     rows = conn.execute(
-        "SELECT body, meeting_id, meeting_date, meeting_type FROM meetings "
-        "WHERE body = 'tempe-cc' AND minutes_url IS NULL "
-        "AND CAST(meeting_id AS INTEGER) > 0 "
-        "AND meeting_date >= '2025-01-01' "
-        "ORDER BY meeting_date DESC LIMIT 200"
+        text(f"SELECT body, meeting_id, meeting_date, meeting_type FROM meetings "
+             f"WHERE body = 'tempe-cc' AND minutes_url IS NULL "
+             f"AND {cast_expr} "
+             f"AND meeting_date >= '2025-01-01' "
+             f"ORDER BY meeting_date DESC LIMIT 200")
     ).fetchall()
     conn.close()
 
@@ -199,16 +211,15 @@ def check_tempe_onbase(engine) -> int:
             for name in candidates:
                 pdf_bytes = download_document(TEMPE_CONFIG, mid, name, doc_type=3)
                 if pdf_bytes and len(pdf_bytes) >= 1000:
-                    # Construct a viewable URL
                     minutes_url = (
                         f"https://tempe.hylandcloud.com/"
                         f"{TEMPE_CONFIG.base_path}/MeetingAccess.aspx?"
                         f"MeetingId={mid}&DocType=3&Filename={name}"
                     )
-                    conn2 = engine.raw_connection()
+                    conn2 = _connect(engine)
                     conn2.execute(
-                        "UPDATE meetings SET minutes_url = ? WHERE body = ? AND meeting_id = ?",
-                        (minutes_url, body, meeting_id)
+                        text("UPDATE meetings SET minutes_url = :url WHERE body = :body AND meeting_id = :mid"),
+                        {"url": minutes_url, "body": body, "mid": meeting_id}
                     )
                     conn2.commit()
                     conn2.close()

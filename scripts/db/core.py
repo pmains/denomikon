@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from slugify import slugify
 from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 # Database URL resolution (see db/config.py for the three-tier system):
@@ -17,7 +18,7 @@ _engine = None
 _SessionLocal = None
 
 
-def get_engine():
+def get_engine() -> Engine:
     global _engine
     if _engine is None:
         connect_args = {}
@@ -72,7 +73,7 @@ def get_session() -> Session:
     return _SessionLocal()
 
 
-def ensure_public_body(session, body_code: str, name_hint: str = "",
+def ensure_public_body(session: Session, body_code: str, name_hint: str = "",
                        jurisdiction_id: int | None = None) -> int | None:
     """Ensure a PublicBody row exists for the given body_code.
 

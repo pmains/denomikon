@@ -1,71 +1,70 @@
 """
-Database configuration — three-tier separation.
+Database configuration — PostgreSQL default.
 
 TIERS
 -----
 
-  TIER          DATABASE FILE                  PURPOSE
-  ────────────  ─────────────────────────────  ─────────────────────────────────
-  development   data/maricopa.sqlite           Daily work: scraping + Flask app
-  test          tempfile (auto-created)        Unit/integration tests
-  production    poliscopic.com:/opt/.../db     Public-facing site (via sync.sh)
+  TIER          DATABASE                       PURPOSE
+  ────────────  ──────────────────────────────  ─────────────────────────────────
+  development  PostgreSQL (poliscopic_dev)      Daily work: scraping + Flask app
+  test          tempfile SQLite                  Unit/integration tests
+  production   error (sync.sh handles this)     Public-facing site
 
 
 HOW TO USE
 ----------
 
-Development (default — no env var needed):
+Development (default — .env supplies DATABASE_URL):
     python scripts/agenda_scraper.py peoria --sync --year=2026
 
-    Uses data/maricopa.sqlite.  The Flask dev server at 127.0.0.1:5000
-    reads from this same file.  Scrape, then reload — the data is there.
+    Reads .env at project root for DATABASE_URL.  Falls back to the
+    PostgreSQL dev instance at localhost:5432/poliscopic_dev if .env
+    is absent.
 
 Test (pytest sets this automatically via conftest.py):
     pytest tests/
 
     Creates a temp SQLite file, runs tests, destroys it.  Never touches
-    the development or production databases.
+    development data.
 
 Production (sync.sh handles this — not for direct use):
     ./sync.sh
 
-    Pushes data/maricopa.sqlite → poliscopic.com.  The production gunicorn
-    process reads from /opt/poliscopic/data/maricopa.sqlite.
+    The production gunicorn process reads from /opt/poliscopic/data/maricopa.sqlite.
 
 To override the database for a one-off command:
+    DATABASE_URL=postgresql://... python scripts/agenda_scraper.py ...
+
+To use the old SQLite database for historical reference:
     DATABASE_URL="sqlite:///data/maricopa.sqlite" python scripts/agenda_scraper.py ...
+
+SQLite (data/maricopa.sqlite) is retained as a historical archive only.
+All ongoing work uses PostgreSQL.
 """
 
 import os
 from pathlib import Path
 
-# ── Default: the local development database ─────────────────────────────
-# This is the single file shared by:
-#   - The Flask dev server (routes/__init__.py overrides to this path)
-#   - CLI scraping commands (agenda_scraper.py, etc.)
-#   - One-off analysis scripts
-_DEV_DB = str((Path(__file__).resolve().parent.parent.parent / "data" / "maricopa.sqlite").resolve())
+from dotenv import load_dotenv
+load_dotenv()  # Load .env — supplies DATABASE_URL
+
+_DEV_PG = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://poliscopic@100.91.173.66:5432/poliscopic_dev"
+)
+_SQLITE_FALLBACK = str((Path(__file__).resolve().parent.parent.parent / "data" / "maricopa.sqlite").resolve())
 
 # ── Resolution order ──────────────────────────────────────────────────
-# 1. DATABASE_URL env var (explicit override for one-off commands)
-# 2. POLISCOPIC_DB_TIER=test  →  tempfile (used by pytest)
+# 1. DATABASE_URL env var (explicit override, also set by .env)
+# 2. POLISCOPIC_DB_TIER=test  →  temp SQLite (used by pytest)
 # 3. POLISCOPIC_DB_TIER=production  →  error out (sync.sh handles this)
-# 4. Default  →  development database
-#
-# NEVER set DATABASE_URL to the production database path.  Production
-# sync is handled exclusively by sync.sh, which creates a backup before
-# overwriting.
-#
-# NEVER remove or rename data/maricopa.sqlite without confirming that
-# all synced data has been backed up.
+# 4. Default  →  PostgreSQL dev instance
 
 _DB_TIER = os.environ.get("POLISCOPIC_DB_TIER", "").lower().strip()
 
-if "DATABASE_URL" in os.environ:
-    # Explicit URL overrides tier selection
+if os.environ.get("DATABASE_URL"):
+    # Explicit URL or .env value overrides tier selection
     DATABASE_URL = os.environ["DATABASE_URL"]
-elif _DB_TIER == "development":
-    DATABASE_URL = f"sqlite:///{_DEV_DB}"
 elif _DB_TIER == "test":
     import tempfile
     DATABASE_URL = f"sqlite:///{tempfile.mktemp(suffix='.sqlite')}"
@@ -75,17 +74,8 @@ elif _DB_TIER == "production":
         "Use sync.sh to deploy to poliscopic.com."
     )
 else:
-    print(
-        "No database tier selected. Set POLISCOPIC_DB_TIER or use --dev / --test:\n"
-        "  POLISCOPIC_DB_TIER=development  → data/maricopa.sqlite\n"
-        "  POLISCOPIC_DB_TIER=test          → temporary file (destroyed after)\n"
-        "  DATABASE_URL=sqlite:///path      → explicit database path\n"
-        "\n"
-        "Example: python scripts/agenda_scraper.py peoria --sync\n"
-        "  (requires POLISCOPIC_DB_TIER=development to be set in .env or environment)",
-        file=__import__("sys").stderr,
-    )
-    raise SystemExit(1)
+    # Default to PostgreSQL (development)
+    DATABASE_URL = _DEV_PG
 
 # Final check — validate the URL was resolved
 if not (DATABASE_URL.startswith("sqlite:///") or DATABASE_URL.startswith("postgresql://")):

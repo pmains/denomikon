@@ -5,8 +5,8 @@ from sqlalchemy import select, desc, and_
 from sqlalchemy.orm import joinedload
 
 from flask import Blueprint, render_template, request, abort
-from db.core import get_session
-from db.newsroom import Article, Tag, search_articles, search_agenda_items
+from db import get_session, Jurisdiction, PublicBody
+from db.newsroom import Article, Tag, search_articles, search_agenda_items, search_supporting_documents
 
 articles_bp = Blueprint("articles", __name__)
 
@@ -410,6 +410,8 @@ def search():
     sort = request.args.get("sort", "date")  # date, relevance
     from_date = request.args.get("from", "").strip() or None
     to_date = request.args.get("to", "").strip() or None
+    jurisdiction = request.args.get("jurisdiction", "").strip() or None
+    body = request.args.get("body", "").strip() or None
     articles = []
     agenda_items = []
     tags = []
@@ -417,21 +419,50 @@ def search():
     session = get_session()
     tags = session.execute(select(Tag).order_by(Tag.name)).scalars().all()
 
+    # Jurisdictions and bodies for filter dropdowns
+    jurisdictions = session.execute(
+        select(Jurisdiction).order_by(Jurisdiction.name)
+    ).scalars().all()
+
+    # Build body list — filtered by jurisdiction if one is selected
+    from sqlalchemy import select as _select
+    body_q = _select(PublicBody).order_by(PublicBody.name)
+    if jurisdiction:
+        jur_ids = [
+            j.id for j in jurisdictions
+            if j.slug == jurisdiction or j.name == jurisdiction
+        ]
+        if jur_ids:
+            body_q = body_q.where(PublicBody.jurisdiction_id == jur_ids[0])
+    all_bodies = session.execute(body_q).scalars().all()
+
     articles_truncated = False
     agenda_truncated = False
+    documents_truncated = False
+    documents = []
 
     if q:
         if scope in ("all", "articles"):
             articles, articles_truncated = search_articles(q)
         if scope in ("all", "agendas"):
             agenda_items, agenda_truncated = search_agenda_items(
-                q, sort=sort, from_date=from_date, to_date=to_date
+                q, sort=sort, from_date=from_date, to_date=to_date,
+                jurisdiction=jurisdiction, body=body,
+            )
+        if scope in ("all", "documents"):
+            documents, documents_truncated = search_supporting_documents(
+                q, sort=sort, from_date=from_date, to_date=to_date,
+                jurisdiction=jurisdiction, body=body,
             )
 
     session.close()
     return render_template("search.html", q=q, scope=scope, sort=sort,
                            from_date=from_date or "", to_date=to_date or "",
+                           jurisdiction=jurisdiction or "", body=body or "",
                            articles=articles, agenda_items=agenda_items,
+                           documents=documents,
                            articles_truncated=articles_truncated,
                            agenda_truncated=agenda_truncated,
-                           tags=tags)
+                           documents_truncated=documents_truncated,
+                           tags=tags,
+                           jurisdictions=jurisdictions, all_bodies=all_bodies)

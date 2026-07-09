@@ -3,7 +3,7 @@
 Daily sync runner — called by cron to keep all jurisdictions current.
 
 Usage:
-  POLISCOPIC_DB_TIER=development python scripts/daily_sync.py
+  DATABASE_URL=postgresql://... python scripts/daily_sync.py
 
 Design:
   - Tier 1 & 2 (daily): 3-day rolling window — quick check for anything
@@ -205,15 +205,14 @@ def main():
     # ── Minutes check pass ──
     log.info("--- Minutes check pass ---")
     try:
+        from sqlalchemy import text
         from db import get_engine
         from db.minutes_check import check_all as check_minutes
         engine = get_engine()
-        conn = engine.raw_connection()
-        cursor = conn.execute(
-            "SELECT COUNT(*) FROM meetings WHERE minutes_url IS NULL AND sync_status = 'complete'"
-        )
-        total_pending = cursor.fetchone()[0]
-        conn.close()
+        with engine.connect() as conn:
+            total_pending = conn.execute(
+                text("SELECT COUNT(*) FROM meetings WHERE minutes_url IS NULL AND sync_status = 'complete'")
+            ).scalar()
         log.info("  %d meetings without minutes_url", total_pending)
         updated = check_minutes(engine)
         if updated:

@@ -69,7 +69,7 @@ THEMES = {
 
 
 @themes_bp.route("/")
-def theme_index():
+def theme_index() -> str:
     """Gallery of available themes."""
     return render_template("themes.html", themes=THEMES)
 

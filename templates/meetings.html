@@ -21,7 +21,8 @@
 
 <p class="text-muted mb-4">Poliscopic tracks public meetings across Arizona, including city councils, planning commissions, county boards, transportation agencies, school districts, and other public bodies. Search agendas, votes, staff reports, development cases, contracts, permits, and supporting documents to find important local policy decisions before they disappear into consent agendas or meeting packets.</p>
 
-<form method="GET" action="/meetings" class="row g-3 mb-4 align-items-end">
+<form method="GET" action="/meetings">
+<div class="row g-3 mb-2 align-items-end">
     <div class="col-md-2">
         <label class="form-label small" for="jurisdiction">Jurisdiction</label>
         <select name="jurisdiction" id="jurisdiction" class="form-select form-select-sm">
@@ -80,23 +81,32 @@
                value="{{ filter_end }}">
     </div>
     <div class="col-md-1">
-        <button type="submit" class="btn btn-primary btn-sm w-100">Filter</button>
+        <!-- spacer -->
     </div>
-    <div class="col-md-1">
-        <a href="/meetings" class="btn btn-outline-secondary btn-sm w-100">Clear</a>
+</div>
+<div class="row g-3 align-items-end mb-4">
+    <div class="col-md-auto">
+        <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-funnel"></i> Filter</button>
     </div>
-    <div class="col-md-1">
-        <a href="/calendar{% if filter_start or filter_end %}?start_date={{ filter_start }}&amp;end_date={{ filter_end }}{% if filter_jurisdiction %}&amp;jurisdiction={{ filter_jurisdiction }}{% endif %}{% elif filter_jurisdiction %}?jurisdiction={{ filter_jurisdiction }}{% endif %}" class="btn btn-outline-primary btn-sm w-100">Calendar</a>
+    <div class="col-md-auto">
+        <a href="/meetings" class="btn btn-outline-secondary btn-sm"><i class="bi bi-x-circle"></i> Clear</a>
     </div>
-    <div class="col-md-2">
-        <div class="form-check mt-2">
-            <input class="form-check-input" type="checkbox" name="hide_upcoming" value="1" onchange="this.form.submit();"
-                   id="hide_upcoming" {% if hide_upcoming %}checked{% endif %}>
-            <label class="form-check-label small" for="hide_upcoming">
-                Hide upcoming
-            </label>
-        </div>
+    <div class="col-md-auto">
+        <a href="/calendar{% if filter_start or filter_end %}?start_date={{ filter_start }}&amp;end_date={{ filter_end }}{% if filter_jurisdiction %}&amp;jurisdiction={{ filter_jurisdiction }}{% endif %}{% elif filter_jurisdiction %}?jurisdiction={{ filter_jurisdiction }}{% endif %}" class="btn btn-outline-primary btn-sm"><i class="bi bi-calendar-event"></i> Calendar</a>
     </div>
+    <div class="col-md-auto">
+        <input type="checkbox" class="btn-check" id="hide_upcoming" autocomplete="off"
+               name="hide_upcoming" value="1" onchange="this.form.submit();"
+               {% if hide_upcoming %}checked{% endif %}>
+        <label class="btn btn-outline-secondary btn-sm" for="hide_upcoming"><i class="bi bi-eye-slash"></i> Upcoming</label>
+    </div>
+    <div class="col-md-auto">
+        <input type="checkbox" class="btn-check" id="hide_canceled" autocomplete="off"
+               name="hide_canceled" value="1" onchange="this.form.submit();"
+               {% if hide_canceled %}checked{% endif %}>
+        <label class="btn btn-outline-secondary btn-sm" for="hide_canceled"><i class="bi bi-x-octagon"></i> Canceled</label>
+    </div>
+</div>
 </form>
 
 <script>
@@ -183,6 +193,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // choices.js fires 'change' on init — skip those by comparing to page-load value
     jurSelect.addEventListener('change', function() {
+        // Clear body selection when jurisdiction changes (bodies don't cross jurisdictions)
+        if (bodyChoices) {
+            bodyChoices.setChoiceByValue('');
+        }
         settledJur = onValueChange(jurSelect, settledJur);
     });
     bodySelect.addEventListener('change', function() {
@@ -220,6 +234,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 <td><span class="badge bg-{{ m.source_badge }}">{{ m.source }}</span></td>
                 <td>
                     <span class="badge bg-{{ m.badge_class }}">{{ m.sync_status }}</span>
+                    {% if m.sync_status in ('no_agenda', 'failed') and m.item_count == 0 %}
+                    <span class="badge bg-warning text-dark">Canceled</span>
+                    {% endif %}
                 </td>
                 <td class="text-center">{{ m.item_count }}</td>
                 <td class="text-center">{{ m.doc_count }}</td>

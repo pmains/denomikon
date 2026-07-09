@@ -87,3 +87,20 @@ SYNC.md
 *.zip
 drafts/
 scraper-error-log-2026-06-14.md
+data/doc_downloads/
+data/archive/
+data/tasks/
+
+# Internal infra scripts — not for public source control
+scripts/db/sync_dev_to_prod.py
+scripts/scraper/ocr_pipeline.py
+scripts/migrate_doc_text.py
+scripts/task_utils.sh
+sync_db.sh
+
+# Reports and manifests
+scripts/manifest.tsv
+scripts/reports/
+
+# Archived/dev scripts
+scripts/archive/

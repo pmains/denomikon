@@ -37,7 +37,7 @@ from db.models import (
     Meeting,
     MeetingSupervisor,
     Person,
-    SupervisorVote,
+    MemberVote,
 )
 
 log = logging.getLogger(__name__)
@@ -671,8 +671,8 @@ def _persist_minutes_votes(
     subq = select(AgendaItemVote.id).where(
         AgendaItemVote.body == body, AgendaItemVote.meeting_id == meeting_id,
     ).scalar_subquery()
-    session.execute(SupervisorVote.__table__.delete().where(
-        SupervisorVote.agenda_item_vote_id.in_(subq),
+    session.execute(MemberVote.__table__.delete().where(
+        MemberVote.agenda_item_vote_id.in_(subq),
     ))
     session.execute(AgendaItemVote.__table__.delete().where(
         AgendaItemVote.body == body, AgendaItemVote.meeting_id == meeting_id,
@@ -747,9 +747,9 @@ def _persist_minutes_votes(
                     session.add(p)
                     session.flush()
                     person_map[sv_norm] = p.id
-            sv_rec = SupervisorVote(
+            sv_rec = MemberVote(
                 agenda_item_vote_id=aiv.id,
-                supervisor_id=person_map.get(sv_norm, 0),
+                member_id=person_map.get(sv_norm, 0),
                 vote=sv.get("vote", "yes"),
             )
             session.add(sv_rec)

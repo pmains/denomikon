@@ -69,7 +69,7 @@ async def extract_adj_meetings(page, search_url: str) -> list[Meeting]:
 
     # Find available year tabs (e.g. changeYear(2023, 3, ...), changeYear(2024, 3, ...))
     year_tabs = await page.evaluate(
-        """
+        r"""
         () => {
             const seen = new Set();
             const years = [];

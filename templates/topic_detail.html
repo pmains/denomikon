@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}{{ topic.title }} — Poliscopic{% endblock %}
+{% block content %}
+<div class="container mt-4">
+
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="/topics">Topics</a></li>
+            <li class="breadcrumb-item active">{{ topic.title }}</li>
+        </ol>
+    </nav>
+
+    {% if report %}
+    <div class="d-flex justify-content-between align-items-start mb-4">
+        <div>
+            <h1>{{ topic.title }}</h1>
+            <p class="text-muted">Report for week of {{ report.report_date }}</p>
+        </div>
+        <div>
+            <a href="/topics/{{ topic.slug }}/archive" class="btn btn-outline-secondary btn-sm">Archive</a>
+        </div>
+    </div>
+
+    {% if is_archive %}
+    <div class="alert alert-info">
+        This is an archived report from {{ report.report_date }}.
+        <a href="/topics/{{ topic.slug }}" class="alert-link">View the latest report</a>.
+    </div>
+    {% endif %}
+
+    <!-- Executive Summary -->
+    {% if report.summary %}
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title">Executive Summary</h5>
+            <p class="card-text">{{ report.summary }}</p>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Report Body -->
+    {% if report.body_html %}
+    <div class="report-body mb-4">
+        {{ report.body_html|safe }}
+    </div>
+    {% endif %}
+
+    <!-- Metrics -->
+    {% if report.metric_values %}
+    <div class="card mb-4">
+        <div class="card-header"><h5 class="mb-0">Key Metrics</h5></div>
+        <div class="card-body">
+            <table class="table table-sm table-borderless mb-0">
+                {% for key, value in report.metric_values.items() %}
+                <tr>
+                    <td width="50%">{{ key|replace('_', ' ')|title }}</td>
+                    <td><strong>{{ value }}</strong></td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Activity by Jurisdiction -->
+    {% if report.activity_by_jurisdiction %}
+    <div class="card mb-4">
+        <div class="card-header"><h5 class="mb-0">Activity by Jurisdiction</h5></div>
+        <div class="card-body">
+            <table class="table table-sm mb-0">
+                <thead>
+                    <tr>
+                        <th>Jurisdiction</th>
+                        <th>Items</th>
+                        <th>Approved</th>
+                        <th>Pending</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for jur, data in report.activity_by_jurisdiction %}
+                    <tr>
+                        <td>{{ jur }}</td>
+                        <td>{{ data.count }}</td>
+                        <td>{{ data.approvals }}</td>
+                        <td>{{ data.pending }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Linked Articles -->
+    {% if articles %}
+    <div class="card mb-4">
+        <div class="card-header"><h5 class="mb-0">Related Articles</h5></div>
+        <div class="list-group list-group-flush">
+            {% for a in articles %}
+            <div class="list-group-item">
+                <a href="/articles/{{ a.slug }}" class="text-decoration-none"><strong>{{ a.title }}</strong></a>
+                {% if a.summary %}
+                <br><small class="text-muted">{{ a.summary[:200] }}</small>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Featured Article -->
+    {% if featured %}
+    <div class="card mb-4">
+        <div class="card-header"><h5 class="mb-0">Featured Story</h5></div>
+        <div class="card-body">
+            <a href="/articles/{{ featured.slug }}" class="text-decoration-none">{{ featured.title }}</a>
+        </div>
+    </div>
+    {% endif %}
+
+    <p class="text-muted small">Generated: {{ report.generated_at.strftime('%B %d, %Y at %H:%M UTC') if report.generated_at else 'N/A' }}</p>
+
+    {% else %}
+    <!-- No reports yet -->
+    <h1>{{ topic.title }}</h1>
+    <p class="text-muted">{{ topic.description }}</p>
+    <p>No reports have been generated yet for this topic.</p>
+    {% endif %}
+</div>
+{% endblock %}

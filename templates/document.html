@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}{{ doc.document_title }} — Document — Poliscopic{% endblock %}
+{% block content %}
+<div class="mb-4">
+    <h1 class="mb-1">{{ doc.document_title }}</h1>
+
+    {% if meeting %}
+    <p class="text-muted mb-0">
+        <a href="/meetings/{{ meeting.body }}/{{ meeting.meeting_id }}" class="text-decoration-none">
+            {{ meeting.jurisdiction_name }} — {{ meeting.meeting_type }}
+            ({{ meeting.meeting_date }})
+        </a>
+    </p>
+    {% endif %}
+
+    <p class="mt-2">
+        {% if doc.document_url %}
+        <a href="{{ doc.document_url }}" target="_blank" class="btn btn-outline-secondary btn-sm me-1">
+            <i class="bi bi-file-earmark-pdf"></i> View PDF
+        </a>
+        {% endif %}
+        {% if doc.agenda_item_id and doc.agenda_item_id != "0" and doc.agenda_item_id != 0 %}
+        <a href="/meetings/{{ doc.body }}/{{ doc.meeting_id }}#item-{{ doc.agenda_item_number }}" class="btn btn-outline-secondary btn-sm me-1">
+            <i class="bi bi-list-task"></i> Item {{ doc.agenda_item_number }}
+        </a>
+        {% endif %}
+        <a href="/meetings/{{ doc.body }}/{{ doc.meeting_id }}" class="btn btn-outline-primary btn-sm">
+            <i class="bi bi-calendar-event"></i> Meeting page
+        </a>
+    </p>
+</div>
+
+{% if text_content %}
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Extracted text{% if doc.text_extraction_method %} (via {{ doc.text_extraction_method }}){% endif %}</span>
+        <span class="text-muted small">{{ text_content|length }} characters</span>
+    </div>
+    <div class="card-body" style="max-height: 80vh; overflow-y: auto;">
+        <pre class="mb-0" style="white-space: pre-wrap; word-wrap: break-word; font-size: 0.85rem;">{{ text_content }}</pre>
+    </div>
+</div>
+{% else %}
+<div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle"></i> No extracted text available for this document.
+    {% if doc.document_url %}
+    <a href="{{ doc.document_url }}" target="_blank">View the original PDF</a> instead.
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

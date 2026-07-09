@@ -52,7 +52,8 @@ fi
 # PYTHONPATH must include scripts/ so 'from db import ...' works
 export PYTHONPATH="${PYTHONPATH:-$PROJECT_ROOT/scripts}"
 
-# Database tier — default to development
+# Database — db/config.py loads .env which supplies DATABASE_URL.
+# For backwards compat, set tier too (harmless when DATABASE_URL is set).
 export POLISCOPIC_DB_TIER="${POLISCOPIC_DB_TIER:-development}"
 
 # ── Timestamp helpers ──────────────────────────────────────────────────────
@@ -343,9 +344,16 @@ print(f'Seeded {seeded} meeting(s) for doc check')
     log_info "Checking for newly-available supporting documents..."
     DOC_CHECK_OUTPUT="$($PYTHON scripts/doc_check.py --apply 2>&1)" || true
     echo "$DOC_CHECK_OUTPUT" | while IFS= read -r line; do log_info "  $line"; done
+
+    # ── Step 7: Extract text from newly scraped documents ───────────────────
+    log_info "Running text extraction for newly scraped documents..."
+    EXTRACT_LOG="$LOG_DIR/$DATE_STAMP-extract.log"
+    $PYTHON -u "$PROJECT_ROOT/scripts/docs/downloader.py" \
+        --workers 5 --limit 500 2>&1 | tee "$EXTRACT_LOG"
+    log_info "Text extraction complete. Log → $EXTRACT_LOG"
 fi
 
-# ── Step 7: Clean up old logs ──────────────────────────────────────────────
+# ── Step 8: Clean up old logs ──────────────────────────────────────────────
 log_info "Cleaning up logs older than $LOG_RETENTION_DAYS days..."
 find "$LOG_DIR" -name '*.log.gz' -type f -mtime +$LOG_RETENTION_DAYS -exec rm -v {} \;
 find "$LOG_DIR" -name '*-summary.txt' -type f -mtime +$LOG_RETENTION_DAYS -exec rm -v {} \;

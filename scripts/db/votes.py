@@ -9,7 +9,7 @@ log = logging.getLogger(__name__)
 from sqlalchemy import func, inspect as sa_inspect, select, text, case
 from sqlalchemy.orm import Session
 
-from db.models import (AgendaItem, AgendaItemVote, SupervisorVote,
+from db.models import (AgendaItem, AgendaItemVote, MemberVote,
     Supervisor, Meeting, BodyMembership, Person)
 from db.core import get_session
 
@@ -40,8 +40,8 @@ def infer_majority_position(session, aiv_id: int) -> Optional[str]:
     Only considers substantive votes (yes/no).
     """
     votes = session.execute(
-        select(SupervisorVote.vote)
-        .where(SupervisorVote.agenda_item_vote_id == aiv_id)
+        select(MemberVote.vote)
+        .where(MemberVote.agenda_item_vote_id == aiv_id)
     ).scalars().all()
     norm = [_normalize_vote_value(v) for v in votes]
     yes_cnt = sum(1 for v in norm if v == "yes")
@@ -60,8 +60,8 @@ def compute_vote_tally(session, aiv_id: int) -> dict:
     Returns dict with yes, no, abstain counts and total.
     """
     votes = session.execute(
-        select(SupervisorVote.vote)
-        .where(SupervisorVote.agenda_item_vote_id == aiv_id)
+        select(MemberVote.vote)
+        .where(MemberVote.agenda_item_vote_id == aiv_id)
     ).scalars().all()
     norm = [_normalize_vote_value(v) for v in votes]
     yes = sum(1 for v in norm if v == "yes")

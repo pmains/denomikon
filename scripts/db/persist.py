@@ -11,7 +11,7 @@ from sqlalchemy import func, inspect as sa_inspect, select, text, or_
 from sqlalchemy.orm import Session
 
 from db.models import (Base, Meeting, AgendaItem, SupportingDocument,
-    AgendaItemVote, SupervisorVote, Supervisor, Case, CaseEvent,
+    AgendaItemVote, MemberVote, Supervisor, Case, CaseEvent,
     PZItemDetail, MeetingSupervisor, PublicBodyMember, Person,
     BodyMembership, PublicBody, MeetingAttendance, MemberVote)
 from db.core import get_engine, get_session
@@ -421,7 +421,10 @@ def persist_meeting(
                 document_url=doc_dict.get("document_url", ""),
                 document_type=doc_dict.get("document_type"),
                 file_name=doc_dict.get("file_name"),
-                file_extension=doc_dict.get("file_extension"),
+                file_extension=(
+                    doc_dict.get("file_extension")
+                    or _infer_extension(doc_dict.get("document_url", ""))
+                ),
                 scraped_at=datetime.now(timezone.utc),
             )
             session.add(doc)
@@ -450,6 +453,21 @@ def persist_meeting(
 
     session.commit()
     return inserted_item_count
+
+
+def _infer_extension(url: str) -> str | None:
+    """Infer a file extension from the document URL if possible."""
+    from urllib.parse import urlparse, unquote
+    path = unquote(urlparse(url).path).rstrip("/")
+    # Get the last path segment and look for an extension
+    last_segment = path.rsplit("/", 1)[-1] if "/" in path else path
+    if "." in last_segment:
+        ext = last_segment.rsplit(".", 1)[-1].lower()
+        known = {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "png", "jpg", "jpeg", "gif"}
+        if ext in known:
+            return f".{ext}"
+    return None
+
 
 def _upsert_case_and_event(
     session: Session,
@@ -610,8 +628,8 @@ def _detect_vote_attributes(aiv_list: list[AgendaItemVote]) -> None:
     for aiv in aiv_list:
         # Gather supervisor votes for this aiv
         sv_rows = session.execute(
-            select(SupervisorVote).where(
-                SupervisorVote.agenda_item_vote_id == aiv.id
+            select(MemberVote).where(
+                MemberVote.agenda_item_vote_id == aiv.id
             )
         ).scalars().all()
         if not sv_rows:
@@ -736,6 +754,12 @@ def persist_votes(
     supervisors: list[dict],
     votes: list[dict],
 ) -> int:
+    """Save vote records for a meeting.
+
+    Inserts agenda_item_votes rows linked to the meeting, then stores
+    individual supervisor votes in member_votes or supervisor_votes.
+    Returns the number of vote records saved.
+    """
     # Suppress identity-map warning from SQLite reusing PK IDs after DELETE
     import warnings
     from sqlalchemy import exc as sa_exc
@@ -832,8 +856,8 @@ def persist_votes(
     existing_aiv_ids = [r.id for r in existing_aiv_rows]
     if existing_aiv_ids:
         session.execute(
-            SupervisorVote.__table__.delete().where(
-                SupervisorVote.agenda_item_vote_id.in_(existing_aiv_ids)
+            MemberVote.__table__.delete().where(
+                MemberVote.agenda_item_vote_id.in_(existing_aiv_ids)
             )
         )
     session.execute(
@@ -902,7 +926,7 @@ def persist_votes(
         session.flush()
 
         # Insert individual supervisor votes
-        for sv in vote.get("supervisor_votes", []):
+        for sv in vote.get("member_votes", vote.get("supervisor_votes", [])):
             name = sv.get("name", "")
             norm_name = name.lower().strip()
             sup_id = supervisor_map.get(norm_name)
@@ -941,9 +965,10 @@ def persist_votes(
             elif norm_vote in ("nay",):
                 norm_vote = "no"
 
-            sv_rec = SupervisorVote(
+            sv_rec = MemberVote(
+                body=body,
                 agenda_item_vote_id=aiv.id,
-                supervisor_id=sup_id,
+                member_id=sup_id,
                 vote=norm_vote,
                 raw_vote_text=sv.get("raw_vote_text") or raw_vote,
             )
@@ -990,9 +1015,9 @@ def persist_votes(
         ).scalars().all()
         for ms in ms_rows:
             sv_count = session.execute(
-                select(func.count()).select_from(SupervisorVote).where(
-                    SupervisorVote.supervisor_id == ms.supervisor_id,
-                    SupervisorVote.agenda_item_vote_id.in_(aiv_ids),
+                select(func.count()).select_from(MemberVote).where(
+                    MemberVote.member_id == ms.supervisor_id,
+                    MemberVote.agenda_item_vote_id.in_(aiv_ids),
                 )
             ).scalar()
             if sv_count == 0:
@@ -1002,17 +1027,18 @@ def persist_votes(
                 # Supervisor voted on some items but not all — abstain on the rest
                 existing_aiv_ids = set(
                     row[0] for row in session.execute(
-                        select(SupervisorVote.agenda_item_vote_id).where(
-                            SupervisorVote.supervisor_id == ms.supervisor_id,
-                            SupervisorVote.agenda_item_vote_id.in_(aiv_ids),
+                        select(MemberVote.agenda_item_vote_id).where(
+                            MemberVote.member_id == ms.supervisor_id,
+                            MemberVote.agenda_item_vote_id.in_(aiv_ids),
                         )
                     ).all()
                 )
                 for aiv_id in aiv_ids:
                     if aiv_id not in existing_aiv_ids:
-                        session.add(SupervisorVote(
+                        session.add(MemberVote(
+                            body=body,
                             agenda_item_vote_id=aiv_id,
-                            supervisor_id=ms.supervisor_id,
+                            member_id=ms.supervisor_id,
                             vote="abstain",
                             raw_vote_text="inferred abstention — no vote recorded on this item",
                         ))

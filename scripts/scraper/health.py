@@ -106,7 +106,7 @@ async def extract_health_meetings(page, search_url: str) -> list[Meeting]:
 
     # Find available year tabs
     year_tabs = await page.evaluate(
-        """
+        r"""
         () => {
             const seen = new Set();
             const years = [];

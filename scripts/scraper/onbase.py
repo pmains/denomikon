@@ -474,6 +474,20 @@ def parse_agenda_html(html: str, meeting_id: str,
     all_divs = _find_all(root, "div")
     section_stack: list[str] = []
 
+    # Pattern for numbered items: "1.", "1", "10", "C-06-24-394-X-00"
+    _num_pat = re.compile(r'^(\d+(?:\.\d+)?)\.?\s+(.*)')
+    _case_pat = re.compile(r'^([A-Z]-\d{2}-\d{2}-\d{3}[\w-]*)\s+(.*)')
+
+    def _split_num_title(text: str) -> tuple[str, str]:
+        """Split '1. ITEM TITLE' -> ('1', 'ITEM TITLE') or 'BOARD OF SUPS' -> ('', 'BOARD OF SUPS')."""
+        m = _num_pat.match(text)
+        if m:
+            return m.group(1), m.group(2).strip()
+        m = _case_pat.match(text)
+        if m:
+            return m.group(1), m.group(2).strip()
+        return "", text.strip()
+
     for node in all_divs:
         class_str = node.attrs.get("class", "")
 
@@ -485,9 +499,7 @@ def parse_agenda_html(html: str, meeting_id: str,
             header = _find_first_header(node)
             header_text = _clean_html_text(_node_text(header)).strip() if header else ""
 
-            num_match = re.match(r"([\dA-Z]+)\s+(.*)", header_text)
-            item_number = num_match.group(1) if num_match else ""
-            item_title = num_match.group(2).strip() if num_match else header_text
+            item_number, item_title = _split_num_title(header_text)
 
             # Track nesting
             while level < len(section_stack):
@@ -531,9 +543,7 @@ def parse_agenda_html(html: str, meeting_id: str,
             else:
                 full_text = _clean_html_text(_node_text(node))
 
-            num_match = re.match(r"([\dA-Z]+)\s+(.*)", full_text)
-            item_number = num_match.group(1) if num_match else ""
-            item_title = num_match.group(2).strip() if num_match else full_text
+            item_number, item_title = _split_num_title(full_text)
 
             # Extract OnBase internal item ID from onclick="loadAgendaItem(NNN)"
             onbase_item_id = None
@@ -723,8 +733,9 @@ def download_document(config: OnBaseConfig, meeting_id: int, name: str,
     log.info("Download: establishing session at %s", base)
     opener.open(urllib.request.Request(base, headers={"User-Agent": "Mozilla/5.0"}))
 
+    encoded_name = urllib.parse.quote(name, safe='')
     invoke_url = ("%s/Documents/InvokeDownloadMeetingDocument/%s"
-                  "?meetingId=%s&documentType=%s") % (base, name, meeting_id, doc_type)
+                  "?meetingId=%s&documentType=%s") % (base, encoded_name, meeting_id, doc_type)
     log.info("Download: invoking %s", invoke_url)
     req1 = urllib.request.Request(invoke_url, data=b"", headers={
         "User-Agent": "Mozilla/5.0",
@@ -734,12 +745,13 @@ def download_document(config: OnBaseConfig, meeting_id: int, name: str,
         meta = json.loads(resp.read().decode("utf-8"))
 
     doc_name = meta.get("DocumentName", name)
+    encoded_doc_name = urllib.parse.quote(doc_name, safe='')
     meeting_id_resp = meta.get("MeetingId", meeting_id)
     doc_type_str = meta.get("DocumentType", str(doc_type))
     log.info("Download: metadata received: %s", doc_name)
 
     view_url = ("%s/Documents/ViewDocument/%s"
-                "?meetingId=%s&documentType=%s") % (base, doc_name, meeting_id_resp, doc_type_str)
+                "?meetingId=%s&documentType=%s") % (base, encoded_doc_name, meeting_id_resp, doc_type_str)
     log.info("Download: fetching %s", view_url)
     req2 = urllib.request.Request(view_url, headers={"User-Agent": "Mozilla/5.0"})
     with opener.open(req2, timeout=120) as resp:
@@ -834,8 +846,15 @@ def fetch_item_details_batch(
                     item.get("agenda_item_number", ""),
                     base_url=config.base_url,
                 )
+                # Convert DownloadFile URLs to ViewDocument URLs
+                # (DownloadFile requires JavaScript; ViewDocument serves directly)
                 for doc in item_docs:
                     doc["agenda_item_id"] = 0
+                    url = doc.get("document_url", "")
+                    if "DownloadFile" in url or "Downloadfile" in url:
+                        resolved = resolve_downloadfile_to_viewdocument(url, config.base_url)
+                        if resolved:
+                            doc["document_url"] = resolved
                 if item_docs:
                     with lock:
                         supp_docs.extend(item_docs)
@@ -859,6 +878,175 @@ def fetch_item_details_batch(
 
     log.info("Fetched item details: %d supporting doc(s) found", len(supp_docs))
     return supp_docs
+
+
+def _parse_onbase_downloadfile_params(url: str) -> dict | None:
+    """Extract query params from a Tempe OnBase DownloadFile URL.
+
+    Returns dict with keys: filename, meeting_id, item_id, publish_id,
+    is_section, document_type, is_attachment, or None if parsing fails.
+    """
+    from urllib.parse import urlparse, parse_qs
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    path = parsed.path
+    # Extract filename from path: /Agendaonline/Documents/DownloadFile/FILENAME
+    filename = path.rstrip("/").split("/DownloadFile/")[-1].split("/Downloadfile/")[-1] if "/DownloadFile/" in path or "/Downloadfile/" in path else None
+    if not filename:
+        return None
+    return {
+        "filename": filename,
+        "meeting_id": (qs.get("meetingId") or [None])[0],
+        "item_id": (qs.get("itemId") or [None])[0],
+        "publish_id": (qs.get("publishId") or [None])[0],
+        "is_section": (qs.get("isSection") or ["false"])[0].lower() == "true",
+        "document_type": (qs.get("documentType") or [None])[0],
+        "is_attachment": (qs.get("isAttachment") or ["false"])[0].lower() == "true",
+    }
+
+
+def resolve_downloadfile_to_viewdocument(url: str, base_url: str = "https://tempe.hylandcloud.com/Agendaonline") -> str | None:
+    """Convert a Tempe OnBase DownloadFile URL to a ViewDocument URL.
+
+    Makes the InvokeDownloadAttachment POST to get the proper DocumentName,
+    then builds a direct-download ViewDocument URL.
+
+    Returns the ViewDocument URL as a string, or None on failure.
+    """
+    import json
+    from urllib.parse import urlencode
+    from http.cookiejar import CookieJar
+
+    params = _parse_onbase_downloadfile_params(url)
+    if not params:
+        return None
+
+    # Only handle attachment-type OnBase URLs (supporting docs)
+    if not params["is_attachment"]:
+        return None
+    if not all([params["meeting_id"], params["item_id"], params["publish_id"]]):
+        return None
+
+    import urllib.request, json
+    from http.cookiejar import CookieJar
+
+    cj = CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+
+    # Establish session
+    try:
+        opener.open(urllib.request.Request(base_url, headers={"User-Agent": "Mozilla/5.0"}), timeout=15)
+    except Exception:
+        pass
+
+    from urllib.parse import unquote
+    decoded_name = unquote(params['filename'])
+    invoke_url = (
+        f"{base_url}/Documents/InvokeDownloadAttachment/"
+        f"{urllib.parse.quote(decoded_name)}"
+        f"?meetingId={params['meeting_id']}"
+        f"&itemId={params['item_id']}"
+        f"&publishId={params['publish_id']}"
+        f"&isSection={'true' if params['is_section'] else 'false'}"
+        f"&documentType={params['document_type']}"
+    )
+    try:
+        req = urllib.request.Request(invoke_url, data=b"", headers={
+            "User-Agent": "Mozilla/5.0",
+            "X-Requested-With": "XMLHttpRequest",
+        })
+        with opener.open(req, timeout=30) as resp:
+            meta = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+    doc_name = meta.get("DocumentName", decoded_name)
+    meeting_id_r = meta.get("MeetingId", params["meeting_id"])
+    doc_type_r = meta.get("DocumentType", params["document_type"])
+    item_id_r = meta.get("ItemId", params["item_id"])
+    publish_id_r = meta.get("PublishId", params["publish_id"])
+    is_section_r = meta.get("IsSection", params.get("is_section", False))
+
+    view_url = (
+        f"{base_url}/Documents/ViewDocument/{urllib.parse.quote(doc_name)}"
+        f"?meetingId={urllib.parse.quote(str(meeting_id_r))}"
+        f"&documentType={urllib.parse.quote(str(doc_type_r))}"
+        f"&itemId={urllib.parse.quote(str(item_id_r))}"
+        f"&publishId={urllib.parse.quote(str(publish_id_r))}"
+        f"&isSection={'true' if is_section_r else 'false'}"
+    )
+    return view_url
+
+
+def download_attachment_document(url: str, base_url: str = "https://tempe.hylandcloud.com/Agendaonline") -> bytes | None:
+    """Download an OnBase attachment document as PDF bytes.
+
+    Same flow as resolve_downloadfile_to_viewdocument() but keeps the
+    session alive through the ViewDocument GET so the cookie is valid.
+
+    Returns the raw PDF bytes, or None on failure.
+    """
+    import json
+    import urllib.request
+    from http.cookiejar import CookieJar
+    from urllib.parse import unquote, quote
+
+    params = _parse_onbase_downloadfile_params(url)
+    if not params or not params["is_attachment"]:
+        return None
+    if not all([params["meeting_id"], params["item_id"], params["publish_id"]]):
+        return None
+
+    cj = CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+
+    try:
+        opener.open(urllib.request.Request(base_url, headers={"User-Agent": "Mozilla/5.0"}), timeout=15)
+    except Exception:
+        pass
+
+    decoded_name = unquote(params["filename"])
+    invoke_url = (
+        f"{base_url}/Documents/InvokeDownloadAttachment/"
+        f"{quote(decoded_name)}"
+        f"?meetingId={params['meeting_id']}"
+        f"&itemId={params['item_id']}"
+        f"&publishId={params['publish_id']}"
+        f"&isSection={'true' if params['is_section'] else 'false'}"
+        f"&documentType={params['document_type']}"
+    )
+    try:
+        req = urllib.request.Request(invoke_url, data=b"", headers={
+            "User-Agent": "Mozilla/5.0",
+            "X-Requested-With": "XMLHttpRequest",
+        })
+        with opener.open(req, timeout=30) as resp:
+            meta = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+    doc_name = meta.get("DocumentName", decoded_name)
+    meeting_id_r = meta.get("MeetingId", params["meeting_id"])
+    doc_type_r = meta.get("DocumentType", params["document_type"])
+    item_id_r = meta.get("ItemId", params["item_id"])
+    publish_id_r = meta.get("PublishId", params["publish_id"])
+    is_section_r = meta.get("IsSection", params.get("is_section", False))
+
+    view_url = (
+        f"{base_url}/Documents/ViewDocument/{quote(doc_name)}"
+        f"?meetingId={quote(str(meeting_id_r))}"
+        f"&documentType={quote(str(doc_type_r))}"
+        f"&itemId={quote(str(item_id_r))}"
+        f"&publishId={quote(str(publish_id_r))}"
+        f"&isSection={'true' if is_section_r else 'false'}"
+    )
+
+    try:
+        req2 = urllib.request.Request(view_url, headers={"User-Agent": "Mozilla/5.0"})
+        with opener.open(req2, timeout=120) as resp:
+            return resp.read()
+    except Exception:
+        return None
 
 
 def parse_item_details(

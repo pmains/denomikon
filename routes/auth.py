@@ -11,7 +11,7 @@ auth_bp = Blueprint("auth", __name__)
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
-def login():
+def login() -> str:
     if request.method == "GET":
         return render_template("login.html")
 
@@ -35,6 +35,6 @@ def login():
 
 @auth_bp.route("/logout")
 @login_required
-def logout():
+def logout() -> str:
     logout_user()
     return redirect(url_for("auth.login"))

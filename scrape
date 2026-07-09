@@ -2,10 +2,6 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Local database — shared with the Flask web app at 127.0.0.1:5000
-# For remote deployment (poliscopic.com), use sync.sh
-#
+# PostgreSQL — .env supplies DATABASE_URL.  No more SQLite for new data.
 # Calls scripts/scraper/main.py directly (not the agenda_scraper.py shim).
-# The shim is kept for backward compat with daily_sync.py's subprocess calls.
-DATABASE_URL="sqlite:///${PWD}/data/maricopa.sqlite" \
-  PYTHONPATH=scripts exec .venv/bin/python scripts/scraper/main.py "$@"
+PYTHONPATH=scripts exec .venv/bin/python scripts/scraper/main.py "$@"

@@ -18,7 +18,7 @@ from db import (
     Jurisdiction, PublicBody, seed_default_jurisdictions,
     get_public_bodies_by_jurisdiction, get_body_members,
     Meeting, MeetingAttendance, ExecutiveSessionParticipant,
-    AgendaItemVote, AgendaItem, SupervisorVote,
+    AgendaItemVote, AgendaItem, MemberVote,
 )
 from routes import SYNC_STATUS_BADGES, _cache
 
@@ -893,14 +893,14 @@ def body_analytics(jurisdiction_slug, body_code):
             # Get per-member votes for each AIV
             member_votes = session.execute(
                 select(
-                    SupervisorVote.agenda_item_vote_id,
-                    SupervisorVote.supervisor_id,
-                    SupervisorVote.vote,
+                    MemberVote.agenda_item_vote_id,
+                    MemberVote.member_id,
+                    MemberVote.vote,
                     Person.name,
                     Person.normalized_name,
                 )
-                .join(Person, Person.id == SupervisorVote.supervisor_id)
-                .where(SupervisorVote.agenda_item_vote_id.in_(aiv_ids))
+                .join(Person, Person.id == MemberVote.member_id)
+                .where(MemberVote.agenda_item_vote_id.in_(aiv_ids))
             ).all()
 
             # Organize: aiv_id -> {sup_id -> vote, supervisor_name -> name, slug -> slug}
@@ -1034,10 +1034,10 @@ def member_detail(jurisdiction_slug, body_code, slug):
         )
         count_q = (
             select(func.count())
-            .select_from(SupervisorVote)
-            .join(AgendaItemVote, AgendaItemVote.id == SupervisorVote.agenda_item_vote_id)
+            .select_from(MemberVote)
+            .join(AgendaItemVote, AgendaItemVote.id == MemberVote.agenda_item_vote_id)
             .join(Meeting, and_(Meeting.id == AgendaItemVote.meeting_db_id))
-            .where(SupervisorVote.supervisor_id == sup.id, AgendaItemVote.body == body_code)
+            .where(MemberVote.member_id == sup.id, AgendaItemVote.body == body_code)
         )
         if start_date:
             count_q = count_q.where(Meeting.meeting_date >= start_date)

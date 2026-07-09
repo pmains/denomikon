@@ -44,7 +44,7 @@ POPULATIONS = {
 
 
 @housing_bp.route("")
-def housing_index():
+def housing_index() -> str:
     view = request.args.get("view", "map")
     year = str(request.args.get("year", "2024"))
     city = request.args.get("city", "").strip().lower()

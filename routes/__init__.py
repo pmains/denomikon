@@ -6,35 +6,26 @@ import sys
 import time
 from functools import wraps
 from pathlib import Path
+from flask import Flask
+from typing import Callable
 
 log = logging.getLogger(__name__)
 
 _here = Path(__file__).resolve().parent.parent  # repo root
 _scripts_dir = _here / "scripts"
-_expected_db = _here / "data" / "maricopa.sqlite"
 
 sys.path.insert(0, str(_scripts_dir))
 
+# Load .env so DATABASE_URL is available
+from dotenv import load_dotenv
+load_dotenv(_here / ".env")
+
 _database_url = os.environ.get("DATABASE_URL")
 if not _database_url:
-    _database_url = f"sqlite:///{_expected_db}"
+    _database_url = "postgresql://poliscopic:CHANGEME@100.91.173.66:5432/poliscopic_dev"
     os.environ["DATABASE_URL"] = _database_url
 
-if not _expected_db.exists():
-    print(
-        f"WARNING: Database file not found at {_expected_db}",
-        file=sys.stderr,
-    )
-    print(
-        "  Sync some meetings first:\n"
-        f"    .venv/bin/python scripts/agenda_scraper.py\n"
-        "    --sync --start-date=2025-01-01 --end-date=2025-12-31",
-        file=sys.stderr,
-    )
-
 print(f"Database URL: {_database_url}", file=sys.stderr)
-print(f"Data path:    {_expected_db}", file=sys.stderr)
-print(f"DB exists:    {_expected_db.exists()}", file=sys.stderr)
 
 
 # ── Cache version — bump to invalidate all cached pages ──────────────────
@@ -84,7 +75,7 @@ def _cache(timeout=60, query_string=False):
     return lambda f: f
 
 
-def create_app():
+def create_app() -> Flask:
     """Create and configure the Flask application."""
     from flask import Flask, render_template, request
 
@@ -182,28 +173,27 @@ def create_app():
         return dt.astimezone(_AZ).strftime(fmt)
 
     # ── Initialize newsroom tables ───────────────────────────────────────
-    from db.newsroom import init_newsroom_db, seed_default_tags, seed_default_users
+    from db.newsroom import init_newsroom_db, seed_default_tags, seed_default_users, seed_default_topics
     init_newsroom_db()
     seed_default_tags()
     seed_default_users()
+    seed_default_topics()
 
     # ── Register blueprints ──────────────────────────────────────────────
     from routes.meetings import meetings_bp
     from routes.bodies import bodies_bp
-    from routes.permits import permits_bp
     from routes.members import members_bp
-    from routes.codes import codes_bp
     from routes.auth import auth_bp
     from routes.admin import admin_bp
     from routes.articles import articles_bp
     from routes.themes import themes_bp
+    from routes.topics import topics_bp
     app.register_blueprint(meetings_bp)
     app.register_blueprint(bodies_bp)
-    app.register_blueprint(permits_bp)
     app.register_blueprint(members_bp)
-    app.register_blueprint(codes_bp)
     app.register_blueprint(articles_bp)
     app.register_blueprint(themes_bp)
+    app.register_blueprint(topics_bp)
 
     # Admin and auth are only registered when admin is enabled
     if not _disable_admin:

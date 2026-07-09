@@ -5,11 +5,12 @@
 
 <form method="GET" action="/search" class="mb-4">
   <div class="input-group mb-2">
-    <input type="text" class="form-control" name="q" value="{{ q }}" placeholder="Search agendas and articles…" autofocus>
+    <input type="text" class="form-control" name="q" value="{{ q }}" placeholder="Search agendas, documents, and articles…" autofocus>
     <select name="scope" class="form-select" style="max-width:150px">
       <option value="all" {% if scope == 'all' %}selected{% endif %}>All</option>
-      <option value="articles" {% if scope == 'articles' %}selected{% endif %}>Articles</option>
       <option value="agendas" {% if scope == 'agendas' %}selected{% endif %}>Agendas</option>
+      <option value="documents" {% if scope == 'documents' %}selected{% endif %}>Documents</option>
+      <option value="articles" {% if scope == 'articles' %}selected{% endif %}>Articles</option>
     </select>
     <button class="btn btn-primary" type="submit">Search</button>
   </div>
@@ -26,6 +27,31 @@
         <label class="btn btn-outline-secondary" for="sort-relevance">Relevance</label>
       </div>
     </div>
+
+    <div class="col-auto">
+      <label class="col-form-label small">Jurisdiction:</label>
+    </div>
+    <div class="col-auto">
+      <select name="jurisdiction" class="form-select form-select-sm" style="width:auto;min-width:160px" onchange="document.getElementsByName('body')[0].value='';this.form.submit()">
+        <option value="">All</option>
+        {% for j in jurisdictions %}
+        <option value="{{ j.slug }}" {% if jurisdiction == j.slug %}selected{% endif %}>{{ j.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="col-auto">
+      <label class="col-form-label small">Body:</label>
+    </div>
+    <div class="col-auto">
+      <select name="body" class="form-select form-select-sm" style="width:auto;min-width:200px" onchange="this.form.submit()">
+        <option value="">All</option>
+        {% for b in all_bodies %}
+        <option value="{{ b.slug }}" {% if body == b.slug %}selected{% endif %}>{{ b.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
     <div class="col-auto">
       <label class="col-form-label small">From:</label>
     </div>
@@ -38,7 +64,7 @@
     <div class="col-auto">
       <input type="date" class="form-control form-control-sm" name="to" value="{{ to_date }}" style="width:150px" onchange="this.form.submit()">
     </div>
-    {% if from_date or to_date or sort == 'date' %}
+    {% if from_date or to_date or jurisdiction or body %}
     <div class="col-auto">
       <a href="/search?q={{ q|urlencode }}&scope={{ scope }}" class="btn btn-sm btn-outline-danger">Clear filters</a>
     </div>
@@ -89,7 +115,42 @@
   {% endfor %}
   {% endif %}
 
-  {% if not articles and not agenda_items %}
+  {% if documents %}
+  <h6 class="mt-3">Documents ({{ documents|length }})</h6>
+  {% if documents_truncated %}
+  <p class="text-muted small">Showing the first {{ documents|length }} — try a more specific search for narrower results.</p>
+  {% endif %}
+  {% for doc in documents %}
+  <div class="card mb-2">
+    <div class="card-body py-2">
+      <div class="d-flex justify-content-between">
+        <div>
+          <h6 class="mb-1"><a href="/documents/{{ doc.id }}" class="text-decoration-none">{{ doc.document_title }}</a></h6>
+          <p class="mb-0 small text-muted">{{ doc.text_snippet }}</p>
+          <small class="text-muted">
+            {{ doc.meeting_date or "—" }}
+            {% if doc.jurisdiction_name %} · {{ doc.jurisdiction_name }}{% endif %}
+            {% if doc.body_name %} · {{ doc.body_name }}{% endif %}
+            {% if doc.document_type %} · Type: {{ doc.document_type }}{% endif %}
+          </small>
+          <div class="mt-1 d-flex gap-1 flex-wrap">
+            <a href="/meetings/{{ doc.body }}/{{ doc.meeting_id }}" class="btn btn-sm btn-outline-primary py-0 px-1" title="Meeting page"><i class="bi bi-calendar-event"></i> Agenda</a>
+            {% if doc.agenda_item_number %}
+            <a href="/meetings/{{ doc.body }}/{{ doc.meeting_id }}#item-{{ doc.agenda_item_number }}" class="btn btn-sm btn-outline-secondary py-0 px-1" title="Item {{ doc.agenda_item_number }}"><i class="bi bi-list-task"></i> Item {{ doc.agenda_item_number }}</a>
+            {% endif %}
+            {% if doc.document_url %}
+            <a href="{{ doc.document_url }}" target="_blank" class="btn btn-sm btn-outline-secondary py-0 px-1" title="View PDF"><i class="bi bi-file-earmark-pdf"></i> PDF</a>
+            {% endif %}
+            <a href="/documents/{{ doc.id }}" class="btn btn-sm btn-outline-secondary py-0 px-1" title="View extracted text"><i class="bi bi-file-text"></i> Text</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  {% endif %}
+
+  {% if not articles and not agenda_items and not documents %}
   <p class="text-muted">No results found.</p>
   {% endif %}
 {% endif %}

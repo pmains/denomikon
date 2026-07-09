@@ -52,7 +52,7 @@ async def extract_pz_meetings(page, search_url: str) -> list[Meeting]:
 
     # Find available year tabs (e.g. changeYear(2023, ...), changeYear(2024, ...))
     year_tabs = await page.evaluate(
-        """
+        r"""
         () => {
             const seen = new Set();
             const years = [];

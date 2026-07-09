@@ -83,7 +83,7 @@ def _unique_slug(text: str, exclude_id: int | None = None, date_prefix: str | No
 
 @admin_bp.route("/")
 @login_required
-def dashboard():
+def dashboard() -> str:
     session = get_session()
     drafts_count = session.execute(
         select(func.count(Article.id)).where(Article.status == "draft")
@@ -111,7 +111,7 @@ def dashboard():
 
 @admin_bp.route("/drafts")
 @login_required
-def drafts_list():
+def drafts_list() -> str:
     session = get_session()
     drafts = session.execute(
         select(Article).where(Article.status == "draft")
@@ -124,7 +124,7 @@ def drafts_list():
 
 @admin_bp.route("/published")
 @login_required
-def published_list():
+def published_list() -> str:
     session = get_session()
     published = session.execute(
         select(Article).where(Article.status == "published")
@@ -137,7 +137,7 @@ def published_list():
 
 @admin_bp.route("/archived")
 @login_required
-def archived_list():
+def archived_list() -> str:
     session = get_session()
     archived = session.execute(
         select(Article).where(Article.status == "archived")
@@ -150,7 +150,7 @@ def archived_list():
 
 @admin_bp.route("/featured")
 @login_required
-def featured_list():
+def featured_list() -> str:
     session = get_session()
     featured = session.execute(
         select(Article).where(Article.is_featured == True)
@@ -165,7 +165,7 @@ def featured_list():
 
 @admin_bp.route("/bluesky")
 @login_required
-def bluesky_list():
+def bluesky_list() -> str:
     from sqlalchemy.orm import joinedload
     session = get_session()
     skeet_drafts = session.execute(
@@ -182,7 +182,7 @@ def bluesky_list():
         skeet_drafts=list(skeet_drafts), counts=counts)
 
 
-def _get_all_counts(session):
+def _get_all_counts(session: Session) -> dict:
     """Return a dict of counts for all admin sections."""
     return {
         "drafts": session.execute(select(func.count(Article.id)).where(Article.status == "draft")).scalar() or 0,
@@ -385,7 +385,7 @@ def _generate_pitch(suggestion: dict) -> dict:
 
 @admin_bp.route("/suggestions")
 @login_required
-def suggestions():
+def suggestions() -> str:
     """Scan agenda items for newsworthy topics and return AI-generated pitch suggestions."""
     session = get_db_session()
 
@@ -627,7 +627,7 @@ def suggestions():
     session.close()
 
     # Sort: signal topics first, then keyword-matched, by date
-    def _sort_key(s):
+    def _sort_key(s) -> tuple:
         priority = 0 if s["topic"] in _SIGNAL_PATTERNS else 1
         return (priority, s.get("meeting_date", "") or "")
     suggestions.sort(key=_sort_key, reverse=True)
@@ -649,7 +649,7 @@ def suggestions():
 
 
 
-def _post_article_to_bluesky(article):
+def _post_article_to_bluesky(article: Article) -> dict:
     """Post an article to Bluesky if it's published and has a slug."""
     if article.status != "published" or not article.slug:
         return
@@ -665,7 +665,7 @@ def _post_article_to_bluesky(article):
 
 @admin_bp.route("/articles/new", methods=["GET", "POST"])
 @login_required
-def article_new():
+def article_new() -> str:
     """Create a new article, optionally pre-populated from a suggestion."""
     session = get_session()
 
@@ -748,7 +748,7 @@ def article_new():
 
 @admin_bp.route("/articles/<int:article_id>/edit", methods=["GET", "POST"])
 @login_required
-def article_edit(article_id):
+def article_edit(article_id) -> str:
     session = get_session()
     article = session.get(Article, article_id)
     if not article:
@@ -823,7 +823,7 @@ def article_edit(article_id):
 
 @admin_bp.route("/articles/<int:article_id>/delete", methods=["POST"])
 @login_required
-def article_delete(article_id):
+def article_delete(article_id) -> str:
     session = get_session()
     article = session.get(Article, article_id)
     if article:
@@ -836,7 +836,7 @@ def article_delete(article_id):
 
 @admin_bp.route("/articles/<int:article_id>/promote", methods=["POST"])
 @login_required
-def article_promote(article_id):
+def article_promote(article_id) -> str:
     session = get_session()
     article = session.get(Article, article_id)
     if article:
@@ -850,7 +850,7 @@ def article_promote(article_id):
 
 @admin_bp.route("/articles/<int:article_id>/archive", methods=["POST"])
 @login_required
-def article_archive(article_id):
+def article_archive(article_id) -> str:
     session = get_session()
     article = session.get(Article, article_id)
     if article:
@@ -863,7 +863,7 @@ def article_archive(article_id):
 
 @admin_bp.route("/articles/<int:article_id>/priority", methods=["POST"])
 @login_required
-def article_set_priority(article_id):
+def article_set_priority(article_id) -> str:
     """Set article priority (higher = higher in draft list)."""
     session = get_session()
     article = session.get(Article, article_id)
@@ -881,7 +881,7 @@ def article_set_priority(article_id):
 
 
 @admin_bp.route("/articles/search", methods=["GET"])
-def article_search():
+def article_search() -> str:
     """Search articles by keyword (JSON). Used by the featured widget.
     No @login_required so the fetch works without redirect — the route
     returns empty results for unauthenticated requests."""
@@ -919,7 +919,7 @@ def article_search():
 
 @admin_bp.route("/articles/<int:article_id>/feature", methods=["POST"])
 @login_required
-def article_feature_toggle(article_id):
+def article_feature_toggle(article_id) -> str:
     """Toggle featured status. Enforces limit of 3 featured articles."""
     session = get_session()
     article = session.get(Article, article_id)
@@ -954,7 +954,7 @@ def article_feature_toggle(article_id):
     return redirect(url_for("admin.dashboard"))
 @admin_bp.route("/articles/reorder", methods=["POST"])
 @login_required
-def articles_reorder():
+def articles_reorder() -> str:
     """Batch reorder drafts — accepts JSON {order: [id, id, ...]}."""
     data = request.get_json(silent=True)
     if not data or "order" not in data:
@@ -974,7 +974,7 @@ def articles_reorder():
 
 @admin_bp.route("/suggestions/dismiss", methods=["POST"])
 @login_required
-def dismiss_suggestion():
+def dismiss_suggestion() -> str:
     """Dismiss a story suggestion so it doesn't reappear."""
     from db.newsroom import DismissedSuggestion
     session = get_session()
@@ -994,7 +994,7 @@ def dismiss_suggestion():
 
 @admin_bp.route("/suggestions/draft", methods=["POST"])
 @login_required
-def draft_from_suggestion():
+def draft_from_suggestion() -> str:
     """Generate a full draft article from a suggestion and redirect to edit."""
     session = get_session()
     body_code = request.form.get("body", "")
@@ -1068,7 +1068,7 @@ def draft_from_suggestion():
 
 @admin_bp.route("/suggestions/split", methods=["POST"])
 @login_required
-def split_suggestion():
+def split_suggestion() -> str:
     """Create a parent article placeholder for a multi-part story."""
     from db.newsroom import DismissedSuggestion
     session = get_session()
@@ -1100,7 +1100,7 @@ def split_suggestion():
 
 @admin_bp.route("/tags", methods=["GET", "POST"])
 @login_required
-def manage_tags():
+def manage_tags() -> str:
     session = get_session()
     if request.method == "POST":
         action = request.form.get("action")
@@ -1152,7 +1152,7 @@ def manage_tags():
 
 @admin_bp.route("/notifications")
 @login_required
-def notifications():
+def notifications() -> str:
     """List all admin notifications."""
     session = get_session()
     notifs = session.execute(
@@ -1164,7 +1164,7 @@ def notifications():
 
 @admin_bp.route("/notifications/count")
 @login_required
-def notifications_count():
+def notifications_count() -> str:
     """Return unread notification count as JSON."""
     session = get_session()
     count = session.execute(
@@ -1177,7 +1177,7 @@ def notifications_count():
 
 @admin_bp.route("/notifications/mark-read", methods=["POST"])
 @login_required
-def notifications_mark_read():
+def notifications_mark_read() -> str:
     """Mark all notifications as read."""
     session = get_session()
     session.execute(
@@ -1190,7 +1190,7 @@ def notifications_mark_read():
 
 @admin_bp.route("/notifications/<int:notif_id>/delete", methods=["POST"])
 @login_required
-def notification_delete(notif_id):
+def notification_delete(notif_id) -> str:
     """Delete a single notification."""
     session = get_session()
     notif = session.get(Notification, notif_id)
@@ -1210,7 +1210,7 @@ _os.makedirs(_UPLOAD_DIR, exist_ok=True)
 
 @admin_bp.route("/images")
 @login_required
-def images_index():
+def images_index() -> str:
     """Image library — upload, browse, search."""
     session = get_session()
     tag_filter = request.args.get("tag", "").strip()
@@ -1246,7 +1246,7 @@ def images_index():
 
 @admin_bp.route("/images/upload", methods=["POST"])
 @login_required
-def images_upload():
+def images_upload() -> str:
     """Upload one or more image files."""
     files = request.files.getlist("files")
     if not files:
@@ -1298,7 +1298,7 @@ def images_upload():
 
 @admin_bp.route("/images/<int:img_id>/delete", methods=["POST"])
 @login_required
-def images_delete(img_id):
+def images_delete(img_id) -> str:
     """Delete an image."""
     session = get_session()
     img = session.get(MediaImage, img_id)
@@ -1315,7 +1315,7 @@ def images_delete(img_id):
 
 @admin_bp.route("/images/<int:img_id>/edit", methods=["POST"])
 @login_required
-def images_edit(img_id):
+def images_edit(img_id) -> str:
     """Update image metadata (alt text, tags)."""
     session = get_session()
     img = session.get(MediaImage, img_id)
@@ -1330,7 +1330,7 @@ def images_edit(img_id):
 
 @admin_bp.route("/images/api")
 @login_required
-def images_api():
+def images_api() -> str:
     """Return images as JSON for the article image picker."""
     session = get_session()
     q = request.args.get("q", "").strip()
@@ -1405,7 +1405,7 @@ _STYLE_RULES = {
 
 @admin_bp.route("/articles/<int:article_id>/style-check")
 @login_required
-def article_style_check(article_id):
+def article_style_check(article_id) -> str:
     from db.core import get_session
     session = get_session()
     article = session.get(Article, article_id)
@@ -1474,14 +1474,14 @@ def article_style_check(article_id):
 
 @admin_bp.route("/skeet-drafts")
 @login_required
-def skeet_drafts_list():
+def skeet_drafts_list() -> str:
     """Redirect to the unified /admin/bluesky page."""
     return redirect(url_for("admin.bluesky_list"))
 
 
 @admin_bp.route("/skeet-drafts/create/<int:article_id>", methods=["POST"])
 @login_required
-def skeet_draft_create(article_id):
+def skeet_draft_create(article_id) -> str:
     """Auto-generate a skeet draft for an article."""
     session = get_session()
     article = session.get(Article, article_id)
@@ -1525,7 +1525,7 @@ def skeet_draft_create(article_id):
 
 @admin_bp.route("/skeet-drafts/<int:draft_id>/edit", methods=["POST"])
 @login_required
-def skeet_draft_edit(draft_id):
+def skeet_draft_edit(draft_id) -> str:
     """Update draft text, image, or status."""
     session = get_session()
     draft = session.get(SkeetDraft, draft_id)
@@ -1558,7 +1558,7 @@ def skeet_draft_edit(draft_id):
 
 @admin_bp.route("/skeet-drafts/<int:draft_id>/delete", methods=["POST"])
 @login_required
-def skeet_draft_delete(draft_id):
+def skeet_draft_delete(draft_id) -> str:
     """Delete a skeet draft."""
     session = get_session()
     draft = session.get(SkeetDraft, draft_id)
@@ -1572,7 +1572,7 @@ def skeet_draft_delete(draft_id):
 
 @admin_bp.route("/skeet-drafts/<int:draft_id>/post", methods=["POST"])
 @login_required
-def skeet_draft_post(draft_id):
+def skeet_draft_post(draft_id) -> str:
     """Post an approved skeet draft to Bluesky immediately."""
     session = get_session()
     draft = session.get(SkeetDraft, draft_id)

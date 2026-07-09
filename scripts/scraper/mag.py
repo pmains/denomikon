@@ -176,7 +176,53 @@ def fetch_mag_events(cid: int, start_date: str, end_date: str) -> list[dict]:
     return events
 
 
-# ── Step 2: Download PDF directly (no browser) ──
+# ── Step 2: Extract document URLs from event detail page ──
+
+def fetch_mag_event_docs(event_url: str) -> dict:
+    """Navigate to the MAG event detail page and extract document URLs.
+
+    Returns dict with keys:
+      agenda_url (str): URL of the agenda PDF (or empty)
+      packet_url (str): URL of the agenda packet PDF (or empty)
+      minutes_url (str): URL of the minutes PDF (or empty)
+    """
+    if not event_url.startswith("http"):
+        event_url = urllib.parse.urljoin("https://azmag.gov", event_url)
+
+    _browser_navigate(event_url)
+    time.sleep(2)
+
+    js = """() => {
+        var links = document.querySelectorAll('a');
+        var agendaUrl = '', packetUrl = '', minutesUrl = '';
+        for (var i = 0; i < links.length; i++) {
+            var href = links[i].getAttribute('href') || '';
+            var text = (links[i].textContent || '').trim();
+            // Match agenda links — but NOT agenda packet links
+            if (text.match(/Agenda$/i) && !text.match(/Packet/i) && href.indexOf('LinkClick.aspx') >= 0) {
+                agendaUrl = href;
+            }
+            // Match agenda packet links
+            if (text.match(/Agenda Packet/i) && href.indexOf('LinkClick.aspx') >= 0) {
+                packetUrl = href;
+            }
+            // Match minutes links
+            if (text.match(/Minutes/i) && href.indexOf('LinkClick.aspx') >= 0) {
+                minutesUrl = href;
+            }
+        }
+        return { agenda_url: agendaUrl, packet_url: packetUrl, minutes_url: minutesUrl };
+    }"""
+
+    raw = _browser_evaluate(js, timeout=10)
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        log.warning("Failed to parse event docs for %s", event_url)
+        return {"agenda_url": "", "packet_url": "", "minutes_url": ""}
+
+
+# ── Step 3: Download PDF directly (no browser) ──
 
 def download_pdf_via_browser(pdf_url: str, referer: str = "") -> Optional[bytes]:
     """Download a MAG PDF via browser XMLHttpRequest (bypasses Cloudflare)."""
@@ -205,6 +251,31 @@ def download_pdf_via_browser(pdf_url: str, referer: str = "") -> Optional[bytes]
         return base64.b64decode(b64)
     log.debug("download_pdf: %s", raw[:100])
     return None
+
+
+# ── Step 4: Download a document and save to disk (for supporting docs) ──
+
+def _save_pdf_to_disk(pdf_bytes: bytes, meeting_id: str, label: str, output_dir: str) -> Optional[str]:
+    """Write PDF bytes to a local file and return the relative path.
+
+    Args:
+        pdf_bytes: Raw PDF content
+        meeting_id: Meeting identifier used in filename
+        label: Short label like 'agenda' or 'packet'
+        output_dir: Directory to write to (typically data/pdfs/)
+    Returns:
+        Relative path string, or None on failure
+    """
+    filename = f"mag-{meeting_id}-{label}.pdf"
+    os.makedirs(output_dir, exist_ok=True)
+    dest = os.path.join(output_dir, filename)
+    try:
+        with open(dest, "wb") as f:
+            f.write(pdf_bytes)
+        return dest
+    except OSError as e:
+        log.warning("Failed to save PDF to %s: %s", dest, e)
+        return None
 
 
 # ── Step 3: Parse agenda items from PDF text ──
@@ -392,6 +463,8 @@ def sync_mag_committee(
                 synced += 1
                 continue
 
+            supporting_doc_dicts = []
+
             # Download the agenda PDF
             if not skip_downloads:
                 pdf = download_pdf_via_browser(agenda_url)
@@ -404,6 +477,33 @@ def sync_mag_committee(
                     continue
 
                 items = parse_mag_pdf_items(pdf, source_url=agenda_url)
+
+                # Also fetch and download the agenda packet from the event detail page
+                if event_url:
+                    try:
+                        docs = fetch_mag_event_docs(event_url)
+                        packet_url = docs.get("packet_url", "")
+                        if packet_url:
+                            packet_pdf = download_pdf_via_browser(packet_url, referer=event_url)
+                            if packet_pdf:
+                                supporting_doc_dicts.append({
+                                    "document_title": f"{title} — Agenda Packet",
+                                    "document_url": urllib.parse.urljoin(
+                                        "https://azmag.gov", packet_url
+                                    ),
+                                    "document_type": "agenda_packet",
+                                    "file_name": f"mag-{meeting_id}-packet.pdf",
+                                })
+                                log.info("  %s %s: packet downloaded (%d bytes)",
+                                         meeting_id, meeting_date, len(packet_pdf))
+                            else:
+                                log.warning("  %s %s: packet PDF download failed",
+                                            meeting_id, meeting_date)
+                        else:
+                            log.debug("  %s %s: no packet URL found", meeting_id, meeting_date)
+                    except Exception as e:
+                        log.warning("  %s %s: error fetching packet: %s",
+                                    meeting_id, meeting_date, e)
             else:
                 items = []
 
@@ -415,7 +515,10 @@ def sync_mag_committee(
                 it["meeting_type"] = display_name
                 it["meeting_date"] = meeting_date
 
-            replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, items)
+            replace_meeting_data_safe(
+                session, body_code, meeting_id, meeting_dict, items,
+                supporting_doc_dicts=supporting_doc_dicts,
+            )
             session.commit()
             log.info("  %s %s: %d items", meeting_id, meeting_date, len(items))
             items_found += len(items)

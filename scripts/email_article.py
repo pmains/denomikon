@@ -31,7 +31,7 @@ BASE_URL = os.environ.get("POLISCOPIC_BASE_URL", "https://poliscopic.com").rstri
 DEV_URL = "http://127.0.0.1:5001"
 
 
-def build_case_url_map(session, body_text: str):
+def build_case_url_map(session: Session, body_text: str):
     """Scan the body text for case numbers and look up their document URLs.
 
     Returns a dict: case_number → first document URL from supporting_documents.
@@ -55,7 +55,7 @@ def build_case_url_map(session, body_text: str):
     return url_map
 
 
-def build_meeting_descriptions(session, body_text: str):
+def build_meeting_descriptions(session: Session, body_text: str):
     """Build a mapping of meeting URLs → descriptive text labels.
 
     Scans the body for meeting URL patterns and generates labels like

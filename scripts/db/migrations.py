@@ -7,14 +7,15 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 from sqlalchemy import func, inspect as sa_inspect, or_, select, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from db.models import (Base, Meeting, AgendaItem, SupportingDocument,
     CaseEvent, MeetingSupervisor, AgendaItemVote, PZItemDetail,
-    BodyMembership, Person, BodySeat, PublicBody, Jurisdiction, Permit)
+    BodyMembership, Person, BodySeat, PublicBody, Jurisdiction)
 from db.core import get_engine, get_session
 
-def init_db():
+def init_db() -> None:
     """Create all tables if they don't exist, or migrate existing ones."""
     Base.metadata.create_all(bind=get_engine())
     init_poliscopic_models()
@@ -136,7 +137,29 @@ def init_db():
     # Migrate to historical membership model (BodySeat + BodyMembership)
     _migrate_membership_model()
 
-def backfill_multi_jurisdiction_columns(engine):
+def _add_col_safe(engine: Engine, table: str, col: str, col_def: str) -> None:
+    """Add a column if it doesn't exist. Works on both SQLite and PostgreSQL.
+
+    Unlike _migrate_col (which silently swallows errors), this logs failures
+    and uses PostgreSQL-native ADD COLUMN IF NOT EXISTS for Postgres.
+    """
+    inspector = sa_inspect(engine)
+    if table not in inspector.get_table_names():
+        return
+    existing_cols = {c["name"] for c in inspector.get_columns(table)}
+    if col in existing_cols:
+        return
+    try:
+        with engine.begin() as conn:
+            if engine.dialect.name == "postgresql":
+                conn.execute(text(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_def}'))
+            else:
+                conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {col} {col_def}'))
+    except Exception as e:
+        log.warning(f"_add_col_safe: could not add {table}.{col}: {e}")
+
+
+def backfill_multi_jurisdiction_columns(engine: Engine) -> None:
     """Backfill jurisdiction_id, public_body_id for existing Maricopa records.
 
     Maps meetings.body (body_code) to public_bodies.body_code to set public_body_id.
@@ -147,17 +170,21 @@ def backfill_multi_jurisdiction_columns(engine):
     if "meetings" not in inspector.get_table_names():
         return
 
-    # Add marker column if needed
-    _migrate_col(engine, "meetings", "_multi_jurisdiction_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
-    _migrate_col(engine, "agenda_items", "_multi_jurisdiction_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
-    _migrate_col(engine, "supporting_documents", "_multi_jurisdiction_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
+    # Add marker column if needed — use safe variant that works on PostgreSQL
+    _add_col_safe(engine, "meetings", "_multi_jurisdiction_backfilled", "BOOLEAN NOT NULL DEFAULT false")
+    _add_col_safe(engine, "agenda_items", "_multi_jurisdiction_backfilled", "BOOLEAN NOT NULL DEFAULT false")
+    _add_col_safe(engine, "supporting_documents", "_multi_jurisdiction_backfilled", "BOOLEAN NOT NULL DEFAULT false")
 
     with engine.connect() as conn:
-        # Check if already backfilled
-        existing = conn.execute(
-            text("SELECT COUNT(*) FROM meetings WHERE _multi_jurisdiction_backfilled = 0")
-        ).scalar()
-        if existing == 0:
+        # Check if already backfilled — handle case where column add was skipped
+        try:
+            existing = conn.execute(
+                text("SELECT COUNT(*) FROM meetings WHERE _multi_jurisdiction_backfilled IS false")
+            ).scalar()
+            if existing == 0:
+                return
+        except Exception as e:
+            log.warning(f"backfill_multi_jurisdiction_columns: column check failed ({e}), skipping")
             return
 
         # Map body_code to public_body_id
@@ -174,14 +201,14 @@ def backfill_multi_jurisdiction_columns(engine):
                 text(
                     "UPDATE meetings SET public_body_id = :pb_id, "
                     "jurisdiction_id = (SELECT jurisdiction_id FROM public_bodies WHERE id = :pb_id), "
-                    "_multi_jurisdiction_backfilled = 1 "
-                    "WHERE body = :body_code AND _multi_jurisdiction_backfilled = 0"
+                    "_multi_jurisdiction_backfilled = true "
+                    "WHERE body = :body_code AND _multi_jurisdiction_backfilled IS false"
                 ),
                 {"pb_id": pb_id, "body_code": body_code}
             )
         # Any remaining unbilled meetings (no matching public body) just get flagged
         conn.execute(
-            text("UPDATE meetings SET _multi_jurisdiction_backfilled = 1 WHERE _multi_jurisdiction_backfilled = 0")
+            text("UPDATE meetings SET _multi_jurisdiction_backfilled = true WHERE _multi_jurisdiction_backfilled IS false")
         )
 
         # Backfill agenda_items from their parent meeting
@@ -200,8 +227,8 @@ def backfill_multi_jurisdiction_columns(engine):
                           AND m.body = agenda_items.body
                         LIMIT 1
                     ),
-                    _multi_jurisdiction_backfilled = 1
-                WHERE _multi_jurisdiction_backfilled = 0
+                    _multi_jurisdiction_backfilled = true
+                WHERE _multi_jurisdiction_backfilled IS false
             """)
         )
 
@@ -210,14 +237,14 @@ def backfill_multi_jurisdiction_columns(engine):
             text("""
                 UPDATE supporting_documents
                 SET jurisdiction_id = 1,
-                    _multi_jurisdiction_backfilled = 1
-                WHERE _multi_jurisdiction_backfilled = 0
+                    _multi_jurisdiction_backfilled = true
+                WHERE _multi_jurisdiction_backfilled IS false
             """)
         )
 
         conn.commit()
 
-def backfill_body_column(engine):
+def backfill_body_column(engine: Engine) -> None:
     """Backfill body column for existing records.
 
     - All meetings with meeting_type != 'Planning & Zoning' get body='bos'
@@ -228,7 +255,15 @@ def backfill_body_column(engine):
     """
     inspector = sa_inspect(engine)
 
-    # Check backfill status using a temp column we added as a marker
+    # Ensure marker column exists using safe approach (PostgreSQL-compatible)
+    _add_col_safe(engine, "meetings", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
+    _add_col_safe(engine, "agenda_items", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
+    _add_col_safe(engine, "supporting_documents", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
+    _add_col_safe(engine, "case_events", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
+    _add_col_safe(engine, "meeting_supervisors", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
+    _add_col_safe(engine, "agenda_item_votes", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
+    _add_col_safe(engine, "pz_item_details", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
+
     tables_to_backfill = [
         "meetings", "agenda_items", "supporting_documents",
         "case_events", "meeting_supervisors", "agenda_item_votes", "pz_item_details",
@@ -237,50 +272,48 @@ def backfill_body_column(engine):
     with engine.connect() as conn:
         for table in tables_to_backfill:
             existing_cols = {c["name"] for c in inspector.get_columns(table)}
-            if "body" not in existing_cols:
-                continue  # Table doesn't have body column yet, skip
-            marker = f"_body_backfilled"
-            if marker not in existing_cols:
+            if "body" not in existing_cols or "_body_backfilled" not in existing_cols:
                 continue
 
             # Check if already backfilled
             row = conn.execute(
-                text(f"SELECT COUNT(*) FROM {table} WHERE {marker} = 0")
+                text(f"SELECT COUNT(*) FROM {table} WHERE _body_backfilled IS false")
             ).scalar()
             if not row or row == 0:
-                # Already backfilled or no rows
+                # Already backfilled or no rows — drop the marker
                 try:
-                    conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {marker}"))
+                    conn.execute(text(f"ALTER TABLE {table} DROP COLUMN _body_backfilled"))
                     conn.commit()
                 except Exception:
                     pass
                 continue
 
         # Backfill meetings body column
-        if "meetings" in [t for t in tables_to_backfill if t in {c["name"] for c in inspector.get_columns(t)}]:
-            # Update BOS meetings (not Planning & Zoning)
-            conn.execute(
-                text("UPDATE meetings SET body = 'bos' WHERE meeting_type != 'Planning & Zoning' AND _body_backfilled = 0")
-            )
-            # Update PZ meetings
-            conn.execute(
-                text("UPDATE meetings SET body = 'pz' WHERE meeting_type = 'Planning & Zoning' AND _body_backfilled = 0")
-            )
-            # Mark backfilled
-            conn.execute(text("UPDATE meetings SET _body_backfilled = 1 WHERE body != ''"))
-            conn.commit()
+        if "meetings" in inspector.get_table_names():
+            existing_cols = {c["name"] for c in inspector.get_columns("meetings")}
+            if "body" in existing_cols and "_body_backfilled" in existing_cols:
+                try:
+                    conn.execute(
+                        text("UPDATE meetings SET body = 'bos' WHERE (body IS NULL OR body = '') AND meeting_type != 'Planning & Zoning' AND _body_backfilled IS false")
+                    )
+                    conn.execute(
+                        text("UPDATE meetings SET body = 'pz' WHERE (body IS NULL OR body = '') AND meeting_type = 'Planning & Zoning' AND _body_backfilled IS false")
+                    )
+                    conn.execute(text("UPDATE meetings SET _body_backfilled = true WHERE body IS NOT NULL AND body != ''"))
+                    conn.commit()
+                except Exception as e:
+                    log.warning(f"  body backfill skipped (meetings): {e}")
+                    conn.rollback()
 
             # Backfill related tables by joining to meetings
             for table in ["agenda_items", "supporting_documents", "case_events", "meeting_supervisors", "agenda_item_votes", "pz_item_details"]:
-                if table not in [c["name"] for c in inspector.get_columns(table)]:
+                if table not in inspector.get_table_names():
                     continue
                 existing_cols = {c["name"] for c in inspector.get_columns(table)}
-                if "body" not in existing_cols or marker not in existing_cols:
+                if "body" not in existing_cols or "_body_backfilled" not in existing_cols:
                     continue
 
                 try:
-                    # SQLite doesn't support UPDATE with JOIN directly
-                    # Use subquery approach
                     conn.execute(
                         text(f"""
                             UPDATE {table}
@@ -290,14 +323,14 @@ def backfill_body_column(engine):
                                 WHERE m.meeting_id = {table}.meeting_id
                                 LIMIT 1
                             ),
-                            _body_backfilled = 1
-                            WHERE _body_backfilled = 0
+                            _body_backfilled = true
+                            WHERE (body IS NULL OR body = '')
+                              AND _body_backfilled IS false
                         """)
                     )
                 except Exception:
-                    # Fallback: set all to 'bos'
                     conn.execute(
-                        text(f"UPDATE {table} SET body = 'bos', _body_backfilled = 1 WHERE _body_backfilled = 0")
+                        text(f"UPDATE {table} SET body = 'bos', _body_backfilled = true WHERE (body IS NULL OR body = '') AND _body_backfilled IS false")
                     )
                 conn.commit()
 
@@ -309,7 +342,7 @@ def backfill_body_column(engine):
                     pass
             conn.commit()
 
-def _migrate_table(table_name: str):
+def _migrate_table(table_name: str) -> None:
     """Create a table via raw SQL if the model doesn't already exist."""
     from sqlalchemy import inspect as sa_inspect
 
@@ -318,7 +351,7 @@ def _migrate_table(table_name: str):
     if table_name not in inspector.get_table_names():
         Base.metadata.create_all(bind=get_engine())
 
-def _migrate_col(engine, table: str, col: str, col_def: str):
+def _migrate_col(engine: Engine, table: str, col: str, col_def: str) -> None:
     """Add a column to an existing table if it doesn't exist yet."""
     inspector = sa_inspect(engine)
     if table not in inspector.get_table_names():
@@ -334,7 +367,7 @@ def _migrate_col(engine, table: str, col: str, col_def: str):
         except Exception:
             pass  # Race: parallel worker may have added it first
 
-def _ensure_index(engine, table: str, index_name: str, column_expr: str):
+def _ensure_index(engine: Engine, table: str, index_name: str, column_expr: str) -> None:
     """Create an index if it doesn't already exist."""
     inspector = sa_inspect(engine)
     if table not in inspector.get_table_names():
@@ -347,7 +380,7 @@ def _ensure_index(engine, table: str, index_name: str, column_expr: str):
             )
             conn.commit()
 
-def _create_agenda_items_fk_trigger(engine):
+def _create_agenda_items_fk_trigger(engine: Engine) -> None:
     """Create a trigger to prevent agenda_items inserts without a matching meeting.
 
     This ensures (body, meeting_id) references an existing meeting row at write time,
@@ -373,13 +406,58 @@ def _create_agenda_items_fk_trigger(engine):
         conn.commit()
 
 
-def init_poliscopic_models(engine=None):
+def init_poliscopic_models(engine: Optional[Engine] = None) -> None:
     """Create all poliscopic tables that may not yet exist (jurisdictions, public_bodies, etc.)."""
     if engine is None:
         engine = get_engine()
     Base.metadata.create_all(engine, checkfirst=True)
 
-def _migrate_existing_tables(engine=None):
+    # Create FTS5 full-text search index on supporting document text
+    _init_docs_fts(engine)
+
+def _init_docs_fts(engine: Engine) -> None:
+    """Create the FTS5 full-text search index for supporting_document text if missing."""
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.connect() as conn:
+        # Check if FTS table already exists
+        result = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='docs_fts'")
+        )
+        if result.fetchone():
+            return  # Already exists
+
+        log.info("Creating docs_fts FTS5 full-text search index...")
+        conn.execute(text("""
+            CREATE VIRTUAL TABLE docs_fts USING fts5(
+                title,
+                body
+            )
+        """))
+        conn.execute(text("""
+            CREATE TRIGGER IF NOT EXISTS docs_fts_after_update AFTER UPDATE OF text_content ON supporting_documents
+            WHEN new.text_content IS NOT NULL AND new.text_content != ''
+            BEGIN
+                DELETE FROM docs_fts WHERE rowid = new.id;
+                INSERT INTO docs_fts(rowid, title, body)
+                VALUES (new.id, new.document_title, new.text_content);
+            END
+        """))
+
+        # Populate from existing docs that have text
+        conn.execute(text("""
+            INSERT INTO docs_fts(rowid, title, body)
+            SELECT id, document_title, text_content
+            FROM supporting_documents
+            WHERE text_content IS NOT NULL AND text_content != ''
+        """))
+        conn.commit()
+        count = conn.execute(text("SELECT COUNT(*) FROM docs_fts")).scalar()
+        log.info(f"docs_fts indexed: {count} documents")
+
+
+def _migrate_existing_tables(engine: Optional[Engine] = None) -> None:
     """Add columns to existing tables that were introduced after initial creation.
 
     SQLite's CREATE TABLE IF NOT EXISTS won't ALTER existing tables, so
@@ -440,12 +518,12 @@ def _migrate_existing_tables(engine=None):
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
         conn.commit()
 
-def _migrate_supervisors_to_public_body_members():
+def _migrate_supervisors_to_public_body_members() -> None:
     """DEPRECATED — membership data now lives in BodyMembership.
     Kept as a true no-op."""
     pass
 
-def seed_default_jurisdictions():
+def seed_default_jurisdictions() -> None:
     """Populate the Maricopa County jurisdiction and its public bodies if empty."""
     # Ensure tables exist (both new ones and columns added to existing ones)
     _migrate_existing_tables()
@@ -454,8 +532,7 @@ def seed_default_jurisdictions():
     # Migrate legacy Supervisor data into public_body_members (idempotent)
     _migrate_supervisors_to_public_body_members()
 
-    # Populate permit jurisdiction, native_type, and normalized_category
-    _migrate_permit_normalized_fields()
+
 
     session = get_session()
     try:
@@ -1002,54 +1079,7 @@ def seed_default_jurisdictions():
     finally:
         session.close()
 
-def _migrate_permit_normalized_fields():
-    """Populate jurisdiction, native_type, and normalized_category on permits.
-
-    These fields were added after data was already ingested.  Also derive
-    normalized_category (Residential, Commercial, Industrial, Infrastructure,
-    Other) from the native permit_type label so the aggregate views work.
-    """
-    session = get_session()
-    try:
-        # Only process permits that haven't been migrated yet
-        to_migrate = session.execute(
-            select(Permit).where(
-                or_(
-                    Permit.jurisdiction.is_(None),
-                    Permit.native_type.is_(None),
-                    Permit.normalized_category.is_(None),
-                )
-            )
-        ).scalars().all()
-
-        if not to_migrate:
-            return
-
-        for p in to_migrate:
-            if not p.jurisdiction:
-                p.jurisdiction = "Maricopa County"
-            if not p.native_type and p.permit_type:
-                p.native_type = p.permit_type
-            if not p.normalized_category and p.permit_type:
-                pt = p.permit_type.lower()
-                if "residential" in pt:
-                    p.normalized_category = "Residential"
-                elif "commercial" in pt:
-                    p.normalized_category = "Commercial"
-                elif "industrial" in pt:
-                    p.normalized_category = "Industrial"
-                elif "mixed" in pt:
-                    p.normalized_category = "Mixed-Use"
-                elif "grading" in pt or "infrastructure" in pt or "stormwater" in pt:
-                    p.normalized_category = "Infrastructure"
-                else:
-                    p.normalized_category = "Other"
-
-        session.commit()
-    finally:
-        session.close()
-
-def _drop_deprecated_person_columns():
+def _drop_deprecated_person_columns() -> None:
     """Drop legacy Person columns migrated to BodyMembership, and the
     legacy public_body_members table.
 
@@ -1093,7 +1123,7 @@ def _drop_deprecated_person_columns():
         except Exception as e:
             log.warning(f"_drop_deprecated_person_columns: drop public_body_members failed: {e}")
 
-def _migrate_membership_model():
+def _migrate_membership_model() -> None:
     """One-time migration from flat Person fields to BodyMembership rows.
 
     Creates BodyMembership rows for every person who has attended meetings
@@ -1214,7 +1244,7 @@ def _migrate_membership_model():
         session.close()
 
 
-def _normalize_existing_meeting_dates(engine=None):
+def _normalize_existing_meeting_dates(engine: Optional[Engine] = None) -> None:
     """Backfill: normalize Chandler and Mesa legacy dates to YYYY-MM-DD.
 
     Chandler stores "September 9, 2025" (month-name format).

@@ -100,7 +100,7 @@ def diagnose(engine):
                        last_attempted_at, last_error, retry_count
                 FROM meetings
                 WHERE sync_status = 'failed'
-                  AND last_attempted_at >= datetime('now', '-1 day', 'localtime')
+                  AND last_attempted_at >= NOW() - INTERVAL '1 day'
                 ORDER BY last_attempted_at DESC
             """)
         ).fetchall()
@@ -122,7 +122,7 @@ def diagnose(engine):
                 FROM meetings
                 WHERE sync_status = 'in_progress'
                   AND (last_attempted_at IS NULL
-                       OR last_attempted_at <= datetime('now', '-2 hours', 'localtime'))
+                       OR last_attempted_at <= NOW() - INTERVAL '2 hours')
                 ORDER BY last_attempted_at ASC
             """)
         ).fetchall()
@@ -141,7 +141,8 @@ def diagnose(engine):
                 SELECT COUNT(*) FROM meetings
                 WHERE last_synced_at IS NULL
                   AND last_attempted_at IS NULL
-                  AND meeting_date < date('now', '-7 days')
+                  AND meeting_date IS NOT NULL
+                  AND NULLIF(meeting_date, '')::date < CURRENT_DATE - INTERVAL '7 days'
             """)
         ).scalar()
         report["orphan_count"] = orphan_count
@@ -214,7 +215,7 @@ def remediate(engine, diagnostics, quiet=False):
                     conn.execute(
                         text("""
                             UPDATE meetings
-                            SET sync_status = 'complete', last_error = NULL, updated_at = datetime('now')
+                            SET sync_status = 'complete', last_error = NULL, updated_at = NOW()
                             WHERE id = :mid
                         """),
                         {"mid": meeting_id},
@@ -232,7 +233,7 @@ def remediate(engine, diagnostics, quiet=False):
                     conn.execute(
                         text("""
                             UPDATE meetings
-                            SET sync_status = 'pending', last_error = NULL, updated_at = datetime('now')
+                            SET sync_status = 'pending', last_error = NULL, updated_at = NOW()
                             WHERE id = :mid
                         """),
                         {"mid": meeting_id},
@@ -254,7 +255,7 @@ def remediate(engine, diagnostics, quiet=False):
                     conn.execute(
                         text("""
                             UPDATE meetings
-                            SET last_error = :error, updated_at = datetime('now')
+                            SET last_error = :error, updated_at = NOW()
                             WHERE id = :mid
                         """),
                         {
@@ -271,7 +272,7 @@ def remediate(engine, diagnostics, quiet=False):
                     conn.execute(
                         text("""
                             UPDATE meetings
-                            SET sync_status = 'manual_review', updated_at = datetime('now')
+                            SET sync_status = 'manual_review', updated_at = NOW()
                             WHERE id = :mid
                         """),
                         {"mid": meeting_id},
@@ -291,7 +292,7 @@ def remediate(engine, diagnostics, quiet=False):
                 conn.execute(
                     text("""
                         UPDATE meetings
-                        SET sync_status = 'pending', last_error = NULL, updated_at = datetime('now')
+                        SET sync_status = 'pending', last_error = NULL, updated_at = NOW()
                         WHERE id = :mid
                     """),
                     {"mid": meeting_id},
@@ -317,7 +318,7 @@ def remediate(engine, diagnostics, quiet=False):
                 text("""
                     UPDATE meetings
                     SET sync_status = 'pending', last_error = 'Reset from in_progress (stuck >2h)',
-                        last_attempted_at = NULL, updated_at = datetime('now')
+                        last_attempted_at = NULL, updated_at = NOW()
                     WHERE id = :mid
                 """),
                 {"mid": stuck["id"]},
@@ -361,7 +362,7 @@ def get_upcoming_meetings(engine, max_results=15):
             text("""
                 SELECT id, body, meeting_id, meeting_date, meeting_type, sync_status
                 FROM meetings
-                WHERE meeting_date >= date('now')
+                WHERE NULLIF(meeting_date, '')::date >= CURRENT_DATE
                 ORDER BY meeting_date ASC, body ASC
                 LIMIT :limit
             """),
@@ -393,8 +394,8 @@ def get_policy_items(engine, max_results=25):
                ai.agenda_item_number, ai.agenda_item_title, ai.agenda_item_text
         FROM meetings m
         JOIN agenda_items ai ON ai.meeting_db_id = m.id
-        WHERE m.meeting_date >= date('now')
-          AND m.meeting_date <= date('now', '+7 days')
+        WHERE NULLIF(m.meeting_date, '')::date >= CURRENT_DATE
+          AND NULLIF(m.meeting_date, '')::date <= CURRENT_DATE + INTERVAL '7 days'
           AND ({where_keywords})
         ORDER BY m.meeting_date ASC, m.body ASC, ai.agenda_item_number ASC
         LIMIT :limit
@@ -572,7 +573,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
+def main() -> None:
     args = parse_args()
 
     start_time = time.time()

@@ -299,7 +299,7 @@ async def main() -> int:
 
     if args.source == "phoenix-aem" and args.sync:
         from scraper.phoenix_aem import fetch_all_notice_bodies, search_and_convert
-        from db import get_session, init_db, replace_meeting_data_safe, Meeting
+        from db import get_session, init_db, replace_meeting_data_safe, Meeting as MeetingModel
         from sqlalchemy import select
         import datetime as _dt
 
@@ -4096,6 +4096,20 @@ async def main() -> int:
             print(f"{errors} meeting(s) had errors")
             return 1
         return 0
+
+    # ── All jurisdictions ──
+    if args.source in ("all", "all-jurisdictions") and args.sync:
+        import subprocess as _sp
+        import sys as _sys
+        cmd = [_sys.executable, "scripts/daily_sync.py"]
+        if getattr(args, "limit", None):
+            print(f"Note: daily sync ignores --limit={args.limit}; run individual jurisdictions for limits")
+        print(f"\nSync will take ~4 minutes (32 jurisdictions, ~8s each). Output streams below:\n")
+        proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True, bufsize=1)
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+        proc.wait()
+        return proc.returncode
 
     if args.sync:
         from db import get_session, init_db, persist_meeting

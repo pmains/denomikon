@@ -11,7 +11,7 @@ from sqlalchemy import func, inspect as sa_inspect, select, text, or_, case, and
 from sqlalchemy.orm import Session
 
 from db.models import (Person, Supervisor, Meeting, MeetingSupervisor,
-    AgendaItem, AgendaItemVote, SupervisorVote, MeetingAttendance,
+    AgendaItem, AgendaItemVote, MemberVote, MeetingAttendance,
     ExecutiveSessionParticipant, BodyMembership, PublicBody, Jurisdiction,
     BodySeat)
 from db.core import get_session
@@ -170,18 +170,18 @@ def get_split_votes(
 def get_dissenting_votes(
     session: Session,
     member_name: Optional[str] = None,
-) -> list["SupervisorVote"]:
+) -> list[MemberVote]:
     """Get dissent votes, optionally filtered by member name."""
     from sqlalchemy import join as sa_join
-    q = select(SupervisorVote).where(SupervisorVote.is_dissent == True)
+    q = select(MemberVote).where(MemberVote.is_dissent == True)
     if member_name:
         norm = member_name.lower().strip()
         q = (
-            select(SupervisorVote)
-            .join(Supervisor, SupervisorVote.supervisor_id == Supervisor.id)
+            select(MemberVote)
+            .join(Person, MemberVote.member_id == Person.id)
             .where(
-                SupervisorVote.is_dissent == True,
-                Supervisor.normalized_name.ilike(f"%{norm}%"),
+                MemberVote.is_dissent == True,
+                Person.normalized_name.ilike(f"%{norm}%"),
             )
         )
     rows = session.execute(q).scalars().all()
@@ -262,15 +262,15 @@ def get_supervisor_vote_stats(
     from collections import Counter
 
     # --- 1. Vote counts via SQL GROUP BY (was: load all rows in Python) ---
-    q = select(SupervisorVote.vote, func.count(SupervisorVote.id).label("cnt"),
-               SupervisorVote.agenda_item_vote_id)
+    q = select(MemberVote.vote, func.count(MemberVote.id).label("cnt"),
+               MemberVote.agenda_item_vote_id)
     q = q.join(
         AgendaItemVote,
-        AgendaItemVote.id == SupervisorVote.agenda_item_vote_id,
+        AgendaItemVote.id == MemberVote.agenda_item_vote_id,
     ).where(
-        SupervisorVote.supervisor_id == sup_id,
+        MemberVote.member_id == sup_id,
         AgendaItemVote.body == body,
-    ).group_by(SupervisorVote.vote, SupervisorVote.agenda_item_vote_id)
+    ).group_by(MemberVote.vote, MemberVote.agenda_item_vote_id)
     if start_date or end_date:
         q = q.join(Meeting, and_(Meeting.id == AgendaItemVote.meeting_db_id))
         if start_date:
@@ -302,31 +302,31 @@ def get_supervisor_vote_stats(
         # Get per-AIV vote tallies in ONE query (was: load all rows)
         # Normalize vote values: "aye" → "yes", "nay" → "no"
         _yes_cond = or_(
-            SupervisorVote.vote == "yes",
-            SupervisorVote.vote.ilike("aye"),
+            MemberVote.vote == "yes",
+            MemberVote.vote.ilike("aye"),
         )
         _no_cond = or_(
-            SupervisorVote.vote == "no",
-            SupervisorVote.vote.ilike("nay"),
+            MemberVote.vote == "no",
+            MemberVote.vote.ilike("nay"),
         )
         tallies = session.execute(
             select(
-                SupervisorVote.agenda_item_vote_id,
+                MemberVote.agenda_item_vote_id,
                 func.sum(case((_yes_cond, 1), else_=0)).label("yes_cnt"),
                 func.sum(case((_no_cond, 1), else_=0)).label("no_cnt"),
             )
-            .where(SupervisorVote.agenda_item_vote_id.in_(aiv_id_list))
-            .group_by(SupervisorVote.agenda_item_vote_id)
+            .where(MemberVote.agenda_item_vote_id.in_(aiv_id_list))
+            .group_by(MemberVote.agenda_item_vote_id)
         ).all()
 
         # Get this supervisor's votes for each AIV
         sup_votes = {
             r.agenda_item_vote_id: _normalize_vote_value(r.vote)
             for r in session.execute(
-                select(SupervisorVote.agenda_item_vote_id, SupervisorVote.vote)
+                select(MemberVote.agenda_item_vote_id, MemberVote.vote)
                 .where(
-                    SupervisorVote.agenda_item_vote_id.in_(aiv_id_list),
-                    SupervisorVote.supervisor_id == sup_id,
+                    MemberVote.agenda_item_vote_id.in_(aiv_id_list),
+                    MemberVote.member_id == sup_id,
                 )
             ).all()
         }
@@ -411,17 +411,17 @@ def get_supervisor_split_votes(
     """
     # 1. Get all AIV IDs this supervisor voted on (body-scoped, date-filtered)
     q = (
-        select(SupervisorVote.agenda_item_vote_id, SupervisorVote.vote)
+        select(MemberVote.agenda_item_vote_id, MemberVote.vote)
         .join(
             AgendaItemVote,
-            AgendaItemVote.id == SupervisorVote.agenda_item_vote_id,
+            AgendaItemVote.id == MemberVote.agenda_item_vote_id,
         )
         .join(
             Meeting,
             and_(Meeting.id == AgendaItemVote.meeting_db_id),
         )
         .where(
-            SupervisorVote.supervisor_id == sup_id,
+            MemberVote.member_id == sup_id,
             AgendaItemVote.body == body,
         )
     )
@@ -440,10 +440,10 @@ def get_supervisor_split_votes(
     # 2. Get all votes on these AIVs (all supervisors)
     all_votes = session.execute(
         select(
-            SupervisorVote.agenda_item_vote_id,
-            SupervisorVote.vote,
+            MemberVote.agenda_item_vote_id,
+            MemberVote.vote,
         )
-        .where(SupervisorVote.agenda_item_vote_id.in_(aiv_ids))
+        .where(MemberVote.agenda_item_vote_id.in_(aiv_ids))
     ).all()
 
     # Group by aiv
@@ -723,12 +723,12 @@ def get_supervisor_full_voting_record(
     # Get per-AIV tallies via SQL aggregation (was: load all rows into Python)
     tallies = session.execute(
         select(
-            SupervisorVote.agenda_item_vote_id,
-            func.sum(case((SupervisorVote.vote == "yes", 1), else_=0)).label("yes_cnt"),
-            func.sum(case((SupervisorVote.vote == "no", 1), else_=0)).label("no_cnt"),
+            MemberVote.agenda_item_vote_id,
+            func.sum(case((MemberVote.vote == "yes", 1), else_=0)).label("yes_cnt"),
+            func.sum(case((MemberVote.vote == "no", 1), else_=0)).label("no_cnt"),
         )
-        .where(SupervisorVote.agenda_item_vote_id.in_(aiv_ids))
-        .group_by(SupervisorVote.agenda_item_vote_id)
+        .where(MemberVote.agenda_item_vote_id.in_(aiv_ids))
+        .group_by(MemberVote.agenda_item_vote_id)
     ).all()
 
     is_split: dict[int, bool] = {}
@@ -794,12 +794,12 @@ def get_supervisor_majority_alignment_stats(
     from collections import Counter
 
     # Get raw vote data
-    q = select(SupervisorVote.vote, AgendaItemVote.id.label("aiv_id"))
+    q = select(MemberVote.vote, AgendaItemVote.id.label("aiv_id"))
     q = q.join(
         AgendaItemVote,
-        AgendaItemVote.id == SupervisorVote.agenda_item_vote_id,
+        AgendaItemVote.id == MemberVote.agenda_item_vote_id,
     ).where(
-        SupervisorVote.supervisor_id == sup_id,
+        MemberVote.member_id == sup_id,
         AgendaItemVote.body == body,
     )
     if start_date or end_date:
@@ -825,11 +825,11 @@ def get_supervisor_majority_alignment_stats(
     # Get all votes on all relevant AIVs (for split/majority detection)
     all_v = session.execute(
         select(
-            SupervisorVote.agenda_item_vote_id,
-            SupervisorVote.supervisor_id,
-            SupervisorVote.vote,
+            MemberVote.agenda_item_vote_id,
+            MemberVote.member_id,
+            MemberVote.vote,
         )
-        .where(SupervisorVote.agenda_item_vote_id.in_(aiv_id_list))
+        .where(MemberVote.agenda_item_vote_id.in_(aiv_id_list))
     ).all()
 
     # Build per-AIV data
@@ -952,13 +952,13 @@ def get_supervisor_voting_alignment(
     # Get all votes for this supervisor (body-scoped, date-filtered)
     sup_aiv_votes: dict[int, str] = {}
     q = (
-        select(SupervisorVote.agenda_item_vote_id, SupervisorVote.vote)
+        select(MemberVote.agenda_item_vote_id, MemberVote.vote)
         .join(
             AgendaItemVote,
-            AgendaItemVote.id == SupervisorVote.agenda_item_vote_id,
+            AgendaItemVote.id == MemberVote.agenda_item_vote_id,
         )
         .where(
-            SupervisorVote.supervisor_id == sup_id,
+            MemberVote.member_id == sup_id,
             AgendaItemVote.body == body,
         )
     )
@@ -983,13 +983,13 @@ def get_supervisor_voting_alignment(
     other_votes: dict[int, dict[int, str]] = {oid: {} for oid in other_ids}
     for r in session.execute(
         select(
-            SupervisorVote.supervisor_id,
-            SupervisorVote.agenda_item_vote_id,
-            SupervisorVote.vote,
+            MemberVote.member_id,
+            MemberVote.agenda_item_vote_id,
+            MemberVote.vote,
         )
         .where(
-            SupervisorVote.supervisor_id.in_(other_ids),
-            SupervisorVote.agenda_item_vote_id.in_(aiv_ids),
+            MemberVote.member_id.in_(other_ids),
+            MemberVote.agenda_item_vote_id.in_(aiv_ids),
         )
     ).all():
         nv = _normalize_vote_value(r.vote)
@@ -1001,10 +1001,10 @@ def get_supervisor_voting_alignment(
     all_votes_on_aiv: dict[int, list[str]] = {}
     for r in session.execute(
         select(
-            SupervisorVote.agenda_item_vote_id,
-            SupervisorVote.vote,
+            MemberVote.agenda_item_vote_id,
+            MemberVote.vote,
         )
-        .where(SupervisorVote.agenda_item_vote_id.in_(aiv_ids))
+        .where(MemberVote.agenda_item_vote_id.in_(aiv_ids))
     ).all():
         nv = _normalize_vote_value(r.vote)
         if nv in ("yes", "no"):
@@ -1087,15 +1087,15 @@ def get_supervisor_swing_votes(
     # Get this supervisor's votes on split AIVs (date-filtered)
     q = (
         select(
-            SupervisorVote.vote,
-            SupervisorVote.agenda_item_vote_id,
+            MemberVote.vote,
+            MemberVote.agenda_item_vote_id,
         )
         .join(
             AgendaItemVote,
-            AgendaItemVote.id == SupervisorVote.agenda_item_vote_id,
+            AgendaItemVote.id == MemberVote.agenda_item_vote_id,
         )
         .where(
-            SupervisorVote.supervisor_id == sup_id,
+            MemberVote.member_id == sup_id,
             AgendaItemVote.body == body,
         )
     )
@@ -1115,11 +1115,11 @@ def get_supervisor_swing_votes(
     # Get all votes on these AIVs
     all_v = session.execute(
         select(
-            SupervisorVote.agenda_item_vote_id,
-            SupervisorVote.supervisor_id,
-            SupervisorVote.vote,
+            MemberVote.agenda_item_vote_id,
+            MemberVote.member_id,
+            MemberVote.vote,
         )
-        .where(SupervisorVote.agenda_item_vote_id.in_(aiv_ids))
+        .where(MemberVote.agenda_item_vote_id.in_(aiv_ids))
     ).all()
 
     # Build tally per AIV and find this sup's vote
@@ -1204,7 +1204,7 @@ def get_supervisor_swing_votes(
 
     return results
 
-def get_public_bodies_by_jurisdiction(slug):
+def get_public_bodies_by_jurisdiction(slug: str) -> list[PublicBody]:
     """Get all public bodies for a jurisdiction slug."""
     session = get_session()
     try:
@@ -1260,7 +1260,7 @@ def _enhance_member_for_template(person: Person, public_body_id: int) -> Person:
         session.close()
     return person
 
-def get_body_members(body_code, page=1, per_page=10):
+def get_body_members(body_code: str, page: int = 1, per_page: int = 10) -> dict:
     """Get paginated members of a public body by body_code.
 
     Returns currently active members (no term_end or term_end in the future)

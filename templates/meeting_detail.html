@@ -28,6 +28,9 @@
                 <p class="text-muted mb-0">
                     {{ meeting.meeting_date or '' }} &middot; {{ meeting.meeting_type or '' }}
                 </p>
+                {% if meeting.sync_status in ('no_agenda', 'failed') and (meeting.item_count_actual is none or meeting.item_count_actual == 0) %}
+                <p class="mb-0"><span class="badge bg-warning text-dark">Canceled / No agenda</span></p>
+                {% endif %}
             </div>
             <div class="text-end text-muted small">
                 {% if meeting.item_count_actual is not none %}

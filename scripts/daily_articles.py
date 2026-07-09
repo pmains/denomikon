@@ -18,7 +18,7 @@ Flow:
   9. Print Slack summary to stdout
 
 Usage:
-  POLISCOPIC_DB_TIER=development PYTHONPATH=scripts .venv/bin/python scripts/daily_articles.py
+  PYTHONPATH=scripts .venv/bin/python scripts/daily_articles.py
 """
 
 import os
@@ -31,13 +31,14 @@ from typing import Optional
 from dataclasses import dataclass, field
 
 from sqlalchemy import func, text as sql_text
+from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 from openai import OpenAI
 
 # ── Load env (includes OPENAI_API_KEY) ──
 load_dotenv()
 
-os.environ.setdefault("POLISCOPIC_DB_TIER", "development")
+# Database defaults to PostgreSQL via db/config.py + .env; no tier override needed
 
 from db.core import get_session
 from db.newsroom import Article, ArticleSource, Tag
@@ -169,7 +170,7 @@ def is_administrative(item_title: str, item_text: str) -> bool:
 
 # ── Query ──
 
-def fetch_meetings(session, days_back: int, days_fwd: int) -> list:
+def fetch_meetings(session: Session, days_back: int, days_fwd: int) -> list:
     """Fetch all meetings in the window with at least one agenda item."""
     today = dt.date.today()
     start = (today - dt.timedelta(days=days_back)).isoformat()
@@ -193,7 +194,7 @@ def fetch_meetings(session, days_back: int, days_fwd: int) -> list:
     return [dict(r._mapping) for r in rows]
 
 
-def fetch_agenda_items(session, meeting_db_id: int) -> list:
+def fetch_agenda_items(session: Session, meeting_db_id: int) -> list:
     """Fetch all agenda items for a meeting."""
     rows = session.execute(
         sql_text("""
@@ -208,7 +209,7 @@ def fetch_agenda_items(session, meeting_db_id: int) -> list:
     return [dict(r._mapping) for r in rows]
 
 
-def fetch_supporting_docs(session, meeting_db_id: int, item_number: str) -> list:
+def fetch_supporting_docs(session: Session, meeting_db_id: int, item_number: str) -> list:
     """Fetch supporting documents for a specific agenda item."""
     rows = session.execute(
         sql_text("""
@@ -222,7 +223,7 @@ def fetch_supporting_docs(session, meeting_db_id: int, item_number: str) -> list
     return [dict(r._mapping) for r in rows]
 
 
-def fetch_minutes_url(session, meeting_db_id: int) -> Optional[str]:
+def fetch_minutes_url(session: Session, meeting_db_id: int) -> Optional[str]:
     """Fetch minutes URL if available."""
     row = session.execute(
         sql_text("SELECT minutes_url FROM meetings WHERE id = :mid"),
@@ -231,7 +232,7 @@ def fetch_minutes_url(session, meeting_db_id: int) -> Optional[str]:
     return row[0] if row and row[0] else None
 
 
-def fetch_prior_case_appearances(session, case_number: str) -> list[dict]:
+def fetch_prior_case_appearances(session: Session, case_number: str) -> list[dict]:
     """Find all meetings where this case number appears."""
     if not case_number:
         return []
@@ -254,7 +255,7 @@ def fetch_prior_case_appearances(session, case_number: str) -> list[dict]:
 
 # ── Candiate Generation ──
 
-def generate_candidates(session) -> list[Candidate]:
+def generate_candidates(session: Session) -> list[Candidate]:
     """Generate full list of qualified candidates across all meetings."""
     meetings = fetch_meetings(session, NEWS_DAYS_BACK, NEWS_DAYS_FWD)
     candidates = []
@@ -304,7 +305,7 @@ def generate_candidates(session) -> list[Candidate]:
     return candidates
 
 
-def deduplicate_candidates(session, candidates: list[Candidate]) -> list[Candidate]:
+def deduplicate_candidates(session: Session, candidates: list[Candidate]) -> list[Candidate]:
     """Remove duplicates by case number across pipeline stages.
 
     Returns filtered list with dedup notes printed.
@@ -391,7 +392,7 @@ def select_top_candidates(candidates: list[Candidate]) -> list[Candidate]:
     return selected
 
 
-def pitch_and_rank(client, session, candidates: list[Candidate]) -> list[Candidate]:
+def pitch_and_rank(client: OpenAI, session: Session, candidates: list[Candidate]) -> list[Candidate]:
     """Use LLM to evaluate candidates on story quality and return top 4.
 
     For each candidate, sends the context to gpt-4o-mini for a quick
@@ -500,7 +501,7 @@ def extract_pdf_text(url: str, max_chars: int = 5000) -> str:
 
 # ── Context Gathering ──
 
-def build_context(session, candidate: Candidate) -> str:
+def build_context(session: Session, candidate: Candidate) -> str:
     """Build a structured context string for the LLM to draft from."""
     parts = []
 
@@ -700,7 +701,7 @@ def draft_article(client: OpenAI, context: str, attempt: int = 1) -> Optional[Ar
 
 # ── Hyperlinking ──
 
-def hyperlink_body(body: str, candidate: Candidate, session) -> str:
+def hyperlink_body(body: str, candidate: Candidate, session: Session) -> str:
     """Clean up body text post-draft.
 
     The model should write inline markdown links using meeting URL paths
@@ -783,7 +784,7 @@ def hyperlink_body(body: str, candidate: Candidate, session) -> str:
 
     return result
 
-def get_or_create_tag(session, tag_slug: str, tag_name: str) -> Tag:
+def get_or_create_tag(session: Session, tag_slug: str, tag_name: str) -> Tag:
     """Get existing tag or create a new one."""
     with session.no_autoflush:
         tag = session.query(Tag).filter(Tag.slug == tag_slug).first()
@@ -804,7 +805,7 @@ def slugify(text: str) -> str:
     return f"{date_prefix}-{slug[:80]}"
 
 
-def save_article(session, draft: ArticleDraft) -> Optional[int]:
+def save_article(session: Session, draft: ArticleDraft) -> Optional[int]:
     """Save a drafted article to the database.
 
     Returns article ID or None on failure.
@@ -969,7 +970,7 @@ def save_article(session, draft: ArticleDraft) -> Optional[int]:
         return None
 
 
-def main():
+def main() -> None:
     print(f"\U0001f4f0 Daily Article Pipeline \u2014 {dt.date.today().isoformat()}")
     print(f"   Window: last {NEWS_DAYS_BACK} days \u2192 next {NEWS_DAYS_FWD} days")
     print(f"   Model: {OPENAI_MODEL}")
@@ -1131,7 +1132,7 @@ def main():
     session.close()
 
 
-def _kickoff_berry_verify(session, article_ids: list[int]):
+def _kickoff_berry_verify(session: Session, article_ids: list[int]) -> None:
     """Queue Berry verification in an isolated agent session.
     Writes an evidence file with article body + source text, then
     creates a one-shot cron job running gpt-4o-mini with

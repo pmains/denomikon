@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}{{ topic.title }} Archive — Poliscopic{% endblock %}
+{% block content %}
+<div class="container mt-4">
+
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="/topics">Topics</a></li>
+            <li class="breadcrumb-item"><a href="/topics/{{ topic.slug }}">{{ topic.title }}</a></li>
+            <li class="breadcrumb-item active">Archive</li>
+        </ol>
+    </nav>
+
+    <h1>{{ topic.title }} — Archive</h1>
+    <p class="text-muted">{{ archive|length }} report{% if archive|length != 1 %}s{% endif %}</p>
+
+    {% if archive %}
+    <div class="list-group mt-4">
+        {% for entry in archive %}
+        <a href="/topics/{{ topic.slug }}/{{ entry.report_date }}" class="list-group-item list-group-item-action">
+            <div class="d-flex w-100 justify-content-between">
+                <h5 class="mb-1">Week of {{ entry.report_date }}</h5>
+                <small class="text-muted">{{ entry.report_date }}</small>
+            </div>
+            {% if entry.summary %}
+            <p class="mb-1 text-muted">{{ entry.summary[:150] }}{% if entry.summary|length > 150 %}…{% endif %}</p>
+            {% endif %}
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-muted mt-4">No archived reports yet.</p>
+    {% endif %}
+
+</div>
+{% endblock %}
