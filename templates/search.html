@@ -101,13 +101,19 @@
       <div class="d-flex justify-content-between">
         <div>
           <h6 class="mb-1"><a href="/meetings/{{ item.body }}/{{ item.meeting_id }}" class="text-decoration-none">{{ item.title }}</a></h6>
-          <p class="mb-0 small text-muted">{{ item.text }}</p>
+          <p class="mb-0 small text-muted">{% if item.highlight %}{{ item.highlight|safe }}{% else %}{{ item.text }}{% endif %}</p>
           <small class="text-muted">
             {{ item.meeting_date or "—" }} ·
             {{ item.body | replace("_"," ") | replace("-"," ") | title }}
             {% if item.meeting_id %} · Meeting {{ item.meeting_id }}{% endif %}
             {% if item.agenda_item_number %} · Item {{ item.agenda_item_number }}{% endif %}
           </small>
+          <div class="mt-1 d-flex gap-1 flex-wrap">
+            <a href="/meetings/{{ item.body }}/{{ item.meeting_id }}" class="btn btn-sm btn-outline-primary py-0 px-1" title="Meeting page"><i class="bi bi-calendar-event"></i> Agenda</a>
+            {% if item.agenda_item_number %}
+            <a href="/meetings/{{ item.body }}/{{ item.meeting_id }}#item-{{ item.agenda_item_number }}" class="btn btn-sm btn-outline-secondary py-0 px-1" title="Item {{ item.agenda_item_number }}"><i class="bi bi-list-task"></i> Item {{ item.agenda_item_number }}</a>
+            {% endif %}
+          </div>
         </div>
       </div>
     </div>
@@ -126,7 +132,7 @@
       <div class="d-flex justify-content-between">
         <div>
           <h6 class="mb-1"><a href="/documents/{{ doc.id }}" class="text-decoration-none">{{ doc.document_title }}</a></h6>
-          <p class="mb-0 small text-muted">{{ doc.text_snippet }}</p>
+          <p class="mb-0 small text-muted">{% if doc.highlight %}{{ doc.highlight|safe }}{% else %}{{ doc.text_snippet }}{% endif %}</p>
           <small class="text-muted">
             {{ doc.meeting_date or "—" }}
             {% if doc.jurisdiction_name %} · {{ doc.jurisdiction_name }}{% endif %}

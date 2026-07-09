@@ -455,6 +455,86 @@ def sync_article_fts(article_id: int):
     session.close()
 
 
+def _build_tsquery(raw_query: str) -> str:
+    """Build a tsquery string from a raw user query with advanced syntax.
+
+    Supports:
+      Quoted phrases:  "greater phoenix"  →  greater <-> phoenix
+      Exclusion:        -tucson            →  !tucson
+      Normal terms:     zoning             →  zoning:*
+      Mixed:            "greater phoenix" -tucson zoning
+                        →  (greater <-> phoenix) & !tucson & zoning:*
+    """
+    import re
+    terms = []
+    pos = 0
+    raw = raw_query.strip()
+
+    while pos < len(raw):
+        # Skip whitespace
+        if raw[pos] in (' ', '\t'):
+            pos += 1
+            continue
+
+        # Quoted phrase
+        if raw[pos] == '"':
+            end = raw.find('"', pos + 1)
+            if end == -1:
+                end = len(raw)
+            phrase = raw[pos + 1:end].strip()
+            if phrase:
+                words = phrase.split()
+                if len(words) == 1:
+                    terms.append(f"{words[0]}:*")
+                else:
+                    phrase_terms = " <-> ".join(f"{w}:*" for w in words)
+                    terms.append(f"({phrase_terms})")
+            pos = end + 1
+            continue
+
+        # Exclusion (leading -) or normal term
+        is_exclude = raw[pos] == '-'
+        word_start = pos + 1 if is_exclude else pos
+
+        # Find end of word
+        word_end = word_start
+        while word_end < len(raw) and raw[word_end] not in (' ', '\t', '"'):
+            word_end += 1
+
+        word = raw[word_start:word_end]
+        if word:
+            if is_exclude:
+                terms.append(f"!{word}:*")
+            else:
+                terms.append(f"{word}:*")
+        pos = word_end
+
+    if not terms:
+        return ""
+    return " & ".join(terms)
+
+
+def _resolve_body_code(engine, body_slug: str) -> str:
+    """Resolve a public_body slug to a body_code for filtering.
+
+    The body filter dropdown sends public_bodies.slug, but meetings store
+    body codes like 'bos', 'pz', 'mag-itsc'.  This maps slug → body_code.
+    Falls back to the raw slug if no match.
+    """
+    from sqlalchemy import text as _text
+    try:
+        with engine.connect() as c:
+            row = c.execute(
+                _text("SELECT body_code FROM public_bodies WHERE slug = :slug LIMIT 1"),
+                {"slug": body_slug},
+            ).fetchone()
+            if row and row[0]:
+                return row[0]
+    except Exception:
+        pass
+    return body_slug
+
+
 def search_agenda_items(query: str, limit: int = 50, _fetch_extra: bool = True,
                          sort: str = "date", from_date: str = None,
                          to_date: str = None, jurisdiction: str = None,
@@ -475,6 +555,10 @@ def search_agenda_items(query: str, limit: int = 50, _fetch_extra: bool = True,
     dialect = engine.dialect.name
     fetch_limit = limit + 1 if _fetch_extra else limit
 
+    # Resolve body slug to body_code so the filter matches meetings.body
+    if body:
+        body = _resolve_body_code(engine, body)
+
     if dialect == "postgresql":
         rows = _search_pg_agenda_items(engine, query, fetch_limit, sort,
                                         from_date, to_date, jurisdiction, body)
@@ -491,7 +575,7 @@ def search_agenda_items(query: str, limit: int = 50, _fetch_extra: bool = True,
             "id": r[0], "body": r[1], "meeting_id": r[2],
             "agenda_item_number": r[3], "title": r[4], "text": r[5][:300],
             "source_url": r[6], "rank": r[7],
-            "meeting_date": r[8],
+            "highlight": r[8], "meeting_date": r[9],
         })
     return results, truncated
 
@@ -502,12 +586,14 @@ def _search_pg_agenda_items(engine, query: str, fetch_limit: int, sort: str,
     """PostgreSQL full-text search for agenda items."""
     from sqlalchemy import text as _text
     try:
-        ts_query = " & ".join(f"{w}:*" for w in query.strip().split() if w)
+        ts_query = _build_tsquery(query)
         sql = """
             SELECT a.id, a.body, a.meeting_id, a.agenda_item_number,
                    a.agenda_item_title, a.agenda_item_text,
                    a.source_url,
-                   ts_rank(a.search_vector, to_tsquery('english', :q)) AS rank,
+                   ts_rank(a.search_vector, to_tsquery('english', :q), 32) AS rank,
+                   ts_headline(a.agenda_item_text, to_tsquery('english', :q),
+                       'StartSel=<mark>, StopSel=</mark>, MaxWords=40, MinWords=15') AS highlight,
                    m.meeting_date
             FROM agenda_items a
             JOIN meetings m ON m.id = a.meeting_db_id
@@ -659,6 +745,7 @@ def search_articles(query: str, limit: int = 50, _fetch_extra: bool = True) -> t
         results.append({
             "id": r[0], "title": r[1], "summary": r[2],
             "status": r[3], "published_at": r[4], "slug": r[5], "rank": r[6],
+            "highlight": r[7],
         })
     return results, truncated
 
@@ -667,13 +754,15 @@ def _search_pg_articles(engine, query: str, fetch_limit: int) -> list:
     """PostgreSQL full-text search for articles."""
     from sqlalchemy import text as _text
     try:
-        ts_query = " & ".join(f"{w}:*" for w in query.strip().split() if w)
+        ts_query = _build_tsquery(query)
         with engine.connect() as c:
             rows = c.execute(
                 _text("""
                     SELECT a.id, a.title, a.summary, a.status, a.published_at,
                            a.slug,
-                           ts_rank(a.search_vector, to_tsquery('english', :q)) AS rank
+                           ts_rank(a.search_vector, to_tsquery('english', :q), 32) AS rank,
+                           ts_headline(a.body, to_tsquery('english', :q),
+                               'StartSel=<mark>, StopSel=</mark>, MaxWords=40, MinWords=15') AS highlight
                     FROM articles a
                     WHERE a.search_vector @@ to_tsquery('english', :q)
                     ORDER BY rank DESC
@@ -756,6 +845,10 @@ def search_supporting_documents(query: str, limit: int = 50, _fetch_extra: bool 
     dialect = engine.dialect.name
     fetch_limit = limit + 1 if _fetch_extra else limit
 
+    # Resolve body slug to body_code so the filter matches meetings.body
+    if body:
+        body = _resolve_body_code(engine, body)
+
     if dialect == "postgresql":
         rows = _search_pg_supporting_docs(engine, query, fetch_limit, sort,
                                           from_date, to_date, jurisdiction, body)
@@ -772,9 +865,9 @@ def search_supporting_documents(query: str, limit: int = 50, _fetch_extra: bool 
             "document_title": r[3], "document_type": r[4],
             "document_url": r[5], "text_snippet": (r[6] or "")[:300],
             "agenda_item_id": r[7], "agenda_item_number": r[8],
-            "rank": r[9], "meeting_date": r[10],
-            "jurisdiction_name": r[11], "jurisdiction_slug": r[12],
-            "body_name": r[13],
+            "rank": r[9], "highlight": r[10], "meeting_date": r[11],
+            "jurisdiction_name": r[12], "jurisdiction_slug": r[13],
+            "body_name": r[14],
         })
     return results, truncated
 
@@ -785,12 +878,14 @@ def _search_pg_supporting_docs(engine, query: str, fetch_limit: int, sort: str,
     """PostgreSQL full-text search for supporting documents."""
     from sqlalchemy import text as _text
     try:
-        ts_query = " & ".join(f"{w}:*" for w in query.strip().split() if w)
+        ts_query = _build_tsquery(query)
         sql = """
             SELECT sd.id, sd.body, sd.meeting_id,
                    sd.document_title, sd.document_type, sd.document_url,
                    sd.text_content, sd.agenda_item_id, sd.agenda_item_number,
-                   ts_rank(sd.search_vector, to_tsquery('english', :q)) AS rank,
+                   ts_rank(sd.search_vector, to_tsquery('english', :q), 32) AS rank,
+                   ts_headline(sd.text_content, to_tsquery('english', :q),
+                       'StartSel=<mark>, StopSel=</mark>, MaxWords=40, MinWords=15') AS highlight,
                    m.meeting_date,
                    j.name, j.slug,
                    pb.name AS body_name
