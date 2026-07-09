@@ -1157,6 +1157,157 @@ async def main() -> int:
         return 0
 
 
+    # ── Valley Metro sync (via browser) ──
+    if args.source == "valley-metro" and args.sync:
+        import datetime as _dt
+        from db import get_session, init_db, update_sync_status
+        from db import Meeting as MeetingModel
+        from sqlalchemy import select
+
+        from scraper.valley_metro import (
+            search_valley_metro_meetings,
+            fetch_event_detail_via_browser,
+            download_document,
+            CATEGORIES,
+            DEFAULT_BODY_SLUGS,
+        )
+
+        init_db()
+
+        categories_str = getattr(args, "categories", "board-meetings")
+        categories = [c.strip() for c in categories_str.split(",") if c.strip()]
+
+        # Default to 90-day window
+        now = _dt.date.today()
+        if args.start_date:
+            sd = args.start_date
+        else:
+            sd = (now - _dt.timedelta(days=90)).isoformat()
+        if args.end_date:
+            ed = args.end_date
+        else:
+            ed = now.isoformat()
+
+        headed = getattr(args, "headed", False)
+
+        print(f"Valley Metro search: {sd} to {ed}, categories={categories}")
+        meetings = await search_valley_metro_meetings(
+            sd, ed, categories=categories, headed=headed,
+        )
+        if not meetings:
+            print("No Valley Metro meetings found.")
+            return 0
+
+        if args.limit:
+            meetings = meetings[:args.limit]
+
+        print(f"Found {len(meetings)} Valley Metro meeting(s)")
+
+        session = get_session()
+        total_items = 0
+        meeting_count = len(meetings)
+
+        for idx, m in enumerate(meetings, 1):
+            meeting_id = m["meeting_id"]
+            meeting_date = m["meeting_date"]
+            body_code = m.get("body_code", "valley-metro-bod")
+            source_url = m.get("source_url", "")
+            meeting_type = m.get("meeting_type", "Regular Meeting")
+            meeting_title = m.get("meeting_title", m.get("body_name", ""))
+
+            meeting_dict = {
+                "meeting_id": meeting_id,
+                "meeting_date": meeting_date,
+                "meeting_type": meeting_type,
+                "meeting_title": meeting_title,
+                "source_url": source_url,
+            }
+
+            existing = session.execute(
+                select(MeetingModel).where(
+                    MeetingModel.body == body_code,
+                    MeetingModel.meeting_id == meeting_id,
+                )
+            ).scalar_one_or_none()
+
+            if existing and existing.sync_status == "complete" and not args.force:
+                print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: already synced")
+                if existing.item_count_actual:
+                    total_items += existing.item_count_actual
+                continue
+
+            if not source_url:
+                print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: no URL (skip)")
+                continue
+
+            # Fetch detail page for documents
+            try:
+                detail = await fetch_event_detail_via_browser(source_url, headed=headed)
+            except Exception as e:
+                log.warning(f"Failed to fetch detail for {meeting_id}: {e}")
+                detail = {
+                    "description": "", "meeting_packet_url": "",
+                    "agenda_url": "", "minutes_url": "",
+                    "supporting_docs": [], "video_url": "",
+                }
+
+            # Build supporting documents from Info & Resources
+            supp_docs = []
+            seen_doc_urls: set[str] = set()
+            for doc in detail.get("supporting_docs", []):
+                doc_url = doc.get("url", "")
+                doc_title = doc.get("title", "")
+                if not doc_url or doc_url in seen_doc_urls:
+                    continue
+                seen_doc_urls.add(doc_url)
+                if doc_url.endswith(".pdf"):
+                    supp_docs.append({
+                        "agenda_item_id": 0,
+                        "agenda_item_number": "0",
+                        "document_title": doc_title or "Meeting Document",
+                        "document_url": doc_url,
+                        "document_type": "Packet" if "packet" in doc_title.lower() else "Attachment",
+                        "file_name": doc_url.rstrip("/").split("/")[-1],
+                        "file_extension": ".pdf",
+                    })
+
+            # Also add resolved URLs if not in supporting_docs
+            resolved_urls = {
+                "agenda_url": detail.get("agenda_url", ""),
+                "minutes_url": detail.get("minutes_url", ""),
+                "meeting_packet_url": detail.get("meeting_packet_url", ""),
+            }
+            for label, doc_url in resolved_urls.items():
+                if doc_url and doc_url not in seen_doc_urls:
+                    seen_doc_urls.add(doc_url)
+                    supp_docs.append({
+                        "agenda_item_id": 0,
+                        "agenda_item_number": "0",
+                        "document_title": label.replace("_", " ").title(),
+                        "document_url": doc_url,
+                        "document_type": "Packet" if "packet" in label else "Agenda" if "agenda" in label else "Minutes",
+                        "file_name": doc_url.rstrip("/").split("/")[-1],
+                        "file_extension": ".pdf",
+                    })
+
+            # Persist
+            from db import replace_meeting_data_safe
+            replace_meeting_data_safe(
+                session, body_code, meeting_id, meeting_dict,
+                [],  # No structured agenda items yet
+                supporting_doc_dicts=supp_docs,
+            )
+
+            ts = _dt.datetime.now().strftime("%H:%M:%S")
+            doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
+            print(f"{ts} [{idx}/{meeting_count}] {meeting_id} {meeting_date}: {len(supp_docs)} document(s){doc_summary}")
+
+        session.close()
+        ts = _dt.datetime.now().strftime("%H:%M:%S")
+        print(f"{ts} Synced Valley Metro documents across {meeting_count} meeting(s)")
+        return 0
+
+
     # ── MCACC sync (Maricopa County AgendaCenter) ──
     if args.source == "mcacc" and args.sync:
         import datetime as _dt

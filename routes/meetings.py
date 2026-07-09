@@ -43,6 +43,7 @@ _JUR_DISPLAY = {
     "Wickenburg": "Wickenburg",
     "Maricopa Association of Governments (MAG)": "MAG",
     "Tolleson": "Tolleson",
+    "Valley Metro": "Valley Metro",
 }
 
 
@@ -93,6 +94,11 @@ _BODY_ABBREV = {
     "Government Services": "Gov Svcs",
     "Stadium District": "Stadium",
     "Advisory Board": "Advisory",
+    "Board of Directors": "Board",
+    "Valley Metro Board of Directors": "VM Board",
+    "Valley Metro Procurement": "VM Procurement",
+    "Joint Boards Subcommittee": "VM Joint Boards",
+    "Management Committee": "Mgmt Comm",
 }
 
 

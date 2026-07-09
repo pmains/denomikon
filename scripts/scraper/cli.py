@@ -139,10 +139,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("hearings", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "wickenburg", "paradise-valley", "queen-creek", "fountain-hills", "apache-junction", "mcacc", "mag", "phoenix", "phoenix-aem", "tempe-subcommittees", "tolleson", "tucson", "tucson-pc", "all", "all-jurisdictions"):
+    if rest and rest[0] in ("hearings", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "wickenburg", "paradise-valley", "queen-creek", "fountain-hills", "apache-junction", "mcacc", "mag", "phoenix", "phoenix-aem", "tempe-subcommittees", "tolleson", "tucson", "tucson-pc", "valley-metro", "all", "all-jurisdictions"):
         source = rest.pop(0)
 
-    if source == "bos":
+    if source == "valley-metro":
+        args = _parse_valley_metro_args(rest)
+    elif source == "bos":
         args = _parse_bos_args(rest)
     elif source == "adj":
         args = _parse_adj_args(rest)
@@ -221,6 +223,39 @@ def parse_args(argv=None) -> argparse.Namespace:
     else:
         args = _parse_pz_args(rest)
     args.source = source
+    return args
+
+
+def _parse_valley_metro_args(rest: list[str]) -> argparse.Namespace:
+    """Parse Valley Metro sync arguments."""
+    p = argparse.ArgumentParser(
+        description="Scrape Valley Metro board/committee meetings (via browser)",
+        prog="valley-metro",
+    )
+    p.add_argument("--start-date", help="Start date in YYYY-MM-DD")
+    p.add_argument("--end-date", help="End date in YYYY-MM-DD")
+    p.add_argument("--year", help="Sync an entire year (e.g. --year=2026)")
+    p.add_argument("--month", help="Sync an entire month (e.g. --month=2026-04)")
+    p.add_argument("--date", help="Single date in YYYY-MM-DD")
+    p.add_argument("--sync", action="store_true", help="Fetch events, extract documents, persist to DB")
+    p.add_argument("--headed", action="store_true", help="Run Playwright headed")
+    p.add_argument("--limit", type=int, default=None, help="Optional meeting limit")
+    p.add_argument("--init-db", action="store_true", help="Create database tables")
+    p.add_argument("--status", action="store_true", help="Print sync status summary")
+    p.add_argument("--failed", action="store_true", help="List failed/partial meetings with errors")
+    p.add_argument("--retry-failed", action="store_true", help="Sync only meetings with status failed, partial, or pending")
+    p.add_argument("--force", action="store_true", help="Re-sync meetings even if sync_status = complete")
+    p.add_argument("--categories",
+        default="board-meetings",
+        help="Categories to sync (comma-separated). Default: board-meetings",
+    )
+    args = p.parse_args(rest)
+    if args.date:
+        if args.start_date or args.end_date:
+            p.error("--date cannot be combined with --start-date or --end-date")
+        args.start_date = args.date
+        args.end_date = args.date
+    _normalize_year_month(args, p)
     return args
 
 

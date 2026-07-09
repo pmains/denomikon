@@ -1075,6 +1075,77 @@ def seed_default_jurisdictions() -> None:
             if existing is None:
                 session.add(pb)
 
+        # ── Valley Metro (jurisdiction_id=25) ──
+        valley = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == "valley-metro")
+        ).scalar_one_or_none()
+        if valley is None:
+            valley = Jurisdiction(id=25, name="Valley Metro", slug="valley-metro", state="AZ")
+            session.add(valley)
+            session.flush()
+
+        valley_bodies = [
+            PublicBody(
+                jurisdiction_id=valley.id,
+                name="Valley Metro Board of Directors",
+                slug="valley-metro-board-of-directors",
+                body_code="valley-metro-bod",
+                body_type="Board",
+                website_url="https://www.valleymetro.org/board-directors",
+            ),
+            PublicBody(
+                jurisdiction_id=valley.id,
+                name="Valley Metro Procurement & Business Practices Joint Ad Hoc Committee",
+                slug="valley-metro-procurement",
+                body_code="valley-metro-procurement",
+                body_type="Committee",
+            ),
+            PublicBody(
+                jurisdiction_id=valley.id,
+                name="Valley Metro Joint Boards Subcommittee",
+                slug="valley-metro-joint-boards",
+                body_code="valley-metro-joint-boards",
+                body_type="Subcommittee",
+            ),
+            PublicBody(
+                jurisdiction_id=valley.id,
+                name="Valley Metro Management Committee",
+                slug="valley-metro-management-committee",
+                body_code="valley-metro-management",
+                body_type="Committee",
+            ),
+            PublicBody(
+                jurisdiction_id=valley.id,
+                name="Valley Metro Operations Committee",
+                slug="valley-metro-operations-committee",
+                body_code="valley-metro-operations",
+                body_type="Committee",
+            ),
+            PublicBody(
+                jurisdiction_id=valley.id,
+                name="Valley Metro Planning Committee",
+                slug="valley-metro-planning-committee",
+                body_code="valley-metro-planning",
+                body_type="Committee",
+            ),
+            PublicBody(
+                jurisdiction_id=valley.id,
+                name="Valley Metro Finance Committee",
+                slug="valley-metro-finance-committee",
+                body_code="valley-metro-finance",
+                body_type="Committee",
+            ),
+        ]
+        for pb in valley_bodies:
+            existing = session.execute(
+                select(PublicBody).where(
+                    PublicBody.jurisdiction_id == valley.id,
+                    PublicBody.slug == pb.slug,
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(pb)
+
         session.commit()
     finally:
         session.close()

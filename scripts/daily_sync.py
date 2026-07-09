@@ -95,6 +95,7 @@ TIER_2: list[list[str]] = [
     _daily_args("apache-junction", "--sync"),
     _daily_args("tolleson", "--sync"),
     _daily_args("buckeye-granicus", "--sync"),
+    _daily_args("valley-metro", "--sync"),
 ]
 
 TIER_3: list[list[str]] = [
@@ -136,6 +137,7 @@ TIER_3: list[list[str]] = [
     _weekly_args("queen-creek", "--sync"),
     _weekly_args("apache-junction", "--sync"),
     _weekly_args("buckeye-granicus", "--sync"),
+    _weekly_args("valley-metro", "--sync"),
 ]
 
 
