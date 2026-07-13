@@ -59,13 +59,17 @@ rsync -avz --checksum templates/ ${SSH_TARGET}:${APP_DIR}/templates/
 rsync -avz --checksum routes/ ${SSH_TARGET}:${APP_DIR}/routes/
 
 # ── 3. Sync dev database → prod (unless --code-only) ──
+# NOTE: sync_prod.py is non-functional since the DO dev database was removed.
+# Must rewrite to target Windows dev directly before re-enabling.
+# See docs/ops/SYNC.md for details.
 if [ "${1:-}" != "--code-only" ]; then
-  echo "=== Step 3/5: Sync database (dev → prod) ==="
-  set -a
-  source .env
-  set +a
-  BATCH_SIZE=5000 BATCH_SLEEP_MS=100 .venv/bin/python scripts/db/sync_prod.py
-  echo "✅ Database sync complete"
+  echo "=== Step 3/5: Sync database (dev → prod) — SKIPPED (sync_prod.py needs rewrite) ==="
+  echo "See docs/ops/SYNC.md"
+  # set -a
+  # source .env
+  # set +a
+  # BATCH_SIZE=5000 BATCH_SLEEP_MS=100 .venv/bin/python scripts/db/sync_prod.py
+  # echo "✅ Database sync complete"
 fi
 
 # ── 4. Restart the app ──
