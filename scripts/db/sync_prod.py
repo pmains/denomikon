@@ -1,29 +1,22 @@
 #!/usr/bin/env python3
 """
-Dev → prod sync for DO Managed PostgreSQL via postgres_fdw.
+Dev → prod sync via direct SQLAlchemy connection (no FDW).
 
-Connects to the DO `poliscopic` database, reads from the `dev` foreign schema
-(which points to `poliscopic_dev`), and upserts rows into `public` tables in
-chunks. All data transfer happens within DO's internal network — no round-trips
-through the Mac.
+Connects to the dev database (Windows via Tailscale) and the prod database
+(DO Managed PostgreSQL), reads data from dev in chunks, and upserts into
+prod using INSERT … ON CONFLICT DO UPDATE.
 
-This is designed for minimal CPU impact on the DO cluster, and runs safely
-alongside the live application (no TRUNCATE, no ACCESS EXCLUSIVE locks).
+All data transfer goes through the Mac — dev queries over Tailscale, then
+prod upserts over SSL.  Chunked and paced to keep DO's 1GB RAM cluster happy.
 
 Usage:
-    export DATABASE_URL="postgresql://doadmin:...@host:25060/poliscopic?sslmode=verify-full"
-    python scripts/db/sync_prod.py
-
-Or:
-    export DATABASE_URL="..."  # points to DO poliscopic_dev
-    # Script auto-derives prod URL from dev URL
+    source .env && python3 scripts/db/sync_prod.py
 
 Environment:
-    DATABASE_URL         DO prod database (or dev — auto-derived)
-    PROD_DATABASE_URL    Explicit prod URL (overrides auto-detection)
+    DATABASE_URL         Dev database  (Windows via Tailscale)
+    PROD_DATABASE_URL    Prod database (DO Managed PostgreSQL)
     BATCH_SIZE           Rows per chunk (default: 2000)
     BATCH_SLEEP_MS       Sleep between chunks, milliseconds (default: 100)
-    FDW_SCHEMA           Foreign schema name on prod (default: dev)
 """
 
 from __future__ import annotations
@@ -47,7 +40,6 @@ log = logging.getLogger("sync")
 LOCK_ID = 184_729_583  # arbitrary bigint for pg_advisory_lock
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "2000"))
 BATCH_SLEEP_S = int(os.environ.get("BATCH_SLEEP_MS", "100")) / 1000.0
-FDW_SCHEMA = os.environ.get("FDW_SCHEMA", "dev")
 
 ALL_SYNC_TABLES = [
     "agenda_item_votes",
@@ -76,69 +68,37 @@ EXCLUDED_TABLES = {
 }
 
 
-def _resolve_url() -> str:
-    """Resolve the production database URL."""
+# ── URL resolution ──
+
+
+def _resolve_dev_url() -> str:
+    """Return the dev database URL (DATABASE_URL from .env)."""
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        log.error("Set DATABASE_URL to your dev database (Windows via Tailscale)")
+        sys.exit(1)
+    log.info("Dev:   %s", re.sub(r'(//[^:]+:).+(@)', r'\1****\2', url))
+    return url
+
+
+def _resolve_prod_url() -> str:
+    """Return the prod database URL (PROD_DATABASE_URL from .env)."""
     url = os.environ.get("PROD_DATABASE_URL") or os.environ.get("DATABASE_URL")
     if not url:
         log.error("Set PROD_DATABASE_URL or DATABASE_URL")
         sys.exit(1)
-    # Ensure the dbname is 'poliscopic' (prod target)
+    # Derive prod URL from dev URL (swap db name)
     url2 = re.sub(r'/poliscopic_dev([?#]|$)', r'/poliscopic\1', url)
     if url2 == url and 'poliscopic_dev' in url:
         url2 = url.replace('poliscopic_dev', 'poliscopic')
     if 'poliscopic' not in url2:
-        log.error("DATABASE_URL must contain 'poliscopic' (prod target)")
+        log.error("Cannot derive prod URL — set PROD_DATABASE_URL explicitly")
         sys.exit(1)
-    log.info("Target: %s", re.sub(r'(//[^:]+:).+(@)', r'\1****\2', url2))
+    log.info("Prod:  %s", re.sub(r'(//[^:]+:).+(@)', r'\1****\2', url2))
     return url2
 
 
-def _ensure_fdw(engine):
-    """Ensure the FDW foreign schema exists. Creates it if missing."""
-    with engine.begin() as c:
-        # Check if extension exists
-        has_fdw = c.execute(
-            text("SELECT count(*) FROM pg_extension WHERE extname = 'postgres_fdw'")
-        ).scalar()
-        if not has_fdw:
-            c.execute(text("CREATE EXTENSION IF NOT EXISTS postgres_fdw"))
-
-        # Check if server exists
-        has_srv = c.execute(
-            text("SELECT count(*) FROM pg_foreign_server WHERE srvname = 'dev_fdw'")
-        ).scalar()
-        if not has_srv:
-            host = os.environ.get("DO_HOST")
-            port = os.environ.get("DO_PORT", "25060")
-            pwd = os.environ.get("DO_PASSWORD")
-            if not host or not pwd:
-                raise ValueError("DO_HOST and DO_PASSWORD environment variables are required")
-            c.execute(text(
-                f"CREATE SERVER dev_fdw FOREIGN DATA WRAPPER postgres_fdw "
-                f"OPTIONS (dbname 'poliscopic_dev', host '{host}', port '{port}')"
-            ))
-            c.execute(text(
-                f"CREATE USER MAPPING FOR doadmin "
-                f"SERVER dev_fdw OPTIONS (user 'doadmin', password '{pwd}')"
-            ))
-
-        # Re-import the schema
-        c.execute(text(f"DROP SCHEMA IF EXISTS {FDW_SCHEMA} CASCADE"))
-        c.execute(text(f"CREATE SCHEMA {FDW_SCHEMA}"))
-        c.execute(text(
-            f"IMPORT FOREIGN SCHEMA public "
-            f"FROM SERVER dev_fdw INTO {FDW_SCHEMA}"
-        ))
-
-        # Verify we have tables
-        cnt = c.execute(
-            text(f"SELECT count(*) FROM information_schema.tables "
-                 f"WHERE table_schema = '{FDW_SCHEMA}'")
-        ).scalar()
-        log.info("FDW ready: %d tables in schema '%s'", cnt, FDW_SCHEMA)
-        if cnt == 0:
-            log.error("No tables imported — FDW setup failed")
-            sys.exit(1)
+# ── Schema inspection helpers ──
 
 
 def _pk_cols(engine, table: str) -> list[str]:
@@ -154,18 +114,21 @@ def _quoted_cols(cols: list[str]) -> str:
     return ", ".join(f'"{c}"' for c in cols)
 
 
-def _column_intersection(engine, table: str) -> list[str]:
-    """Return columns present in BOTH public and dev schemas."""
+def _column_intersection(dev_engine, prod_engine, table: str) -> list[str]:
+    """Return columns present in BOTH dev and prod."""
     dev_cols = {
-        c["name"] for c in sa_inspect(engine).get_columns(table, schema=FDW_SCHEMA)
+        c["name"] for c in sa_inspect(dev_engine).get_columns(table)
         if c["name"] != "rowid"
     }
     prod_cols = {
-        c["name"] for c in sa_inspect(engine).get_columns(table, schema="public")
+        c["name"] for c in sa_inspect(prod_engine).get_columns(table)
         if c["name"] != "rowid"
     }
     common = sorted(dev_cols & prod_cols)
     return common
+
+
+# ── Secondary unique constraint handling ──
 
 
 def _detect_secondary_uniques(engine, table: str) -> list[list[str]]:
@@ -178,7 +141,6 @@ def _detect_secondary_uniques(engine, table: str) -> list[list[str]]:
         if ix.get("unique") and set(cols) != pk_cols:
             uniques.append(cols)
     # Also check table constraints via pg_constraint
-    import re
     with engine.connect() as c:
         rows = c.execute(text(
             f"SELECT conname, pg_get_constraintdef(oid) "
@@ -194,72 +156,116 @@ def _detect_secondary_uniques(engine, table: str) -> list[list[str]]:
     return uniques
 
 
-def _cleanup_secondary_uniques(engine, table: str, secondary_uniques: list[list[str]]):
-    """Delete prod rows whose secondary unique keys conflict with dev rows.
+def _cleanup_secondary_conflicts(
+    prod_engine, table: str,
+    chunk_rows: list[dict],
+    secondary_uniques: list[list[str]],
+    pk_cols: list[str],
+):
+    """Delete prod rows whose secondary unique keys conflict with chunk rows.
 
     This prevents UniqueViolation errors when the upsert by PK hits a row
     where different IDs share the same unique key value.
+
+    Uses batch IN() queries per unique constraint for efficiency.
     """
-    if not secondary_uniques:
+    if not secondary_uniques or not chunk_rows:
         return
-    with engine.begin() as c:
+    with prod_engine.begin() as c:
         for uq_cols in secondary_uniques:
-            uq_sql = ", ".join(f'"{c}"' for c in uq_cols)
-            join_clause = " AND ".join(
-                f'dev."{c}" = prod."{c}"' for c in uq_cols
-            )
-            pk_cols = _pk_cols(engine, table)
-            pk_noteq = " OR ".join(
-                f'dev."{c}" <> prod."{c}"' for c in pk_cols
-            )
-            deleted = c.execute(text(
-                f'DELETE FROM public."{table}" prod\n'
-                f' WHERE EXISTS (\n'
-                f'   SELECT 1 FROM "{FDW_SCHEMA}"."{table}" dev\n'
-                f'   WHERE {join_clause}\n'
-                f'     AND ({pk_noteq})\n'
-                f' )'
-            )).rowcount
-            if deleted:
-                log.info("    ─ cleaned up %d prod rows with conflicting %s", deleted, uq_cols)
+            # Build a list of (unique_col_values, pk_col_values) tuples
+            # so we can do a single bulk DELETE per unique constraint.
+            if len(uq_cols) == 1:
+                uq_col = uq_cols[0]
+                pk_col = pk_cols[0]
+                values = [row[uq_col] for row in chunk_rows if row.get(uq_col) is not None]
+                pks = [row[pk_col] for row in chunk_rows if row.get(uq_col) is not None]
+                if not values:
+                    continue
+                # Build positionally-parameterized IN clauses
+                placeholders_val = ", ".join(f":v{i}" for i in range(len(values)))
+                placeholders_pk = ", ".join(f":p{i}" for i in range(len(pks)))
+                params = {}
+                for i, v in enumerate(values):
+                    params[f"v{i}"] = v
+                for i, p in enumerate(pks):
+                    params[f"p{i}"] = p
+                deleted = c.execute(
+                    text(
+                        f'DELETE FROM public."{table}"\n'
+                        f' WHERE "{uq_col}" IN ({placeholders_val})\n'
+                        f'   AND "{pk_col}" NOT IN ({placeholders_pk})'
+                    ),
+                    params,
+                ).rowcount
+                if deleted:
+                    log.info("    ─ cleaned %d prod row(s) for %s", deleted, uq_cols)
+            else:
+                # Composite unique — do row-by-row (usually rare)
+                for row in chunk_rows:
+                    match = " AND ".join(
+                        f'"{c}" = :_{i}' for i, c in enumerate(uq_cols)
+                    )
+                    not_pk = " OR ".join(
+                        f'"{c}" <> :_{len(uq_cols) + i}' for i, c in enumerate(pk_cols)
+                    )
+                    params = {}
+                    for i, col in enumerate(uq_cols):
+                        params[f"_{i}"] = row[col]
+                    for i, col in enumerate(pk_cols):
+                        params[f"_{len(uq_cols) + i}"] = row[col]
+                    deleted = c.execute(
+                        text(
+                            f'DELETE FROM public."{table}"\n'
+                            f' WHERE {match}\n'
+                            f'   AND ({not_pk})'
+                        ),
+                        params,
+                    ).rowcount
 
 
-def _upsert_table(engine, table: str, cols: list[str]):
+
+
+
+# ── Table sync ──
+
+
+def _upsert_table(dev_engine, prod_engine, table: str, cols: list[str]):
     """Upsert all rows from dev → prod for one table, chunked.
 
-    All data transfer happens within DO's internal network via FDW.
-    Each chunk is committed independently with a sleep between for pacing.
-
-    Handles secondary UNIQUE constraints by pre-deleting conflicting rows.
+    Reads from dev in chunks, upserts into prod in bulk. Handles secondary
+    UNIQUE constraints by pre-deleting conflicting rows per chunk.
     """
-    pk_cols = _pk_cols(engine, table)
+    pk_cols = _pk_cols(prod_engine, table)
     pk_col = pk_cols[0] if pk_cols else "id"
     pk_sql = _quoted_cols(pk_cols)
     col_sql = _quoted_cols(cols)
 
-    # Detect secondary unique constraints that might cause conflicts
-    secondary_uniques = _detect_secondary_uniques(engine, table)
+    secondary_uniques = _detect_secondary_uniques(prod_engine, table)
 
     update_set = ", ".join(
         f'"{c}" = EXCLUDED."{c}"' for c in cols if c not in pk_cols
     )
-    conflict_clause = f"ON CONFLICT ({pk_sql}) DO UPDATE SET {update_set}" if update_set else "ON CONFLICT DO NOTHING"
+    conflict_clause = (
+        f"ON CONFLICT ({pk_sql}) DO UPDATE SET {update_set}"
+        if update_set else "ON CONFLICT DO NOTHING"
+    )
 
-    # Count total on dev
-    with engine.connect() as c:
+    # Count rows on dev
+    with dev_engine.connect() as c:
         total = c.execute(
-            text(f'SELECT COUNT(*) FROM "{FDW_SCHEMA}"."{table}"')
-        ).scalar()
-        prod_before = c.execute(
             text(f'SELECT COUNT(*) FROM public."{table}"')
         ).scalar()
 
     if total == 0:
-        log.info("  %-35s  dev=%d  prod=%d  (empty, skipping)", table, total, prod_before)
+        log.info("  %-35s  dev=0  (empty, skipping)", table)
         return
 
-    if secondary_uniques:
-        _cleanup_secondary_uniques(engine, table, secondary_uniques)
+    # Count rows on prod
+    with prod_engine.connect() as c:
+        prod_before = c.execute(
+            text(f'SELECT COUNT(*) FROM public."{table}"')
+        ).scalar()
 
     log.info("  %-35s  dev=%d  prod=%d  (upsert %d at a time)",
              table, total, prod_before, BATCH_SIZE)
@@ -268,34 +274,76 @@ def _upsert_table(engine, table: str, cols: list[str]):
     chunk_count = 0
     while offset < total:
         try:
-            with engine.begin() as c:
+            # Read chunk from dev
+            with dev_engine.connect() as c:
+                chunk = c.execute(
+                    text(
+                        f'SELECT {col_sql} FROM public."{table}"\n'
+                        f'  ORDER BY "{pk_col}"\n'
+                        f'  LIMIT :limit OFFSET :offset'
+                    ),
+                    {"limit": BATCH_SIZE, "offset": offset},
+                ).mappings().fetchall()
+
+            if not chunk:
+                break
+
+            # Clean secondary unique conflicts in prod for this chunk
+            if secondary_uniques:
+                _cleanup_secondary_conflicts(
+                    prod_engine, table, chunk, secondary_uniques, pk_cols
+                )
+
+            # Build a single bulk INSERT with multiple VALUES rows
+            col_names = list(chunk[0].keys())
+            values_clause_parts = []
+            params = {}
+            for i, row in enumerate(chunk):
+                placeholders = [f":r{i}_{c}" for c in col_names]
+                values_clause_parts.append(f"({', '.join(placeholders)})")
+                for c in col_names:
+                    params[f"r{i}_{c}"] = row[c]
+
+            values_clause = ",\n  ".join(values_clause_parts)
+
+            with prod_engine.begin() as c:
                 c.execute(
                     text(
                         f'INSERT INTO public."{table}" ({col_sql})\n'
-                        f'  SELECT {col_sql} FROM "{FDW_SCHEMA}"."{table}"\n'
-                        f'  ORDER BY "{pk_col}"\n'
-                        f'  LIMIT :limit OFFSET :offset\n'
+                        f'  VALUES\n  {values_clause}\n'
                         f'  {conflict_clause}'
                     ),
-                    {"limit": BATCH_SIZE, "offset": offset},
+                    params,
                 )
+
             offset += BATCH_SIZE
             chunk_count += 1
             if chunk_count % 5 == 0:
                 log.info("    chunk %3d: %6d / %d", chunk_count, min(offset, total), total)
             time.sleep(BATCH_SLEEP_S)
+
         except Exception as e:
             log.error("    FAILED at offset %d: %s", offset, e)
-            # Move past problematic row(s) — better to skip than infinite loop
+            # Fall back to row-by-row for this chunk on error
+            try:
+                with prod_engine.begin() as c:
+                    for row in chunk:
+                        c.execute(
+                            text(
+                                f'INSERT INTO public."{table}" ({col_sql})\n'
+                                f'  VALUES ({", ".join(f":{k}" for k in row.keys())})\n'
+                                f'  {conflict_clause}'
+                            ),
+                            dict(row),
+                        )
+            except Exception as e2:
+                log.error("    Row-by-row also failed: %s", e2)
             offset += BATCH_SIZE
             chunk_count += 1
-            if "connection" in str(e).lower():
-                log.warning("    Re-creating FDW schema after connection error...")
-                _ensure_fdw(engine)
-                time.sleep(BATCH_SLEEP_S * 2)
+            time.sleep(BATCH_SLEEP_S * 2)
 
     # Reset sequence
-    with engine.connect() as c:
+    with prod_engine.connect() as c:
         seq_name = f"{table}_id_seq"
         try:
             max_id = c.execute(
@@ -306,21 +354,27 @@ def _upsert_table(engine, table: str, cols: list[str]):
         except Exception:
             pass
 
-        prod_after = c.execute(text(f'SELECT COUNT(*) FROM public."{table}"')).scalar()
+        prod_after = c.execute(
+            text(f'SELECT COUNT(*) FROM public."{table}"')
+        ).scalar()
         log.info("    done: prod now %d rows (%+d)", prod_after, prod_after - prod_before)
 
 
-def _validate(engine):
-    """Post-sync sanity checks."""
+# ── Validation ──
+
+
+def _validate(dev_engine, prod_engine):
+    """Post-sync sanity checks — compare row counts between dev and prod."""
     log.info("── Post-sync validation ──")
     ok = True
 
     for table in ALL_SYNC_TABLES:
         try:
-            with engine.connect() as c:
+            with dev_engine.connect() as c:
                 dev_cnt = c.execute(
-                    text(f'SELECT COUNT(*) FROM "{FDW_SCHEMA}"."{table}"')
+                    text(f'SELECT COUNT(*) FROM public."{table}"')
                 ).scalar()
+            with prod_engine.connect() as c:
                 prod_cnt = c.execute(
                     text(f'SELECT COUNT(*) FROM public."{table}"')
                 ).scalar()
@@ -338,45 +392,50 @@ def _validate(engine):
     return ok
 
 
+# ── Main ──
+
+
 def main():
-    prod_url = _resolve_url()
-    engine = create_engine(prod_url, pool_size=2)
+    dev_url = _resolve_dev_url()
+    prod_url = _resolve_prod_url()
 
-    # ── 1. Ensure FDW schema ──
-    _ensure_fdw(engine)
+    dev_engine = create_engine(dev_url, pool_size=2)
+    prod_engine = create_engine(prod_url, pool_size=2)
 
-    # ── 2. Acquire advisory lock ──
-    log.info("Acquiring sync lock...")
-    with engine.connect() as c:
-        acquired = c.execute(text(f"SELECT pg_try_advisory_lock({LOCK_ID})")).scalar()
+    # ── 1. Acquire advisory lock on prod ──
+    log.info("Acquiring sync lock on prod...")
+    with prod_engine.connect() as c:
+        acquired = c.execute(
+            text(f"SELECT pg_try_advisory_lock({LOCK_ID})")
+        ).scalar()
         if not acquired:
             log.error("Another sync is already running (lock held)")
             sys.exit(1)
 
     try:
-        # ── 3. Upsert each table ──
-        log.info("── Syncing tables (FDW, chunked upsert) ──")
+        # ── 2. Upsert each table ──
+        log.info("── Syncing tables (direct, chunked upsert) ──")
         for table in ALL_SYNC_TABLES:
             if table in EXCLUDED_TABLES:
                 continue
-            cols = _column_intersection(engine, table)
+            cols = _column_intersection(dev_engine, prod_engine, table)
             if not cols:
-                log.warning("  Skipping %s — no common columns", table)
+                log.warning("  Skipping %s — no common columns between dev and prod", table)
                 continue
             t0 = time.time()
-            _upsert_table(engine, table, cols)
+            _upsert_table(dev_engine, prod_engine, table, cols)
             elapsed = time.time() - t0
             log.info("    ─ took %.1fs\n", elapsed)
 
-        # ── 4. Validate ──
-        _validate(engine)
+        # ── 3. Validate ──
+        _validate(dev_engine, prod_engine)
 
     except BaseException as e:
         log.error("Sync failed: %s", e)
         raise
     finally:
-        # ── 5. Release advisory lock ──
-        with engine.connect() as c:
+        # ── 4. Release advisory lock on prod ──
+        with prod_engine.connect() as c:
             c.execute(text(f"SELECT pg_advisory_unlock({LOCK_ID})"))
         log.info("Lock released")
 
