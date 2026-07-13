@@ -193,11 +193,35 @@ def parse_legislation_detail_from_html(html: str) -> list[dict]:
     return docs
 
 
-def search_meetings(body_slugs: list[str] | None = None) -> list[dict]:
+def search_meetings(body_slugs: list[str] | None = None,
+                     start_date: str | None = None,
+                     end_date: str | None = None) -> list[dict]:
+    """Search for Apache Junction meetings via the Legistar Calendar page.
+
+    Parameters
+    ----------
+    body_slugs : list[str], optional
+        Only return meetings whose body slug is in this list.
+    start_date : str, optional
+        ISO-8601 start date (e.g. "2026-01-01"). Results are post-filtered
+        since Legistar's calendar doesn't support server-side date queries.
+    end_date : str, optional
+        ISO-8601 end date. Requires *start_date*.
+
+    Returns
+    -------
+    list[dict]
+        Meetings with keys: meeting_id, meeting_date, meeting_type, etc.
+    """
     html = fetch_page(CALENDAR_URL)
     meetings = parse_meetings_from_html(html)
     if body_slugs:
         meetings = [m for m in meetings if m["body_slug"] in body_slugs]
+    if start_date and end_date:
+        meetings = [
+            m for m in meetings
+            if m.get("meeting_date") and start_date <= m["meeting_date"] <= end_date
+        ]
     return meetings
 
 

@@ -23,10 +23,14 @@ const UA =
  */
 async function cmdFetch(path) {
   const url = path.startsWith("http") ? path : BASE + path;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
   const response = await fetch(url, {
     headers: { "User-Agent": UA, Accept: "text/html" },
     redirect: "follow",
+    signal: controller.signal,
   });
+  clearTimeout(timer);
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} from ${url}`);
@@ -80,10 +84,14 @@ async function cmdFetch(path) {
  * Download a file to disk (or to stdout).
  */
 async function cmdDownload(url, outputPath) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 55000);
   const response = await fetch(url, {
     headers: { "User-Agent": UA },
     redirect: "follow",
+    signal: controller.signal,
   });
+  clearTimeout(timer);
   if (!response.ok) {
     throw new Error(`Download HTTP ${response.status} from ${url}`);
   }

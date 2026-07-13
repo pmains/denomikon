@@ -166,8 +166,16 @@ def create_app() -> Flask:
     @app.template_filter("az_date")
     def _format_az_date(dt, fmt="%B %d, %Y"):
         """Convert a UTC datetime to Arizona time and format it."""
+        import datetime as _dt
         if dt is None:
             return ""
+        # Handle strings (raw SQL with text() may return date as string)
+        if isinstance(dt, str):
+            # Just return the date portion of the string
+            return dt[:10]
+        # Handle plain date objects (no tzinfo attribute)
+        if isinstance(dt, _dt.date) and not isinstance(dt, _dt.datetime):
+            return dt.strftime(fmt)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=_UTC)
         return dt.astimezone(_AZ).strftime(fmt)
@@ -188,12 +196,18 @@ def create_app() -> Flask:
     from routes.articles import articles_bp
     from routes.themes import themes_bp
     from routes.topics import topics_bp
+    from routes.entities import entities_bp
+    from routes.entity_annotation import annotation_bp
+    from routes.podcast import podcast_bp
     app.register_blueprint(meetings_bp)
     app.register_blueprint(bodies_bp)
     app.register_blueprint(members_bp)
     app.register_blueprint(articles_bp)
     app.register_blueprint(themes_bp)
     app.register_blueprint(topics_bp)
+    app.register_blueprint(entities_bp)
+    app.register_blueprint(podcast_bp)
+    app.register_blueprint(annotation_bp)
 
     # Admin and auth are only registered when admin is enabled
     if not _disable_admin:

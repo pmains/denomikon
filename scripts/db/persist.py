@@ -406,8 +406,28 @@ def persist_meeting(
         session.add(item)
         inserted_item_count += 1
 
+    # Flush agenda items first to get IDs before handling supporting docs
+    session.flush()
+
     if supporting_doc_dicts:
         for doc_dict in supporting_doc_dicts:
+            # Check if this document already exists across any meeting.
+            # The unique constraint (agenda_item_id, document_url) doesn't
+            # include meeting_id, so we may conflict with docs from other
+            # meetings.
+            existing = session.execute(
+                select(SupportingDocument.id).where(
+                    SupportingDocument.agenda_item_id == doc_dict.get("agenda_item_id", 0),
+                    SupportingDocument.document_url == doc_dict.get("document_url", ""),
+                )
+            ).scalar_one_or_none()
+            if existing:
+                log.warning(
+                    "Skipping duplicate supporting doc url=%s (title=%s)",
+                    doc_dict.get("document_url", ""),
+                    doc_dict.get("document_title", ""),
+                )
+                continue
             doc = SupportingDocument(
                 body=body,
                 agenda_item_id=doc_dict.get("agenda_item_id", 0),
@@ -429,9 +449,6 @@ def persist_meeting(
             )
             session.add(doc)
             inserted_doc_count += 1
-
-    # Flush to get IDs for the newly inserted items before creating case events
-    session.flush()
 
     # Delete existing CaseEvent records for this meeting (idempotency)
     session.execute(

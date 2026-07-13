@@ -105,3 +105,22 @@ scripts/reports/
 # Archived/dev scripts
 scripts/archive/
 nul
+
+# Production DB credentials (never commit)
+digital-ocean-postgres.txt
+
+# Config directory (infra details, alert settings, SSH hosts)
+config/
+
+# DigitalOcean SSL certs (infra-specific)
+do-ca.crt
+poliscopic-postgres-ca-certificate.crt
+
+# Temp files
+tmp/
+
+# Generated podcast media (large audio files)
+static/podcast/
+
+# Internal tool outputs
+tools/

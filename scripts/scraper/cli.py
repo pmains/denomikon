@@ -139,7 +139,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("hearings", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "wickenburg", "paradise-valley", "queen-creek", "fountain-hills", "apache-junction", "mcacc", "mag", "phoenix", "phoenix-aem", "tempe-subcommittees", "tolleson", "tucson", "tucson-pc", "valley-metro", "all", "all-jurisdictions"):
+    if rest and rest[0] in ("hearings", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "wickenburg", "paradise-valley", "queen-creek", "fountain-hills", "apache-junction", "mcacc", "mag", "phoenix", "phoenix-rss", "phoenix-aem", "tempe-subcommittees", "tolleson", "tucson", "tucson-pc", "valley-metro", "all", "all-jurisdictions"):
         source = rest.pop(0)
 
     if source == "valley-metro":
@@ -182,8 +182,9 @@ def parse_args(argv=None) -> argparse.Namespace:
         args = _parse_surprise_args(rest)
     elif source == "surprise-civicclerk":
         args = _parse_surprise_args(rest)
-    elif source == "phoenix":
+    elif source in ("phoenix", "phoenix-rss"):
         args = _parse_mesa_args(rest)
+        args.leg_limit = getattr(args, "leg_limit", 0)
     elif source == "peoria":
         args = _parse_mesa_args(rest)
     elif source == "wickenburg":
@@ -659,6 +660,7 @@ def _parse_mesa_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--skip-complete", action="store_true", help="Skip meetings with sync_status=complete when using --meeting-id")
     p.add_argument("--retry-count", type=int, default=3, help="Max retry attempts")
     p.add_argument("--include-manual-review", action="store_true", help="Include manual_review meetings in retry/sync operations")
+    p.add_argument("--leg-limit", type=int, default=0, help="Max legislation detail pages to fetch per meeting (0=all)")
     p.add_argument("--download", action="store_true", help="Download agenda PDF files")
     p.add_argument("--persist", action="store_true", default=False, help=argparse.SUPPRESS)
     from scraper.mesa import DEFAULT_BODY_SLUGS

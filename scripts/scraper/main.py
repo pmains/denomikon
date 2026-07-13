@@ -1168,6 +1168,7 @@ async def main() -> int:
             search_valley_metro_meetings,
             fetch_event_detail_via_browser,
             download_document,
+            extract_agenda_items_from_packet,
             CATEGORIES,
             DEFAULT_BODY_SLUGS,
         )
@@ -1290,17 +1291,29 @@ async def main() -> int:
                         "file_extension": ".pdf",
                     })
 
+            # Extract agenda items from the meeting packet PDF
+            packet_url = detail.get("meeting_packet_url", "")
+            items = []
+            if packet_url:
+                try:
+                    items = extract_agenda_items_from_packet(packet_url, meeting_id=meeting_id)
+                except Exception as e:
+                    log.warning(f"Failed to extract items from packet {packet_url[:60]}: {e}")
+                if items:
+                    log.info(f"  Extracted {len(items)} agenda items from packet")
+
             # Persist
             from db import replace_meeting_data_safe
             replace_meeting_data_safe(
                 session, body_code, meeting_id, meeting_dict,
-                [],  # No structured agenda items yet
+                items,
                 supporting_doc_dicts=supp_docs,
             )
 
             ts = _dt.datetime.now().strftime("%H:%M:%S")
+            item_summary = f" {len(items)} item(s)" if items else ""
             doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
-            print(f"{ts} [{idx}/{meeting_count}] {meeting_id} {meeting_date}: {len(supp_docs)} document(s){doc_summary}")
+            print(f"{ts} [{idx}/{meeting_count}] {meeting_id} {meeting_date}:{item_summary}{doc_summary}")
 
         session.close()
         ts = _dt.datetime.now().strftime("%H:%M:%S")
@@ -2332,40 +2345,38 @@ async def main() -> int:
         return 0
 
     # ── Peoria sync (via NovusAgenda) ──
-    if args.source == "phoenix" and args.sync:
+    # ── Phoenix sync (new RSS/HTML-based scraper) ──
+    if args.source in ("phoenix", "phoenix-rss") and args.sync:
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe
-        from scraper.phoenix import (
-            search_phoenix_meetings, fetch_agenda_items_async,
+        from scraper.phoenix_rss import (
+            search_meetings_via_html,
+            fetch_meeting_items_via_rss,
             PUBLIC_BODY_CODE,
         )
         init_db()
         year_val = getattr(args, "year", None)
         year = int(year_val) if year_val else _dt.date.today().year
         print("Searching Phoenix meetings for %d..." % year)
-        meetings = search_phoenix_meetings(year)
+        meetings = search_meetings_via_html(year)
         if args.limit:
             meetings = meetings[:args.limit]
         if not meetings:
-            print("No Phoenix meetings found for %d." % year)
+            print("No Phoenix RSS meetings found for %d." % year)
             return 0
-        print("Found %d Phoenix meeting(s)" % len(meetings))
-        # Filter out non-meeting items
-        skip_types = {"general information packet", "subcommittee general information packet"}
-        meetings = [m for m in meetings if m.get("meeting_type", "").lower() not in skip_types]
-        if not meetings:
-            print("No real meetings after filtering.")
-            return 0
+        print("Found %d Phoenix meeting(s) via RSS" % len(meetings))
         session = get_session()
         total_items = 0
+        total_docs = 0
         meeting_count = len(meetings)
         from db import Meeting as MeetingModel
         from sqlalchemy import select
         for idx, m in enumerate(meetings, 1):
             meeting_id = m["meeting_id"]
+            meeting_guid = m.get("meeting_guid", "")
             meeting_date = m["meeting_date"]
             body_code = m.get("body_code", "phoenix-cc")
-            detail_url = m.get("meeting_detail_url", "") or m.get("source_url", "")
+            detail_url = m.get("meeting_detail_url", "")
             meeting_type = m.get("meeting_type", "")
             meeting_title = m.get("meeting_title", "")
             meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": detail_url}
@@ -2375,29 +2386,25 @@ async def main() -> int:
                 total_items += existing.item_count_actual or 0
                 continue
             try:
-                items = []
-                if detail_url and "MeetingDetail.aspx" in detail_url:
-                    try:
-                        from scraper.phoenix import parse_agenda_items_from_html, fetch_page
-                        html = fetch_page(detail_url)
-                        items = parse_agenda_items_from_html(html, meeting_id, body_code)
-                        # Add required fields for persist
-                        for it in items:
-                            an = (it.get("agenda_item_number", "") or "").strip()
-                            it["agenda_item_id"] = body_code + "-" + meeting_id + "_" + an
-                            it["source_body"] = body_code
-                            it["source_url"] = detail_url
-                        if items:
-                            print(f"  Parsed {len(items)} agenda items")
-                    except Exception as pe:
-                        log.debug("Item extraction failed for %s: %s", meeting_id, pe)
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, items)
+                items, supp_docs = fetch_meeting_items_via_rss(
+                    meeting_id, meeting_guid, body_code,
+                    leg_limit=getattr(args, "leg_limit", 0),
+                )
+                replace_meeting_data_safe(
+                    session, body_code, meeting_id, meeting_dict,
+                    items, supporting_doc_dicts=supp_docs,
+                )
                 total_items += len(items)
-                print("  [%d/%d] %s %s: %d items synced" % (idx, meeting_count, meeting_id, meeting_date, len(items)))
+                total_docs += len(supp_docs)
+                doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
+                print("  [%d/%d] %s %s: %d items synced%s" % (idx, meeting_count, meeting_id, meeting_date, len(items), doc_summary))
             except Exception as e:
-                log.error("Failed Phoenix meeting %s: %s", meeting_id, e)
+                log.error("Failed Phoenix RSS meeting %s: %s", meeting_id, e)
+                import traceback; traceback.print_exc()
+                # Roll back the session so the next meeting's query doesn't hang on broken transaction
+                session.rollback()
         session.close()
-        print("Synced %d Phoenix items across %d meeting(s)" % (total_items, meeting_count))
+        print("Synced %d Phoenix RSS items across %d meeting(s) (%d docs)" % (total_items, meeting_count, total_docs))
         return 0
 
     if args.source == "peoria" and args.sync:
@@ -2861,7 +2868,7 @@ async def main() -> int:
                         "agenda_item_id": 0,
                         "agenda_item_number": "",
                         "document_title": sf["file_name"],
-                        "document_url": sf["url"],
+                        "document_url": sf.get("api_url") or sf["url"],
                         "document_type": sf["type"],
                         "body": body_code,
                         "meeting_id": meeting_id,
@@ -3274,16 +3281,23 @@ async def main() -> int:
                     continue
 
                 agenda_dicts = []
-                for it in items:
+                for idx2, it in enumerate(items):
                     an = it.get("agenda_item_number", "")
+                    # Unique ID: use sequential position (idx2) as the suffix.
+                    # The item number alone isn't unique because items at different
+                    # nesting levels (or under different parent sections) can share
+                    # numbers like "1".
+                    level = it.get("section_level", 0)
+                    aid = f"{body_code}-{meeting_id}_l{level}_i{idx2 + 1}"
                     agenda_dicts.append({
-                        "agenda_item_id": body_code + "-" + meeting_id + "_" + an,
+                        "agenda_item_id": aid,
                         "meeting_id": meeting_id, "agenda_item_number": an,
                         "agenda_item_title": it.get("agenda_item_title", ""),
                         "agenda_item_text": it.get("agenda_item_text", ""),
                         "agenda_item_url": it.get("agenda_item_url", ""),
                         "vote_or_action": it.get("vote_or_action", ""),
-                        "item_type": it.get("item_type", ""),
+                        "item_type": it.get("item_type", "section"),
+                        "section_level": it.get("section_level", 0),
                         "source_body": body_code, "source_url": source_url,
                         "c_number": "", "c_number_base": "", "case_number": "",
                     })
@@ -3758,11 +3772,18 @@ async def main() -> int:
                 items = fetch_agenda_items(m["detail_url"])
 
             # For each item with a legislation URL, fetch supporting docs
+            # and stamp each doc with the parent item's agenda_item_number
+            # so it appears inline with the correct item on the meeting page.
             all_docs = []
             for item in items:
+                item_number = item.get("agenda_item_number", "0")
                 if item.get("agenda_item_url"):
                     try:
                         docs = fetch_supporting_docs(item["agenda_item_url"])
+                        for d in docs:
+                            d["agenda_item_number"] = item_number
+                            # (agenda_item_id is an INTEGER FK and will be set by
+                            #  replace_meeting_data_safe after the item is flushed)
                         all_docs.extend(docs)
                     except Exception as e:
                         log.warning("Failed to fetch docs for %s: %s", item["agenda_item_url"], e)

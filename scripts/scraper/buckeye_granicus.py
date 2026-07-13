@@ -268,6 +268,51 @@ def extract_pdf_text(pdf_bytes: bytes) -> Optional[str]:
             pass
 
 
+def _is_pdf_packet_noise(text: str) -> bool:
+    """Return True if *text* looks like supporting-document noise, not a real
+    agenda item title. Packet PDFs bundle the agenda with attachments (engineering
+    plans, development code extracts, landscaping specs, parcel lists, etc.) that
+    often contain numbered fragments that resemble item titles."""
+    up = text.upper()
+    # Mid-paragraph continuations (lowercase start) — always noise
+    if text and text[0].islower():
+        return True
+    # All-caps engineering/construction/legal boilerplate.
+    # Two tiers: short uppercase fragments (section headers like "MINUTES") are
+    # kept; long uppercase lines (engineering specs, fire codes, street specs)
+    # are noise.
+    alpha_chars = [ch for ch in text if ch.isalpha()]
+    caps_ratio = sum(1 for ch in alpha_chars if ch.isupper()) / max(len(alpha_chars), 1)
+    if caps_ratio >= 0.85:
+        # Long all-caps = definitely noise (plan specs, code text)
+        if len(text) > 25:
+            return True
+        # Shorter all-caps: only reject if it contains engineering/legal keywords
+        engineering_kw = ["CONTRACTOR", "SHALL", "PIPE", "TRENCH", "WARRANTY",
+                          "INSTALL", "FOOTING", "REINFORCE", "CONSTRUCTION",
+                          "DRAINAGE", "PAVEMENT", "EMITTER", "FABRICATE",
+                          "SUBMITTAL", "SPECIFICATION", "REMOTE CONTROL",
+                          "VALVE", "MAINLINE", "IRRIGATION", "LANDSCAP",
+                          "LANDSCAPE", "SITE PLAN", "GRADING", "EXCAVAT",
+                          "RETAINING", "ELEVATION", "FIRE HYDRANT",
+                          "FIRE APPARATUS", "FIRE STATION", "FIRE SPRINKLER",
+                          "STREET", "SHRUBBERY", "RIGHT OF WAY", "EXISTING"]
+        if any(kw in up for kw in engineering_kw):
+            return True
+    # Owner/parcel lists (property owner names in all-caps)
+    if re.search(r"\bTRUST\b", up) and re.search(r"\bLIVING\b|\bFAMILY\b|\bREVOCABLE\b", up):
+        return True
+    if re.search(r"\bLP\b|\bLLC\b|\bINC\b|\bTRS\b", up) and len(text.split()) >= 3:
+        return True
+    # Table of contents artifacts like "of this CMP for more information"
+    if re.search(r"\b(?:CMP|BDC)\b", up) and len(text) < 80:
+        return True
+    # Construction-detail fragments ending mid-sentence
+    if text.endswith(":") and caps_ratio >= 0.7:
+        return True
+    return False
+
+
 def parse_agenda_pdf_items(text: str, meeting_id: str) -> list[dict]:
     items: list[dict] = []
     sort_order = 0
@@ -301,7 +346,7 @@ def parse_agenda_pdf_items(text: str, meeting_id: str) -> list[dict]:
             pending_num = None; emit_section(s); in_listing = True; continue
         if "NON CONSENT" in up and ("AGENDA" in up or "ITEMS" in up or "BUSINESS" in up):
             pending_num = None; emit_section(s); in_listing = True; continue
-        if ("CALL TO ORDER" in up or "ADJOURNMENT" in up or "EXECUTIVE SESSION" in up) and len(s) < 40:
+        if ("CALL TO ORDER" in up or "ADJOURNMENT" in up or "EXECUTIVE SESSION" in up) and len(s) < 60:
             pending_num = None; emit_section(s); continue
 
         # Item number on its own line: *4.A
@@ -325,15 +370,23 @@ def parse_agenda_pdf_items(text: str, meeting_id: str) -> list[dict]:
             pending_num = None
             continue
 
-        # Simple numbered sections
+        # Simple numbered sections — accepts only lines that look like real agenda
+        # items, not supporting-document boilerplate (engineering specs, code
+        # extracts, plan notes, parcel lists, etc.).
         if not in_listing:
             m = re.match(r"^\s*(\d+)\.\s+(.+)$", s)
-            if m and len(s) < 60:
+            if m and len(s) < 100:
+                title_text = m.group(2).strip()
+                # Skip lines that are supporting-document boilerplate:
+                # mostly-uppercase engineering/legal text, property owner names,
+                # ordinance codes, or address-like fragments.
+                if _is_pdf_packet_noise(title_text):
+                    continue
                 pending_num = None
                 sort_order += 1
                 items.append({"meeting_id": meeting_id, "agenda_item_number": m.group(1),
                     "item_type_category": "section", "section_level": 0,
-                    "agenda_item_title": m.group(2).strip(),
+                    "agenda_item_title": title_text,
                     "agenda_item_text": s, "sort_order": sort_order})
 
     if pending_num:

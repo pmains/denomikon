@@ -574,6 +574,7 @@ def get_filtered_meetings(
             22: ("Apache Junction", "apache-junction"),
             23: ("Fountain Hills", "fountain-hills"),
             24: ("Wickenburg", "wickenburg"),
+            25: ("Valley Metro", "valley-metro"),
         }
         jur_name, jur_slug = jur_map.get(row.jurisdiction_id, ("", ""))
 
@@ -1024,6 +1025,44 @@ def meeting_detail(meeting_id: str, body: Optional[str] = None) -> str:
         select(_Jur).where(_Jur.id == (meeting.jurisdiction_id or 1))
     ).scalar_one_or_none()
     jurisdiction_slug = _jur.slug if _jur else "maricopa-county"
+    jurisdiction_name = _jur.name if _jur else "Maricopa County"
+
+    # ── Entity mentions for this meeting ──
+    item_entities: dict[str, list[dict]] = {}
+    meeting_entities: list[dict] = []
+    for em_type, em_id, em_text, em_role, em_snippet, em_number, em_is_wd, em_flag in session.execute(
+        sa_text("""
+            SELECT em.source_type, em.entity_id, em.mention_text, em.role_in_context,
+                   em.context_snippet, ai.agenda_item_number,
+                   em.is_withdrawn, em.flag_reason
+            FROM entity_mentions em
+            LEFT JOIN agenda_items ai ON ai.id = em.source_id AND ai.meeting_db_id = :mpk
+                AND em.source_type = 'agenda_item'
+            WHERE (em.source_type = 'agenda_item' AND ai.meeting_db_id = :mpk2)
+               OR (em.source_type = 'meeting' AND em.source_id = :mpk3)
+            ORDER BY ai.agenda_item_number, em.id
+        """),
+        {"mpk": meeting_pk, "mpk2": meeting_pk, "mpk3": meeting_pk},
+    ):
+        # Sort roles in a logical order: people first, then orgs, then metadata
+        _role_priority = {
+            "presenter": 1, "attorney": 2, "applicant": 3, "owner": 4,
+            "firm": 5, "agent": 6, "staff": 7, "planning_commissioner": 8,
+            "board_member": 9, "case_number": 10, "mentioned": 11,
+        }
+        entry = {
+            "entity_id": em_id,
+            "mention_text": em_text,
+            "role": em_role,
+            "role_priority": _role_priority.get(em_role or "", 99),
+            "context_snippet": em_snippet,
+            "is_withdrawn": em_is_wd,
+            "flag_reason": em_flag,
+        }
+        if em_type == "meeting" or not em_number:
+            meeting_entities.append(entry)
+        else:
+            item_entities.setdefault(str(em_number), []).append(entry)
 
     session.close()
 
@@ -1038,6 +1077,7 @@ def meeting_detail(meeting_id: str, body: Optional[str] = None) -> str:
         meeting_id=meeting_id,
         body_code=meeting_body_val,
         jurisdiction_slug=jurisdiction_slug,
+        jurisdiction_name=jurisdiction_name,
         items=items,
         docs_by_item=docs_by_item,
         meeting_docs=meeting_docs,
@@ -1050,6 +1090,8 @@ def meeting_detail(meeting_id: str, body: Optional[str] = None) -> str:
         related_bos=related_bos,
         minutes_url=minutes_url,
         scroll_item=scroll_item,
+        item_entities=item_entities,
+        meeting_entities=meeting_entities,
     )
 
 
@@ -1190,6 +1232,47 @@ def c_number_revisions(c_number_base: str) -> str:
         items=items,
         docs_by_item=docs_by_item,
         votes_by_item=votes_by_item,
+    )
+
+
+@meetings_bp.route("/cases/<path:case_number>")
+@_cache(timeout=120)
+def case_detail(case_number: str) -> str:
+    """Show all meetings, agenda items, and docs associated with a case number."""
+    from db import Case as CaseModel, CaseEvent as CaseEventModel, PZItemDetail
+    session = get_session()
+    case = session.execute(
+        select(CaseModel).where(CaseModel.case_number == case_number.upper())
+    ).scalar_one_or_none()
+
+    if not case:
+        session.close()
+        return render_template("404.html"), 404
+
+    # All case events with meeting metadata
+    events = session.execute(
+        select(CaseEventModel, Meeting.meeting_date, Meeting.meeting_type,
+               Meeting.body, Meeting.meeting_id, Meeting.meeting_title)
+        .outerjoin(Meeting, Meeting.id == CaseEventModel.meeting_db_id)
+        .where(CaseEventModel.case_id == case.id)
+        .order_by(CaseEventModel.event_date)
+    ).all()
+
+    # Supporting docs from the PZ item detail
+    pz_items = session.execute(
+        select(PZItemDetail, Meeting.meeting_date, Meeting.body, Meeting.meeting_id)
+        .join(Meeting, Meeting.id == PZItemDetail.meeting_db_id)
+        .where(PZItemDetail.case_number == case_number.upper())
+        .order_by(Meeting.meeting_date)
+    ).all()
+
+    session.close()
+
+    return render_template(
+        "case_detail.html",
+        case=case,
+        events=events,
+        pz_items=pz_items,
     )
 
 

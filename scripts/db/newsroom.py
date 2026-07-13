@@ -246,8 +246,18 @@ class TopicWeeklyReport(Base):
 FTS_TABLES = {}
 
 
+# Module-level flag: only the first gunicorn worker runs the FTS migration.
+# Without this guard, all 3 workers attempt ALTER TABLE simultaneously,
+# causing ACCESS EXCLUSIVE lock contention that blocks reads and writes.
+_init_pg_fts_done = False
+
+
 def _init_pg_fts(engine) -> None:
     """Set up PostgreSQL full-text search (tsvector columns + GIN indexes)."""
+    global _init_pg_fts_done
+    if _init_pg_fts_done:
+        return
+    _init_pg_fts_done = True
     from sqlalchemy import text as _text
     with engine.begin() as c:
         # Agenda items — search across title + text
@@ -1095,6 +1105,44 @@ def seed_default_topics():
         if d["slug"] not in existing:
             session.add(Topic(**d))
     session.commit()
+
+
+def search_entities(query: str, limit: int = 50) -> tuple[list[dict], bool]:
+    """Search entities by name using ILIKE.
+
+    Returns (results, truncated).
+    """
+    from sqlalchemy import text as _text
+    from db import get_session
+
+    session = get_session()
+    try:
+        rows = session.execute(
+            _text("""
+                SELECT e.id, e.name, e.entity_type, e.mention_count,
+                       e.last_seen_at
+                FROM entities e
+                WHERE e.name ILIKE :q
+                ORDER BY e.mention_count DESC, e.name
+                LIMIT :limit
+            """),
+            {"q": f"%{query}%", "limit": limit + 1},
+        ).fetchall()
+        truncated = len(rows) > limit
+        rows = rows[:limit]
+        results = []
+        for r in rows:
+            results.append({
+                "id": r[0],
+                "name": r[1],
+                "entity_type": r[2],
+                "mention_count": r[3] or 0,
+                "last_seen_at": str(r[4]) if r[4] else None,
+            })
+        return results, truncated
+    finally:
+        session.close()
+
     session.close()
 
 

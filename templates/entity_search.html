@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Entity Search — Poliscopic{% endblock %}
+
+{% block head %}
+<meta name="description" content="Search developers, law firms, planning firms, and other entities across Maricopa County public meetings.">
+{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+  <h1 class="mb-3">Entity Search</h1>
+  <p class="text-muted">Find developers, law firms, planning firms, and other entities mentioned across public meetings.</p>
+
+  <form class="row g-2 mb-4" method="GET" action="{{ url_for('entities.entity_search') }}">
+    <div class="col-md-6">
+      <input type="text" class="form-control" name="q" placeholder="Search by name..." value="{{ query }}">
+    </div>
+    <div class="col-md-3">
+      <select class="form-select" name="type">
+        <option value="all">All types</option>
+        {% for tc in type_counts %}
+        <option value="{{ tc[0] }}" {% if current_type == tc[0] %}selected{% endif %}>
+          {{ tc[0]|replace('_', ' ')|title }} ({{ tc[1] }})
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3">
+      <button type="submit" class="btn btn-primary w-100">🔎 Search</button>
+    </div>
+  </form>
+
+  {% if query or current_type %}
+  <p class="text-muted">{{ total }} result{% if total != 1 %}s{% endif %} found.</p>
+  {% endif %}
+
+  {% if results %}
+  <div class="list-group mb-4">
+    {% for r in results %}
+    <a href="{{ url_for('entities.entity_detail', entity_id=r[0]) }}" class="list-group-item list-group-item-action">
+      <div class="d-flex w-100 justify-content-between">
+        <h6 class="mb-1">
+          {{ r[2] }}
+          {% if r[5] %} {# first_seen_at #}
+          <small class="text-muted">· {{ r[1]|replace('_', ' ')|title }}</small>
+          {% endif %}
+        </h6>
+        <small class="text-muted">{{ r[4] }} mention{% if r[4] != 1 %}s{% endif %}</small>
+      </div>
+      <small class="text-muted">
+        {% if r[7] %}{{ r[7] }}{% endif %}
+        {% if r[5] %}· First appearance: {{ r[5]|az_date }}{% endif %}
+        {% if r[6] and r[6] != r[5] %}· Latest: {{ r[6]|az_date }}{% endif %}
+      </small>
+    </a>
+    {% endfor %}
+  </div>
+
+  {% if total > per_page %}
+  <nav>
+    <ul class="pagination">
+      {% if page > 1 %}
+      <li class="page-item"><a class="page-link" href="?q={{ query }}&type={{ current_type }}&page={{ page - 1 }}">Previous</a></li>
+      {% endif %}
+      {% if page * per_page < total %}
+      <li class="page-item"><a class="page-link" href="?q={{ query }}&type={{ current_type }}&page={{ page + 1 }}">Next</a></li>
+      {% endif %}
+    </ul>
+  </nav>
+  {% endif %}
+
+  {% elif not query and not current_type %}
+  <div class="row g-3">
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-body">
+          <h5 class="card-title">🏗 Developers</h5>
+          <p class="card-text text-muted">Track development activity across all jurisdictions.</p>
+          <a href="?type=developer" class="btn btn-outline-primary btn-sm">Browse developers</a>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-body">
+          <h5 class="card-title">⚖ Law Firms</h5>
+          <p class="card-text text-muted">See which firms represent developers before each body.</p>
+          <a href="?type=law_firm" class="btn btn-outline-primary btn-sm">Browse law firms</a>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-body">
+          <h5 class="card-title">📐 Planning Firms</h5>
+          <p class="card-text text-muted">Planning consultants and engineering firms on projects.</p>
+          <a href="?type=planning_firm" class="btn btn-outline-primary btn-sm">Browse planning firms</a>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-body">
+          <h5 class="card-title">👤 Individuals</h5>
+          <p class="card-text text-muted">Attorneys, planners, and government staff.</p>
+          <a href="?type=person" class="btn btn-outline-primary btn-sm">Browse people</a>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

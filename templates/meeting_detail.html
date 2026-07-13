@@ -22,7 +22,7 @@
         <div class="d-flex justify-content-between align-items-start">
             <div>
                 <h3 class="card-title mb-1">
-                    Meeting {{ meeting.meeting_id }}
+                    {{ jurisdiction_name }} &middot; Meeting {{ meeting.meeting_id }}
                     <span class="badge bg-{{ badge_class }} fs-6">{{ meeting.sync_status }}</span>
                 </h3>
                 <p class="text-muted mb-0">
@@ -144,9 +144,7 @@
                     {{ item_vote.motion_result }}
                 </span>
                 {% endif %}
-                {% if is_pz and item.case_number %}
-                <code class="small text-muted ms-2">{{ item.case_number }}</code>
-                {% elif item.c_number %}
+                {% if item.c_number %}
                 <a href="/c-number/{{ item.c_number_base or item.c_number }}" class="text-decoration-none">
                     <code class="small text-muted ms-2">{{ item.c_number }}</code>
                 </a>
@@ -206,7 +204,7 @@
                     {% if item.case_number and not pz_d %}
                     <dl class="row small mb-2">
                         <dt class="col-sm-2">Case</dt>
-                        <dd class="col-sm-10"><code>{{ item.case_number }}</code></dd>
+                        <dd class="col-sm-10"><a href="/cases/{{ item.case_number }}"><code>{{ item.case_number }}</code></a></dd>
                     </dl>
                     <hr class="my-2">
                     {% endif %}
@@ -239,6 +237,27 @@
                     </dl>
                     <hr class="my-2">
                     {% endif %}
+                {% endif %}
+
+                {# Entities #}
+                {% set item_entities_list = item_entities.get(item.agenda_item_number, []) %}
+                {% if item_entities_list %}
+                <div class="mb-2">
+                  {% set filtered_entities = item_entities_list|selectattr('role', '!=', 'case_number')|list %}
+                  {% set roles = filtered_entities|groupby('role') %}
+                  {% set sorted_roles = roles|sort(attribute='list.0.role_priority') %}
+                  {% for role_group in sorted_roles %}
+                    <div class="small mb-1">
+                      <span class="text-muted">{{ role_group.grouper|replace('_', ' ')|title if role_group.grouper and role_group.grouper != 'mentioned' else '' }}</span>
+                      {% for em in role_group.list %}
+                        <a href="/entities/{{ em.entity_id }}" class="badge bg-light text-dark border text-decoration-none me-1 mb-1">
+                          {{ em.mention_text }}
+                        </a>
+                      {% endfor %}
+                    </div>
+                  {% endfor %}
+                </div>
+                <hr class="my-2">
                 {% endif %}
 
                 {# Vote detail #}
@@ -336,12 +355,12 @@
                         <a href="{{ doc.document_url }}" target="_blank" rel="noopener">
                             {{ doc.document_title or doc.file_name or 'Document' }}
                         </a>
-                        {% if doc.file_extension %}
-                        <span class="badge bg-light text-dark">{{ doc.file_extension.upper() }}</span>
-                        {% endif %}
-                        {% if doc.c_number %}
-                        <code class="text-muted">{{ doc.c_number }}</code>
-                        {% endif %}
+                        <span class="ms-1">
+                            <a href="{{ doc.document_url }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-primary py-0 px-1" title="Open PDF"><i class="bi bi-filetype-pdf"></i></a>
+                            {% if doc.text_content %}
+                            <a href="/documents/{{ doc.id }}" class="btn btn-sm btn-outline-secondary py-0 px-1" title="View extracted text"><i class="bi bi-file-text"></i></a>
+                            {% endif %}
+                        </span>
                     </li>
                     {% endfor %}
                 </ul>
@@ -366,6 +385,27 @@
     </div>
     {% endfor %}
 </div>
+
+{% if meeting_entities %}
+<div class="card mt-3 mb-3">
+  <div class="card-header"><strong>Meeting mentions</strong></div>
+  <div class="list-group list-group-flush small">
+    {% for em in meeting_entities %}
+    <div class="list-group-item d-flex justify-content-between align-items-center">
+      <div>
+        <a href="/entities/{{ em.entity_id }}" class="text-decoration-none fw-bold">{{ em.mention_text }}</a>
+        {% if em.role and em.role != 'mentioned' %}
+        <span class="badge bg-info text-dark ms-1">{{ em.role|replace('_', ' ')|title }}</span>
+        {% endif %}
+        {% if em.is_withdrawn %}<span class="badge bg-danger ms-1">Withdrawn</span>{% endif %}
+        {% if em.flag_reason %}<span class="text-warning ms-1" title="{{ em.flag_reason }}">&#9873;</span>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 {% else %}
 <div class="alert alert-warning">No agenda items found for this meeting.</div>
 {% endif %}
@@ -421,6 +461,30 @@ document.addEventListener('DOMContentLoaded', function() {
         setTimeout(function() {
             el.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 150);
+    }
+});
+</script>
+{% else %}
+{# Also handle #item-N hash links (from entity pages, external bookmarks) #}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    if (window.location.hash && window.location.hash.startsWith('#item-')) {
+        var num = window.location.hash.replace('#item-', '');
+        var el = document.querySelector('[data-item-number="' + num + '"]');
+        if (el) {
+            var btn = el.querySelector('[data-bs-toggle="collapse"]');
+            if (btn) {
+                btn.classList.remove('collapsed');
+                btn.setAttribute('aria-expanded', 'true');
+                var target = document.querySelector(btn.getAttribute('data-bs-target'));
+                if (target) {
+                    target.classList.add('show');
+                }
+            }
+            setTimeout(function() {
+                el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 150);
+        }
     }
 });
 </script>

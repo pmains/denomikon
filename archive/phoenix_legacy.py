@@ -342,3 +342,90 @@ async def fetch_agenda_items_async(
     except Exception as e:
         log.warning("Failed to fetch agenda items for %s: %s", meeting_id, e)
         return []
+
+
+# ── Supporting document extraction ──
+
+def fetch_meeting_documents(meeting_html: str, meeting_id: str,
+                            body_code: str = "phoenix-cc") -> list[dict]:
+    """Extract meeting-level supporting documents from a MeetingDetail.aspx page.
+
+    Returns a list of doc dicts including the formal agenda PDF (View.ashx?M=A)
+    and any meeting-level attachments listed in the attachments section.
+    """
+    docs: list[dict] = []
+    root = _parse_html(meeting_html)
+
+    # -- Agenda PDF (View.ashx?M=A) --
+    for a in _find_all(root, "a"):
+        href = _attr(a, "href")
+        if href and "View.ashx?M=A" in href:
+            docs.append({
+                "document_url": urllib.parse.urljoin(BASE_URL, href),
+                "document_title": _text(a) or "Agenda",
+                "document_type": "Agenda",
+                "agenda_item_number": "",
+                "agenda_item_id": 0,
+                "body": body_code,
+                "meeting_id": meeting_id,
+            })
+            break
+
+    # -- Meeting-level attachments --
+    # Phoenix Legistar has attachments in a table with id containing "tblAttachments"
+    for tbl in _find_all(root, "table"):
+        tid = tbl.attrs.get("id", "")
+        if "tblAttachments" not in tid:
+            continue
+        for a in _find_all(tbl, "a"):
+            href = _attr(a, "href")
+            if href and "View.ashx?M=F" in href:
+                docs.append({
+                    "document_url": urllib.parse.urljoin(BASE_URL, href),
+                    "document_title": _text(a) or "Attachment",
+                    "document_type": "Attachment",
+                    "agenda_item_number": "",
+                    "agenda_item_id": 0,
+                    "body": body_code,
+                    "meeting_id": meeting_id,
+                })
+
+    return docs
+
+
+def fetch_legislation_documents(legislation_url: str, meeting_id: str,
+                                agenda_item_number: str,
+                                body_code: str = "phoenix-cc",
+                                timeout: int = 15) -> list[dict]:
+    """Fetch a LegislationDetail.aspx page and extract attached documents.
+
+    Legistar legislation pages list attachments as View.ashx?M=F links
+    inside a span with id containing 'lblAttachments'.
+
+    Returns a list of doc dicts, or [] on any failure.
+    """
+    docs: list[dict] = []
+    try:
+        html = fetch_page(legislation_url, timeout=timeout)
+    except Exception:
+        return docs
+
+    # Find attachments: <span id="...lblAttachments..."><a href="View.ashx?M=F...">Title</a></span>
+    for m in re.finditer(
+        r'<a\s+href="(View\.ashx\?M=F[^"]*)"[^>]*>([^<]+)</a>',
+        html
+    ):
+        href = m.group(1)
+        title = m.group(2).strip()
+        doc_url = urllib.parse.urljoin(BASE_URL, href)
+        docs.append({
+            "document_url": doc_url,
+            "document_title": title,
+            "document_type": "Attachment",
+            "agenda_item_number": agenda_item_number,
+            "agenda_item_id": 0,
+            "body": body_code,
+            "meeting_id": meeting_id,
+        })
+
+    return docs

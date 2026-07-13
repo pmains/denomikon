@@ -552,3 +552,74 @@ class BodyMembership(Base):
     )
 
 
+# ── Entity Layer ──
+# These models transform Poliscopic from a meeting archive into a
+# relationship graph of the people, organizations, cases, and projects
+# that appear in public meetings.
+
+
+class Entity(Base):
+    """A person, organization, case, or project appearing in public meetings."""
+    __tablename__ = "entities"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entity_type = Column(String(32), nullable=False, index=True)
+    name = Column(Text, nullable=False)
+    normalized_name = Column(Text, nullable=False, unique=True)
+    jurisdiction_id = Column(Integer, nullable=True)
+    metadata_ = Column("metadata", Text, nullable=True)
+    is_government = Column(Boolean, nullable=False, default=False)
+    first_seen_at = Column(DateTime, nullable=True)
+    last_seen_at = Column(DateTime, nullable=True)
+    mention_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False,
+                         default=lambda: datetime.now(timezone.utc),
+                         onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ix_entities_type", "entity_type"),
+        Index("ix_entities_normalized", "normalized_name"),
+    )
+
+
+class EntityMention(Base):
+    """Links an entity to the agenda item, document, or article where it appeared."""
+    __tablename__ = "entity_mentions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entity_id = Column(Integer, nullable=False)
+    source_type = Column(String(32), nullable=False)
+    source_id = Column(Integer, nullable=False)
+    mention_text = Column(Text, nullable=True)
+    context_snippet = Column(Text, nullable=True)
+    confidence = Column(Integer, nullable=False, default=0)
+    extracted_by = Column(String(16), nullable=False, default="regex")
+    role_in_context = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ix_mentions_entity", "entity_id"),
+        Index("ix_mentions_source", "source_type", "source_id"),
+        Index("ix_mentions_entity_source", "entity_id", "source_type"),
+    )
+
+
+class EntityRelationship(Base):
+    """A typed link between two entities."""
+    __tablename__ = "entity_relationships"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    from_entity_id = Column(Integer, nullable=False)
+    to_entity_id = Column(Integer, nullable=False)
+    relationship = Column(String(64), nullable=False)
+    source_type = Column(String(32), nullable=True)
+    source_id = Column(Integer, nullable=True)
+    confidence = Column(Integer, nullable=False, default=50)
+    metadata_ = Column("metadata", Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ix_relationships_from", "from_entity_id"),
+        Index("ix_relationships_to", "to_entity_id"),
+    )

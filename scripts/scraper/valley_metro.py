@@ -647,6 +647,172 @@ def extract_meeting_type(title: str) -> str:
     return "Regular Meeting"
 
 
+def extract_agenda_items_from_packet(pdf_url: str, meeting_id: str = "vm") -> list[dict]:
+    """Download a meeting packet PDF, extract text, and parse into agenda items.
+
+    Args:
+        pdf_url: URL of the packet PDF
+        meeting_id: Used to generate unique agenda_item_id per meeting
+                     (default: "vm") to avoid constraint violations.
+
+    Returns a list of agenda_item dicts compatible with replace_meeting_data_safe:
+        agenda_item_number: str
+        agenda_item_id: str (unique per meeting, derived from meeting_id + number)
+        agenda_item_title: str
+        vote_or_action: str
+    """
+    import re
+
+    pdf_bytes = download_document(pdf_url)
+    if not pdf_bytes:
+        log.warning(f"Could not download packet: {pdf_url[:80]}")
+        return []
+
+    text = _pdf_bytes_to_text(pdf_bytes)
+    if not text:
+        log.warning(f"Could not extract text from packet: {pdf_url[:80]}")
+        return []
+
+    return _parse_valley_metro_items(text, meeting_id)
+
+
+def _pdf_bytes_to_text(pdf_bytes: bytes) -> str | None:
+    """Extract text from PDF bytes using fitz or pdftotext or OCR."""
+    import tempfile, os
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(pdf_bytes)
+        tmp_path = tmp.name
+
+    try:
+        import fitz
+        doc = fitz.open(tmp_path)
+        text = "\n".join(page.get_text() or "" for page in doc)
+        doc.close()
+        if text.strip():
+            os.unlink(tmp_path)
+            return text
+    except Exception:
+        pass
+
+    try:
+        import subprocess
+        r = subprocess.run(["pdftotext", "-layout", tmp_path, "-"],
+                          capture_output=True, text=True, timeout=30)
+        if r.returncode == 0 and r.stdout.strip():
+            os.unlink(tmp_path)
+            return r.stdout
+    except Exception:
+        pass
+
+    try:
+        import fitz, pytesseract
+        from PIL import Image
+        import io
+        doc = fitz.open(tmp_path)
+        text = "\n".join(
+            pytesseract.image_to_string(
+                Image.open(io.BytesIO(page.get_pixmap(dpi=300).tobytes("png"))),
+                lang="eng"
+            ) for page in doc
+        )
+        doc.close()
+        os.unlink(tmp_path)
+        return text
+    except Exception:
+        pass
+
+    os.unlink(tmp_path)
+    return None
+
+
+def _parse_valley_metro_items(text: str, meeting_id: str = "vm") -> list[dict]:
+    """Parse Valley Metro packet PDF text into agenda item dicts.
+
+    The PDF contains multiple meeting agendas in one file (Joint Boards,
+    RPTA, Rail). We extract the first contiguous block of numbered items,
+    which is the primary meeting agenda.
+    """
+    import re
+
+    # Find ALL item headers in the document
+    item_re = re.compile(r"^(\d+[A-Z]?)\.\s+(.+)$", re.MULTILINE)
+    action_re = re.compile(r"^(\d+[A-Z]?)\.\s+For\s+(action|information)\s*$", re.IGNORECASE | re.MULTILINE)
+
+    # Find action type lines and index by item number
+    actions: dict[str, str] = {}
+    for m in action_re.finditer(text):
+        actions[m.group(1)] = m.group(2).lower()  # "action" or "information"
+
+    # Find all item headers, skip page numbers and "For" continuations
+    all_items: list[tuple[str, str, int]] = []  # (number, title, position)
+    for m in item_re.finditer(text):
+        num, rest = m.group(1), m.group(2).strip()
+        if num.isdigit() and int(num) > 999:
+            continue  # page numbers
+        if rest.lower().startswith("for "):
+            continue  # "1. For Information" — matches action, not header
+        if rest.startswith("\x0c"):
+            continue
+        all_items.append((num, rest, m.start()))
+
+    if not all_items:
+        return []
+
+    # Find the longest contiguous block starting from position 0.
+    # This handles the "multiple agendas in one PDF" structure.
+    # We look for items where numbers ascend naturally.
+    # The first block is usually the primary meeting agenda.
+
+    def _is_next(a: str, b: str) -> bool:
+        """Check if b follows a in the item numbering scheme."""
+        # Handle 4A -> 4B, 9 -> 10, 4 -> 5, 4F -> 5
+        a_parts = re.match(r"(\d+)([A-Z]?)", a)
+        b_parts = re.match(r"(\d+)([A-Z]?)", b)
+        if not a_parts or not b_parts:
+            return False
+        a_num, a_let = int(a_parts.group(1)), a_parts.group(2)
+        b_num, b_let = int(b_parts.group(1)), b_parts.group(2)
+        if a_num == b_num and a_let and b_let:
+            return ord(b_let) - ord(a_let) == 1  # 4A -> 4B
+        if a_num == b_num and not a_let and b_let:
+            return b_let == 'A'  # 4 -> 4A (within same number)
+        if b_num - a_num == 1:
+            return True  # 4 -> 5, 9 -> 10
+        return False
+
+    # Find the first block — from item[0] until the sequence breaks
+    block = [all_items[0]]
+    for i in range(1, len(all_items)):
+        prev_num = all_items[i - 1][0]
+        curr_num = all_items[i][0]
+        if _is_next(prev_num, curr_num) or prev_num == curr_num:
+            block.append(all_items[i])
+        else:
+            break  # sequence broke — this is a new agenda
+
+    if len(block) < 3:
+        block = all_items[:12]  # fallback: take first 12 items
+
+    # Build item dicts from the block
+    items: list[dict] = []
+    seen: set[str] = set()
+    for num, title, pos in block:
+        if num in seen:
+            continue
+        seen.add(num)
+        action = actions.get(num, "").capitalize() if actions.get(num) else ""
+        desc = f"For {action}" if action else ""
+        items.append({
+            "agenda_item_number": num,
+            "agenda_item_id": f"{meeting_id}-{num}",
+            "agenda_item_title": title,
+            "vote_or_action": desc,
+        })
+
+    return items
+
+
 def main() -> None:
     """CLI entry point for testing."""
     import sys

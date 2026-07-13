@@ -6,12 +6,30 @@
 <form method="GET" action="/search" class="mb-4">
   <div class="input-group mb-2">
     <input type="text" class="form-control" name="q" value="{{ q }}" placeholder="Search agendas, documents, and articles…" autofocus>
-    <select name="scope" class="form-select" style="max-width:150px">
-      <option value="all" {% if scope == 'all' %}selected{% endif %}>All</option>
-      <option value="agendas" {% if scope == 'agendas' %}selected{% endif %}>Agendas</option>
-      <option value="documents" {% if scope == 'documents' %}selected{% endif %}>Documents</option>
-      <option value="articles" {% if scope == 'articles' %}selected{% endif %}>Articles</option>
-    </select>
+    <button class="btn btn-primary" type="submit">Search</button>
+  </div>
+
+  <div class="mb-2">
+    <div class="form-check form-check-inline">
+      <input class="form-check-input" type="checkbox" name="scope" value="agendas" id="scope-agendas"
+        {% if 'agendas' in scopes %}checked{% endif %}>
+      <label class="form-check-label" for="scope-agendas">Agendas</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input" type="checkbox" name="scope" value="documents" id="scope-documents"
+        {% if 'documents' in scopes %}checked{% endif %}>
+      <label class="form-check-label" for="scope-documents">Documents</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input" type="checkbox" name="scope" value="articles" id="scope-articles"
+        {% if 'articles' in scopes %}checked{% endif %}>
+      <label class="form-check-label" for="scope-articles">Articles</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input" type="checkbox" name="scope" value="entities" id="scope-entities"
+        {% if 'entities' in scopes %}checked{% endif %}>
+      <label class="form-check-label" for="scope-entities">Entities</label>
+    </div>
     <button class="btn btn-primary" type="submit">Search</button>
   </div>
 
@@ -66,7 +84,7 @@
     </div>
     {% if from_date or to_date or jurisdiction or body %}
     <div class="col-auto">
-      <a href="/search?q={{ q|urlencode }}&scope={{ scope }}" class="btn btn-sm btn-outline-danger">Clear filters</a>
+      <a href="/search?q={{ q|urlencode }}{% for s in scopes %}&scope={{ s }}{% endfor %}" class="btn btn-sm btn-outline-danger">Clear filters</a>
     </div>
     {% endif %}
   </div>
@@ -156,7 +174,33 @@
   {% endfor %}
   {% endif %}
 
-  {% if not articles and not agenda_items and not documents %}
+  {% if entities %}
+  <h6 class="mt-3">Entities ({{ entities|length }})</h6>
+  {% if entities_truncated %}
+  <p class="text-muted small">Showing the first {{ entities|length }} — try a more specific search.</p>
+  {% endif %}
+  {% for e in entities %}
+  <div class="card mb-2">
+    <div class="card-body py-2">
+      <div class="d-flex justify-content-between">
+        <div>
+          <h6 class="mb-1"><a href="/entities/{{ e.id }}" class="text-decoration-none">{{ e.name }}</a></h6>
+          <small class="text-muted">
+            <span class="badge bg-light text-dark border me-1">{{ e.entity_type|replace('_', ' ')|title }}</span>
+            {{ e.mention_count }} mention{{ 's' if e.mention_count != 1 else '' }}
+            {% if e.last_seen_at %} · Last seen {{ e.last_seen_at[:10] }}{% endif %}
+          </small>
+        </div>
+        <a href="/entities/{{ e.id }}" class="btn btn-sm btn-outline-primary py-0 px-1 flex-shrink-0 mt-1">
+          <i class="bi bi-box-arrow-up-right"></i>
+        </a>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  {% endif %}
+
+  {% if not articles and not agenda_items and not documents and not entities %}
   <p class="text-muted">No results found.</p>
   {% endif %}
 {% endif %}

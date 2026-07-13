@@ -6,7 +6,7 @@ from sqlalchemy.orm import joinedload
 
 from flask import Blueprint, render_template, request, abort
 from db import get_session, Jurisdiction, PublicBody
-from db.newsroom import Article, Tag, search_articles, search_agenda_items, search_supporting_documents
+from db.newsroom import Article, Tag, search_articles, search_agenda_items, search_supporting_documents, search_entities
 
 articles_bp = Blueprint("articles", __name__)
 
@@ -406,7 +406,11 @@ def by_tag(tag_slug):
 @articles_bp.route("/search")
 def search():
     q = request.args.get("q", "").strip()
-    scope = request.args.get("scope", "all")  # all, articles, agendas
+    # Multi-select scope: checkboxes send multiple ?scope= values.
+    # Default = everything except articles.
+    scopes = request.args.getlist("scope")
+    if not scopes:
+        scopes = ["agendas", "documents", "entities"]
     sort = request.args.get("sort", "date")  # date, relevance
     from_date = request.args.get("from", "").strip() or None
     to_date = request.args.get("to", "").strip() or None
@@ -415,6 +419,8 @@ def search():
     articles = []
     agenda_items = []
     tags = []
+    entities = []
+    entities_truncated = False
 
     session = get_session()
     tags = session.execute(select(Tag).order_by(Tag.name)).scalars().all()
@@ -442,27 +448,31 @@ def search():
     documents = []
 
     if q:
-        if scope in ("all", "articles"):
+        if "articles" in scopes:
             articles, articles_truncated = search_articles(q)
-        if scope in ("all", "agendas"):
+        if "agendas" in scopes:
             agenda_items, agenda_truncated = search_agenda_items(
                 q, sort=sort, from_date=from_date, to_date=to_date,
                 jurisdiction=jurisdiction, body=body,
             )
-        if scope in ("all", "documents"):
+        if "documents" in scopes:
             documents, documents_truncated = search_supporting_documents(
                 q, sort=sort, from_date=from_date, to_date=to_date,
                 jurisdiction=jurisdiction, body=body,
             )
+        if "entities" in scopes:
+            entities, entities_truncated = search_entities(q)
 
     session.close()
-    return render_template("search.html", q=q, scope=scope, sort=sort,
+    return render_template("search.html", q=q, scopes=scopes, sort=sort,
                            from_date=from_date or "", to_date=to_date or "",
                            jurisdiction=jurisdiction or "", body=body or "",
                            articles=articles, agenda_items=agenda_items,
                            documents=documents,
+                           entities=entities,
                            articles_truncated=articles_truncated,
                            agenda_truncated=agenda_truncated,
                            documents_truncated=documents_truncated,
+                           entities_truncated=entities_truncated,
                            tags=tags,
                            jurisdictions=jurisdictions, all_bodies=all_bodies)

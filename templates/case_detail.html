@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Case {{ case.case_number }} — Poliscopic{% endblock %}
+{% block content %}
+
+<a href="javascript:history.back()" class="btn btn-outline-secondary btn-sm mb-3">&larr; Back</a>
+
+<h3 class="mb-1">Case: <code>{{ case.case_number }}</code></h3>
+{% if case.description %}
+<p class="text-muted mt-1">{{ case.description }}</p>
+{% endif %}
+
+{% if events %}
+<div class="card mb-4">
+  <div class="card-header"><strong>Meeting Timeline ({{ events|length }})</strong></div>
+  <div class="list-group list-group-flush">
+    {% for ev, mdate, mtype, body_code, mid, mtitle in events %}
+    <div class="list-group-item">
+      <div class="d-flex justify-content-between align-items-start">
+        <div>
+          <a href="/meetings/{{ body_code or '?' }}/{{ mid }}" class="text-decoration-none fw-bold">
+            {{ mtype or 'Meeting' }} — {{ mdate or '?' }}
+          </a>
+          {% if mtitle and mtitle != mid %}
+          <div class="small text-muted">{{ mtitle }}</div>
+          {% endif %}
+          <div class="small text-muted mt-1">
+            <span class="badge bg-light text-dark border">{{ ev.event_type }}</span>
+            {% if ev.notes %}{{ ev.notes[:200] }}{% endif %}
+          </div>
+        </div>
+        <a href="/meetings/{{ body_code or '?' }}/{{ mid }}" class="btn btn-sm btn-outline-primary ms-2 flex-shrink-0">
+          View meeting
+        </a>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if pz_items %}
+<div class="card mb-4">
+  <div class="card-header"><strong>P&Z Agenda Items ({{ pz_items|length }})</strong></div>
+  <div class="list-group list-group-flush">
+    {% for pz, mdate, body_code, mid in pz_items %}
+    <div class="list-group-item">
+      <div class="d-flex justify-content-between align-items-start">
+        <div>
+          <strong>{{ pz.project_name or '(untitled)' }}</strong>
+          <div class="small text-muted">
+            <a href="/meetings/{{ body_code }}/{{ mid }}#item-{{ pz.agenda_item_number }}" class="text-decoration-none">
+              Item {{ pz.agenda_item_number }} — {{ mdate }}
+            </a>
+          </div>
+          {% if pz.request %}
+          <div class="small mt-1">{{ pz.request[:200] }}{% if pz.request|length > 200 %}&hellip;{% endif %}</div>
+          {% endif %}
+          {% if pz.applicant %}
+          <div class="small text-muted mt-1">Applicant: {{ pz.applicant }}</div>
+          {% endif %}
+          {% if pz.district %}
+          <span class="badge bg-light text-dark border">District {{ pz.district }}</span>
+          {% endif %}
+        </div>
+        <a href="/meetings/{{ body_code }}/{{ mid }}#item-{{ pz.agenda_item_number }}" class="btn btn-sm btn-outline-secondary ms-2 flex-shrink-0">
+          Item {{ pz.agenda_item_number }}
+        </a>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if not events and not pz_items %}
+<div class="alert alert-info">No activity recorded for this case.</div>
+{% endif %}
+
+{% endblock %}

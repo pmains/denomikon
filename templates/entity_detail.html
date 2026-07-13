@@ -1,0 +1,380 @@
+{% extends "base.html" %}
+{% block title %}{{ entity[2] }} — {{ entity[1]|replace('_', ' ')|title }} — Poliscopic{% endblock %}
+
+{% block head %}
+<meta name="description" content="Activity profile for {{ entity[2] }} — {{ entity[1]|replace('_', ' ')|title }} appearing in Maricopa County public meetings.">
+{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+  <nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+      <li class="breadcrumb-item"><a href="{{ url_for('entities.entity_search') }}">Entities</a></li>
+      <li class="breadcrumb-item active">{{ entity[2] }}</li>
+    </ol>
+  </nav>
+
+  {# ── Header ── #}
+  <div class="row mb-3">
+    <div class="col-md-8">
+      <h1 class="mb-1">{{ entity[2] }}</h1>
+      <p class="text-muted mb-1">
+        <span class="badge bg-secondary">{{ entity[1]|replace('_', ' ')|title }}</span>
+        {% if entity[4] %}<span class="badge bg-warning text-dark">Government</span>{% endif %}
+        {% if entity[8] %}<span class="badge bg-light text-dark">{{ entity[8] }}</span>{% endif %}
+      </p>
+    </div>
+  </div>
+
+  {# ── Stats cards ── #}
+  <div class="row g-2 mb-3">
+    <div class="col-md-3 col-6">
+      <div class="card text-center py-2" role="button" data-bs-toggle="collapse" data-bs-target="#mentionsDetail" aria-expanded="false" aria-controls="mentionsDetail" title="Click to see all {{ entity[5] }} mentions">
+        <div class="card-body py-1">
+          <div class="fs-4 fw-bold">{{ entity[5] }}</div>
+          <small class="text-muted">
+            Mentions <i class="bi bi-chevron-down small"></i>
+          </small>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3 col-6">
+      <div class="card text-center py-2">
+        <div class="card-body py-1">
+          <div class="fs-4 fw-bold">{{ meeting_count }}</div>
+          <small class="text-muted">Meetings</small>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3 col-6">
+      <div class="card text-center py-2">
+        <div class="card-body py-1">
+          <div class="fs-4 fw-bold">{{ jur_breakdown|length }}</div>
+          <small class="text-muted">Jurisdictions</small>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3 col-6">
+      <div class="card text-center py-2">
+        <div class="card-body py-1">
+          {% if mention_dates and mention_dates[0] %}
+          <div class="small fw-bold">{{ mention_dates[0]|az_date }} &ndash; {{ mention_dates[1]|az_date }}</div>
+          <small class="text-muted">Activity range</small>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Expandable mentions detail panel ── #}
+  <div class="collapse mb-3" id="mentionsDetail">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <strong>
+          All {{ entity[5] }} Mentions
+          <small class="text-muted fw-normal">({{ meeting_count }} meeting{% if meeting_count != 1 %}s{% endif %}, {{ jur_breakdown|length }} jurisdiction{% if jur_breakdown|length != 1 %}s{% endif %})</small>
+        </strong>
+        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#mentionsDetail" aria-expanded="false">
+          <i class="bi bi-x-lg"></i>
+        </button>
+      </div>
+      <div class="card-body p-0">
+        {% set ns = namespace(last_meeting=0) %}
+        {% for mid, mlist in mention_details.items() %}
+          {% set meeting_row = timeline | selectattr("meeting_db_id", "equalto", mid) | first %}
+          {% if meeting_row %}
+            <div class="list-group-item border-bottom">
+              <div class="px-3 pt-2 pb-1 small text-muted">
+                <strong>{{ meeting_row.jurisdiction_name }}</strong> &middot;
+                <a href="{{ url_for('meetings.meeting_detail', meeting_id=meeting_row.meeting_id, body=meeting_row.body) }}" class="text-decoration-none">
+                  {{ meeting_row.body_name }}
+                </a>
+                &middot; {{ meeting_row.meeting_date|az_date }}
+              </div>
+              {% for m in mlist %}
+                <div class="px-3 py-1 d-flex align-items-start gap-2">
+                  <span class="badge bg-light text-dark border mt-1">
+                    {% if m.agenda_item_number %}#{{ m.agenda_item_number }}{% else %}&mdash;{% endif %}
+                  </span>
+                  <div class="flex-grow-1">
+                    <a href="{{ url_for('meetings.meeting_detail', meeting_id=meeting_row.meeting_id, body=meeting_row.body) }}?item={{ m.agenda_item_number }}#item-{{ m.agenda_item_number }}" class="text-decoration-none">
+                      {{ m.agenda_item_title or "(untitled)" }}
+                    </a>
+                    {% if m.context_snippet %}
+                      <div class="small text-muted mt-1 context-snippet">
+                        {{ m.context_snippet|replace(m.mention_text, '<mark>' ~ m.mention_text ~ '</mark>')|safe }}
+                      </div>
+                    {% elif m.mention_text and m.mention_text|length > 15 %}
+                      <div class="small text-muted mt-1">
+                        <i class="bi bi-quote"></i> {{ m.mention_text[:200] }}{% if m.mention_text|length > 200 %}&hellip;{% endif %}
+                      </div>
+                    {% endif %}
+                    {% if m.is_withdrawn %}
+                      <span class="badge bg-danger">Withdrawn</span>
+                    {% endif %}
+                    {% if m.role_in_context and m.role_in_context != "mentioned" %}
+                      <span class="badge bg-info text-dark">{{ m.role_in_context|replace('_', ' ')|title }}</span>
+                    {% endif %}
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% else %}
+          <div class="p-3 text-muted small">No mention details available.</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Activity by Jurisdiction ── #}
+  {% if jur_breakdown %}
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <strong>Activity by Jurisdiction</strong>
+      {% if active_jurisdiction %}
+      <a href="{{ url_for('entities.entity_detail', entity_id=entity_id) }}" class="small text-muted text-decoration-none">&times; clear filter</a>
+      {% endif %}
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0">
+        <thead>
+          <tr>
+            <th>Jurisdiction</th>
+            <th class="text-center">Meetings</th>
+            <th class="text-center">Items</th>
+            <th class="text-center">Withdrawn</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for jb in jur_breakdown %}
+          <tr class="{% if active_jurisdiction == jb[0] %}table-active{% endif %}">
+            <td>
+              <a href="{{ url_for('entities.entity_detail', entity_id=entity_id, jurisdiction=jb[0]) }}" class="text-decoration-none">{{ jb[0] }}</a>
+            </td>
+            <td class="text-center">{{ jb[2] }}</td>
+            <td class="text-center">{{ jb[3] }}</td>
+            <td class="text-center">
+              {% if jb[4] %}<span class="text-danger">{{ jb[4] }}</span>{% else %}&mdash;{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Represented by (for developers/others) / Clients (for law firms/attorneys) ── #}
+  {% set entity_type = entity[1] %}
+  {% if legal_reps or clients %}
+  <div class="row g-2 mb-4">
+    {% if legal_reps %}
+    <div class="col-md-6">
+      <div class="card h-100">
+        <div class="card-body py-2">
+          <small class="text-muted">Represented by</small><br>
+          {% for r in legal_reps %}
+          <a href="{{ url_for('entities.entity_detail', entity_id=r[0]) }}" class="badge bg-primary text-decoration-none me-1 mb-1">{{ r[1] }}</a>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+    {% if clients %}
+    <div class="col-md-6">
+      <div class="card h-100">
+        <div class="card-body py-2">
+          <small class="text-muted">
+            {%- if entity_type in ('law_firm', 'person') %}Clients{% else %}Represents{% endif -%}
+          </small><br>
+          {% for c in clients %}
+          <a href="{{ url_for('entities.entity_detail', entity_id=c[0]) }}" class="badge bg-success text-decoration-none me-1 mb-1">{{ c[1] }}</a>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if related %}
+  <div class="card mb-4">
+    <div class="card-header"><strong>Relationships</strong></div>
+    <div class="card-body">
+      <table class="table table-sm mb-0">
+        <thead>
+          <tr><th>Entity</th><th>Relationship</th><th>Entity</th></tr>
+        </thead>
+        <tbody>
+          {% for r in related %}
+          <tr>
+            <td>
+              <a href="{{ url_for('entities.entity_detail', entity_id=r[0]) }}">{{ r[1] }}</a>
+              <small class="text-muted">({{ r[2]|replace('_', ' ')|title }})</small>
+            </td>
+            <td><code>{{ r[3] }}</code></td>
+            <td>
+              <a href="{{ url_for('entities.entity_detail', entity_id=r[4]) }}">{{ r[5] }}</a>
+              <small class="text-muted">({{ r[6]|replace('_', ' ')|title }})</small>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if timeline %}
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <strong>Meeting Timeline</strong>
+      {% if active_jurisdiction %}
+      <small class="text-muted">Filtered by <strong>{{ active_jurisdiction }}</strong></small>
+      {% endif %}
+    </div>
+    <div class="card-body p-0">
+      <div class="list-group list-group-flush">
+        {% for t in timeline %}
+        {% set mid = t[0] %}
+        {% set meeting_mentions = mention_details.get(mid, []) %}
+        {% set mention_count = meeting_mentions|length %}
+        <div class="list-group-item">
+          {# ── Meeting header ── #}
+          <div class="d-flex justify-content-between align-items-start">
+            <div>
+              <a href="{{ url_for('meetings.meeting_detail', meeting_id=t[2], body=t[3]) }}" class="text-decoration-none">
+                <span class="text-muted">{{ t[1]|az_date }}</span>
+                <strong class="ms-1">{{ t[5] }}</strong>
+                <span class="text-muted">· {{ t[4] }}</span>
+              </a>
+            </div>
+            <div class="d-flex align-items-center gap-2 flex-shrink-0">
+              {% if t[13] %}
+              <span class="badge bg-light text-dark border">{{ t[13] }}</span>
+              {% endif %}
+              {% if mention_count > 1 %}
+              <button class="btn btn-sm btn-outline-secondary py-0 px-1" type="button"
+                      data-bs-toggle="collapse" data-bs-target="#mentions-{{ mid }}"
+                      aria-expanded="false" title="{{ mention_count }} mentions — click to expand">
+                <i class="bi bi-list-ul"></i>
+                <span class="small">{{ mention_count }}</span>
+              </button>
+              {% endif %}
+            </div>
+          </div>
+          {# ── Item number + title (first mention shown) ── #}
+          <div class="mt-1">
+            <a href="{{ url_for('meetings.meeting_detail', meeting_id=t[2], body=t[3]) }}?item={{ t[7] }}#item-{{ t[7] }}" class="fw-bold text-decoration-none">Item {{ t[7] or '' }}</a>
+            <span>{{ t[6] or '' }}</span>
+            {% if mention_count > 1 %}
+            <small class="text-muted">(+{{ mention_count - 1 }} more mention{% if mention_count - 1 != 1 %}s{% endif %})</small>
+            {% endif %}
+          </div>
+          {# ── Context snippet ── #}
+          {% if t[9] and t[9]|length > 15 %}
+          <div class="small text-muted mt-1">{{ t[9] }}</div>
+          {% endif %}
+          {% if t[11] %}
+          <span class="badge bg-danger mt-1">Withdrawn</span>
+          <span class="small text-danger">{{ t[12] }}</span>
+          {% endif %}
+
+          {# ── Expandable mention detail list ── #}
+          {% if mention_count > 1 %}
+          <div class="collapse mt-2" id="mentions-{{ mid }}">
+            <div class="border rounded bg-light p-2">
+              <small class="text-muted fw-bold d-block mb-1">All mentions in this meeting</small>
+              {% for m in meeting_mentions %}
+              <div class="d-flex align-items-start gap-2 py-1 {% if not loop.first %}border-top{% endif %}">
+                <span class="badge bg-white text-dark border mt-1">#{{ m.agenda_item_number or '?' }}</span>
+                <div class="flex-grow-1">
+                  <a href="{{ url_for('meetings.meeting_detail', meeting_id=t[2], body=t[3]) }}?item={{ m.agenda_item_number }}#item-{{ m.agenda_item_number }}" class="text-decoration-none small fw-bold">
+                    {{ m.agenda_item_title or "(untitled)" }}
+                  </a>
+                  {% if m.context_snippet %}
+                  <div class="small text-muted mt-1 context-snippet">
+                    {{ m.context_snippet|replace(m.mention_text, '<mark>' ~ m.mention_text ~ '</mark>')|safe }}
+                  </div>
+                  {% elif m.mention_text and m.mention_text|length > 15 %}
+                  <div class="small text-muted mt-1">
+                    <i class="bi bi-quote"></i> {{ m.mention_text[:200] }}{% if m.mention_text|length > 200 %}&hellip;{% endif %}
+                  </div>
+                  {% endif %}
+                  <div class="mt-1">
+                    {% if m.is_withdrawn %}<span class="badge bg-danger me-1">Withdrawn</span>{% endif %}
+                    {% if m.role_in_context and m.role_in_context != "mentioned" %}
+                    <span class="badge bg-info text-dark">{{ m.role_in_context|replace('_', ' ')|title }}</span>
+                    {% endif %}
+                    {% if m.confidence and m.confidence < 0.7 %}
+                    <span class="badge bg-warning text-dark">{{ (m.confidence * 100)|int }}% confidence</span>
+                    {% endif %}
+                  </div>
+                </div>
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Supporting Document Mentions ── #}
+  {% if docs %}
+  <div class="card mb-4">
+    <div class="card-header">
+      <strong>Documents mentioning this entity ({{ docs|length }})</strong>
+    </div>
+    <div class="list-group list-group-flush">
+      {% for d in docs %}
+      <div class="list-group-item">
+        <div class="d-flex justify-content-between align-items-start">
+          <div class="flex-grow-1">
+            <a href="{{ d.document_url }}" target="_blank" rel="noopener" class="fw-bold text-decoration-none">
+              {{ d.document_title or "Untitled document" }} &nearr;
+            </a>
+            <div class="small text-muted">
+              {{ d.meeting_date|az_date }} &middot; {{ d.body }}
+            </div>
+            {% if d.mention_text %}
+            <div class="small text-muted mt-1">
+              <i class="bi bi-quote"></i>
+              {% if d.context_snippet %}
+                {{ d.context_snippet|replace(d.mention_text, '<mark>' ~ d.mention_text ~ '</mark>')|safe }}
+              {% else %}
+                {{ d.mention_text }}
+              {% endif %}
+            </div>
+            {% endif %}
+            {% if d.text_content %}
+            <div class="mt-1">
+              <a href="/documents/{{ d.doc_id }}" class="btn btn-sm btn-outline-secondary py-0 px-1" title="View extracted text">
+                <i class="bi bi-file-text"></i> Text
+              </a>
+            </div>
+            {% endif %}
+          </div>
+          <a href="{{ d.document_url }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-primary ms-2 flex-shrink-0">
+            PDF &nearr;
+          </a>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if not timeline and not related and not docs %}
+  <div class="alert alert-info">
+    No activity recorded for this entity yet. The entity has been created but
+    hasn't been linked to any meetings or documents. This can happen when
+    the entity was identified in source data but the linking pass is pending.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

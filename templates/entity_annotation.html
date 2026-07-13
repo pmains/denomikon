@@ -1,0 +1,918 @@
+{% extends "base.html" %}
+{% block title %}
+  {% if page == 'dashboard' %}
+    Entity Mention Annotation — Poliscopic
+  {% else %}
+    Item {{ item.sample_id }} / {{ total }} — Entity Mention Annotation
+  {% endif %}
+{% endblock %}
+
+{% block extra_css %}
+<style>
+  /* ── Layout ── */
+  .annotation-container { max-width: 960px; margin: 0 auto; }
+  .progress-bar-container { background: #e9ecef; border-radius: 8px; height: 8px; overflow: hidden; }
+  .progress-bar-fill { height: 100%; background: #1a5276; transition: width 0.3s; }
+
+  /* ── Text display ── */
+  .annotation-text {
+    font-size: 0.95rem;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    padding: 1.25rem;
+    background: #fff;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    min-height: 200px;
+    position: relative;
+    user-select: text;
+  }
+  .entity-highlight {
+    background: #fef3c7;
+    border-bottom: 2px solid #f59e0b;
+    padding: 1px 2px;
+    border-radius: 3px;
+    cursor: pointer;
+    position: relative;
+    transition: background 0.15s;
+  }
+  .entity-highlight:hover { background: #fde68a; }
+  .entity-highlight.accepted {
+    background: #d1fae5;
+    border-bottom-color: #10b981;
+  }
+  .entity-highlight.rejected {
+    background: transparent;
+    border-bottom-color: transparent;
+    text-decoration: line-through;
+    color: #9ca3af;
+  }
+
+  /* ── Toolbar ── */
+  .annotation-toolbar {
+    display: flex; gap: 8px; align-items: center;
+    padding: 0.75rem 1rem;
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    flex-wrap: wrap;
+  }
+  .annotation-toolbar .badge { font-size: 0.8rem; }
+
+  /* ── Metadata sidebar ── */
+  .meta-card { font-size: 0.875rem; }
+  .meta-card dt { color: #6b7280; font-weight: 500; }
+  .meta-card dd { margin-bottom: 0.5rem; }
+
+  /* ── Dashboard cards ── */
+  .stat-card {
+    text-align: center; padding: 1.5rem;
+    border-radius: 12px; border: 1px solid #e5e7eb;
+  }
+  .stat-card .number { font-size: 2.5rem; font-weight: 700; line-height: 1.2; }
+  .stat-card .label { color: #6b7280; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  /* ── Nav ── */
+  .nav-controls { display: flex; gap: 8px; align-items: center; }
+
+  /* ── Selection popup ── */
+  .selection-popup {
+    position: absolute; z-index: 1000;
+    background: #1f2937; color: #f9fafb;
+    padding: 6px 12px; border-radius: 6px;
+    font-size: 0.85rem; cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    display: none;
+  }
+  .selection-popup:hover { background: #374151; }
+
+  /* ── Notes ── */
+  .notes-area { width: 100%; min-height: 60px; resize: vertical; font-size: 0.875rem; }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    .annotation-text { font-size: 0.875rem; padding: 0.75rem; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container annotation-container mt-3 mb-5">
+
+{% if page == 'dashboard' %}
+
+  {# ═══════════════════════════════════════════════ DASHBOARD ═══════════════════════════════ #}
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="h3 mb-0">🧷 Entity Mention Annotation</h1>
+    <span class="text-muted">{{ total }} items</span>
+  </div>
+
+  <p class="text-muted mb-4">
+    Mark entity <strong>spans</strong> — organizations, law firms, people, projects, etc.
+    No type labels. Just "is this an entity?".
+  </p>
+
+  {# Progress row #}
+  <div class="row g-3 mb-4">
+    <div class="col-md-3">
+      <div class="stat-card">
+        <div class="number text-success">{{ reviewed }}</div>
+        <div class="label">Reviewed</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="stat-card">
+        <div class="number text-warning">{{ in_progress }}</div>
+        <div class="label">In Progress</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="stat-card">
+        <div class="number text-muted">{{ unreviewed }}</div>
+        <div class="label">Unreviewed</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="stat-card">
+        <div class="number text-primary">{{ total_human_spans }}</div>
+        <div class="label">Spans</div>
+      </div>
+    </div>
+  </div>
+
+  {# Progress bar #}
+  <div class="progress-bar-container mb-4">
+    {% set pct = (reviewed / total * 100) if total else 0 %}
+    <div class="progress-bar-fill" style="width: {{ pct }}%"></div>
+  </div>
+
+  {# Action buttons #}
+  <div class="d-flex gap-2 mb-4">
+    <a href="{{ url_for('annotation.annotation_review', sample_id=1) }}" class="btn btn-primary">
+      ▶ Start Annotating
+    </a>
+    {% if unreviewed > 0 %}
+      <a href="{{ url_for('annotation.annotation_review', sample_id=first_unreviewed) }}" class="btn btn-outline-primary">
+        Jump to First Unreviewed
+      </a>
+    {% endif %}
+    <a href="{{ url_for('annotation.export_training_data') }}" class="btn btn-outline-secondary">
+      ⬇ Export Training Data
+    </a>
+  </div>
+
+  {# Jurisdiction breakdown #}
+  <div class="card mt-4">
+    <div class="card-header"><strong>Coverage by Jurisdiction</strong></div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0">
+        <thead>
+          <tr>
+            <th>Jurisdiction</th>
+            <th class="text-end">Total</th>
+            <th class="text-end">Reviewed</th>
+            <th><div class="progress-bar-container" style="height:6px; max-width:200px;"><div class="progress-bar-fill" style="width:0%"></div></div></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for jur, count in jur_counts %}
+          <tr>
+            <td>{{ jur }}</td>
+            <td class="text-end">{{ count }}</td>
+            <td class="text-end">{{ jur_reviewed.get(jur, 0) }}</td>
+            <td>
+              {% set jur_pct = (jur_reviewed.get(jur, 0) / count * 100) if count else 0 %}
+              <div class="progress-bar-container" style="height:6px; max-width:200px;">
+                <div class="progress-bar-fill" style="width: {{ jur_pct }}%"></div>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+{% else %}
+
+  {# ═══════════════════════════════════════════════ REVIEW PAGE ═══════════════════════════════ #}
+
+  {# ── Navigation ── #}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <a href="{{ url_for('annotation.annotation_dashboard') }}" class="btn btn-sm btn-outline-secondary">
+        ← Dashboard
+      </a>
+    </div>
+    <div class="nav-controls">
+      {% if prev_id %}
+        <a href="{{ url_for('annotation.annotation_review', sample_id=prev_id) }}" class="btn btn-sm btn-outline-secondary">← Prev</a>
+      {% else %}
+        <span class="btn btn-sm btn-outline-secondary disabled">← Prev</span>
+      {% endif %}
+
+      <span class="fw-semibold px-2">
+        <span id="current-sample-id">{{ item.sample_id }}</span> / {{ total }}
+      </span>
+
+      {% if next_id %}
+        <a href="{{ url_for('annotation.annotation_review', sample_id=next_id) }}" class="btn btn-sm btn-outline-secondary">Next →</a>
+      {% else %}
+        <span class="btn btn-sm btn-outline-secondary disabled">Next →</span>
+      {% endif %}
+
+      <div class="vr mx-1"></div>
+
+      <button class="btn btn-sm btn-outline-info" onclick="jumpToUnreviewed()" title="Next unreviewed">
+        ⏭ Skip
+      </button>
+    </div>
+
+    <div>
+      <span class="badge" id="status-badge"
+        style="font-size:0.8rem; {% if item.annotation_status == 'reviewed' %}background:#10b981;{% elif item.annotation_status == 'in_progress' %}background:#f59e0b;{% else %}background:#9ca3af;{% endif %}">
+        {{ item.annotation_status|replace('_', ' ')|title }}
+      </span>
+      <button class="btn btn-sm btn-success ms-2" onclick="markReviewed()" id="mark-reviewed-btn">
+        ✓ Mark Reviewed
+      </button>
+    </div>
+  </div>
+
+  {# ── Progress bar ── #}
+  <div class="progress-bar-container mb-3" style="height:4px;">
+    {% set pct = (item.sample_id / total * 100) %}
+    <div class="progress-bar-fill" style="width: {{ pct }}%"></div>
+  </div>
+
+  <div class="row g-3">
+    {# ── Main: Annotation text ── #}
+    <div class="col-lg-8">
+      <div class="position-relative">
+        {# ⚠ Must NOT have whitespace inside this div — it would shift offsets #}
+        <div id="annotation-text" class="annotation-text"
+             data-item-id="{{ item.sample_id }}"></div>
+        {# Selection popup #}
+        <div id="selection-popup" class="selection-popup">+ Mark as Entity</div>
+      </div>
+
+      {# ── Toolbar ── #}
+      <div class="annotation-toolbar">
+        <span class="text-muted small">Spans:</span>
+        <span id="accepted-count" class="badge bg-success">0</span>
+        <span id="rejected-count" class="badge bg-secondary">0</span>
+        <span id="auto-count" class="badge bg-warning text-dark">{{ item.entity_spans|length }}</span>
+        <div class="ms-auto">
+          <span class="text-muted small">Char count:</span>
+          <span class="badge bg-light text-dark">{{ item.char_count }}</span>
+          <span class="text-muted small">Density:</span>
+          <span class="badge bg-light text-dark">{{ item.density_score }}</span>
+        </div>
+      </div>
+
+      {# ── Notes ── #}
+      <div class="mt-3">
+        <label class="form-label small text-muted">Notes (optional)</label>
+        <textarea id="notes-area" class="notes-area form-control" placeholder="Anything notable about this item's entities?">{{ item.notes }}</textarea>
+      </div>
+
+      {# ── Auto-save indicator ── #}
+      <div class="mt-2 d-flex justify-content-between align-items-center">
+        <span id="save-indicator" class="small text-muted">All changes saved</span>
+        <div>
+          <button class="btn btn-sm btn-outline-danger" onclick="rejectAllAuto()">Reject All Auto</button>
+          <button class="btn btn-sm btn-outline-success" onclick="acceptAllAuto()">Accept All Auto</button>
+        </div>
+      </div>
+    </div>
+
+    {# ── Sidebar: Metadata + Legend ── #}
+    <div class="col-lg-4">
+      <div class="card meta-card">
+        <div class="card-body">
+          <dl class="mb-0">
+            <dt>Jurisdiction</dt>
+            <dd>{{ item.jurisdiction }}</dd>
+            <dt>Body</dt>
+            <dd>{{ item.body_name or item.body_code }}</dd>
+            <dt>Meeting</dt>
+            <dd>{{ item.meeting_title or item.meeting_type }}</dd>
+            <dt>Date</dt>
+            <dd>{{ item.meeting_date }}</dd>
+            <dt>Item #</dt>
+            <dd>{{ item.item_number }}</dd>
+            {% if item.item_type %}
+            <dt>Type</dt>
+            <dd>{{ item.item_type }}</dd>
+            {% endif %}
+            <dt>Stratum</dt>
+            <dd><code>{{ item.stratum }}</code></dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="card mt-3">
+        <div class="card-body">
+          <h6 class="card-title">🎯 How to annotate</h6>
+          <ul class="small mb-0 ps-3">
+            <li>Mark <strong>organizations</strong> — developers, law firms, city depts, utilities</li>
+            <li>Mark <strong>people</strong> — applicants, attorneys, planners, officials, staff</li>
+            <li>Mark <strong>projects</strong>, <strong>cases</strong>, and <strong>ordinances</strong> if named</li>
+            <li><strong>Don't</strong> mark job titles, roles, or generic terms</li>
+            <li class="text-muted">✅ <code>Wendy Jackson</code> — ❌ <code>Deputy City Manager</code></li>
+            <li class="text-muted">✅ <code>City of Tolleson</code> — ❌ <code>the applicant</code></li>
+            <li><strong>Don't</strong> assign types — just whether it's an entity</li>
+            <li>Yellow = auto-detected (click to accept/reject)</li>
+            <li>Select text to add <strong>new</strong> spans the auto-detector missed</li>
+          </ul>
+        </div>
+      </div>
+
+      {# ── Human spans list ── #}
+      <div class="card mt-3">
+        <div class="card-body">
+          <h6 class="card-title">✅ Accepted Spans <span id="accepted-list-count" class="badge bg-success">0</span></h6>
+          <div id="accepted-spans-list" class="small">
+            <p class="text-muted mb-0">No spans accepted yet. Click auto-detected spans to toggle.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{% if page == 'review' %}
+<script>
+// ═══════════════════════════════════════════════════════════════════════
+//  Entity Mention Annotation — Review Page
+// ═══════════════════════════════════════════════════════════════════════
+
+const SAMPLE_ID = {{ item.sample_id }};
+const TOTAL = {{ total }};
+
+// ── State ──
+let autoSpans = {{ item.entity_spans | tojson }};
+let humanSpans = {{ item.human_spans | tojson }};
+let dirty = false;
+let saveTimeout = null;
+
+// ── Render ──
+function renderText() {
+  const container = document.getElementById('annotation-text');
+  const text = container.textContent;
+
+  // Build overlay markup: split text into segments (text, entity spans)
+  // Merge auto and human spans — auto shown first, human overrides
+  const segments = [];
+
+  // Collect all span edges
+  const edges = new Map(); // position -> {type, data}[]
+
+  // Auto spans (pre-annotation)
+  for (const s of autoSpans) {
+    const status = getSpanStatus(s);
+    const edge = { type: 'auto', span: s, status, start: true };
+    if (!edges.has(s.start)) edges.set(s.start, []);
+    edges.get(s.start).push({ ...edge, start: true });
+
+    const endEdge = { type: 'auto', span: s, status, start: false };
+    if (!edges.has(s.end)) edges.set(s.end, []);
+    edges.get(s.end).push(endEdge);
+  }
+
+  // Human spans (override auto)
+  for (const s of humanSpans) {
+    const edge = { type: 'human', span: s, start: true };
+    if (!edges.has(s.start)) edges.set(s.start, []);
+    edges.get(s.start).push({ ...edge, start: true });
+
+    const endEdge = { type: 'human', span: s, start: false };
+    if (!edges.has(s.end)) edges.set(s.end, []);
+    edges.get(s.end).push(endEdge);
+  }
+
+  // Build HTML by walking the text with a proper open/close stack.
+  // Each opener pushes, each closer pops and emits </span>.
+  const sortedPositions = Array.from(edges.keys()).sort((a, b) => a - b);
+  let pos = 0;
+  const spanStack = []; // stack tracking open <span> tags
+  let html = '';
+
+  function closeAll() {
+    while (spanStack.length > 0) {
+      spanStack.pop();
+      html += '</span>';
+    }
+  }
+
+  for (const edgePos of sortedPositions) {
+    const edgesHere = edges.get(edgePos);
+
+    // ── 1. Emit text up to this position FIRST ──
+    //    (this text is inside whatever spans are currently open)
+    if (edgePos > pos) {
+      html += escapeHtml(text.slice(pos, edgePos));
+      pos = edgePos;
+    }
+
+    // ── 2. Closers: spans END at this position ──
+    //    Emit </span> for each span ending here, AFTER the text inside them.
+    const closers = edgesHere.filter(e => !e.start);
+    for (const e of closers) {
+      if (spanStack.length > 0) {
+        spanStack.pop();
+        html += '</span>';
+      }
+    }
+
+    // ── 3. Openers: spans START at this position ──
+    //    Emit <span...> for each span beginning here.
+    const openers = edgesHere.filter(e => e.start);
+    for (const e of openers) {
+      if (e.type === 'auto') {
+        // Check if ANY human span overlaps this auto span (shares any chars)
+        const hasOverlap = humanSpans.some(h =>
+          h.start < e.span.end && h.end > e.span.start
+        );
+        if (hasOverlap) {
+          // Overlapping human span exists — render auto as plain text
+          const tag = '<span>';
+          spanStack.push(tag); html += tag;
+        } else if (e.status === 'accepted') {
+          const tag = `<span class="entity-highlight accepted" data-auto-start="${e.span.start}" data-auto-end="${e.span.end}" onclick="toggleAutoSpan(this, ${e.span.start}, ${e.span.end})">`;
+          spanStack.push(tag); html += tag;
+        } else if (e.status === 'pending') {
+          const tag = `<span class="entity-highlight" data-auto-start="${e.span.start}" data-auto-end="${e.span.end}" onclick="toggleAutoSpan(this, ${e.span.start}, ${e.span.end})">`;
+          spanStack.push(tag); html += tag;
+        } else {
+          const tag = '<span>';
+          spanStack.push(tag); html += tag;
+        }
+      } else if (e.type === 'human') {
+        const tag = `<span class="entity-highlight accepted" data-human="true" data-h-start="${e.span.start}" data-h-end="${e.span.end}" onclick="removeHumanSpan(this, ${e.span.start}, ${e.span.end})">`;
+        spanStack.push(tag); html += tag;
+      }
+    }
+  }
+
+  // Emit remaining text
+  if (pos < text.length) {
+    html += escapeHtml(text.slice(pos));
+  }
+
+  // Close any unclosed spans
+  closeAll();
+
+  container.innerHTML = html;
+  updateCounts();
+}
+
+function getSpanStatus(autoSpan) {
+  // Check if human has already accepted/rejected this span
+  for (const h of humanSpans) {
+    if (h.start === autoSpan.start && h.end === autoSpan.end) {
+      return 'accepted'; // human confirmed it
+    }
+    // Check if human span overlaps (partial coverage)
+    if (h.start < autoSpan.end && h.end > autoSpan.start && !(h.start === autoSpan.start && h.end === autoSpan.end)) {
+      // Partial overlap — mark auto as overridden
+      return 'overridden';
+    }
+  }
+  // Check if auto span is in rejected set (from human rejection)
+  const rejectedText = localStorage.getItem(`rejected_${SAMPLE_ID}`);
+  if (rejectedText) {
+    try {
+      const rejected = JSON.parse(rejectedText);
+      if (rejected.some(r => r.start === autoSpan.start && r.end === autoSpan.end)) {
+        return 'rejected';
+      }
+    } catch(e) {}
+  }
+  return 'pending';
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// ── Toggle auto span ──
+function toggleAutoSpan(el, start, end) {
+  const isAccepted = el.classList.contains('accepted');
+  if (isAccepted) {
+    // Reject: remove from human spans, add to rejected set
+    humanSpans = humanSpans.filter(h => !(h.start === start && h.end === end));
+    addToRejected(start, end);
+    renderText();
+    setDirty();
+  } else {
+    // Accept: add to human spans
+    if (!humanSpans.some(h => h.start === start && h.end === end)) {
+      humanSpans.push({ start, end, text: getTextBetween(start, end) });
+    }
+    removeFromRejected(start, end);
+    renderText();
+    setDirty();
+  }
+}
+
+function getTextBetween(start, end) {
+  const container = document.getElementById('annotation-text');
+  const text = container.textContent;
+  return text.slice(start, end);
+}
+
+function addToRejected(start, end) {
+  const key = `rejected_${SAMPLE_ID}`;
+  try {
+    const existing = JSON.parse(localStorage.getItem(key) || '[]');
+    if (!existing.some(r => r.start === start && r.end === end)) {
+      existing.push({ start, end });
+      localStorage.setItem(key, JSON.stringify(existing));
+    }
+  } catch(e) {}
+}
+
+function removeFromRejected(start, end) {
+  const key = `rejected_${SAMPLE_ID}`;
+  try {
+    const existing = JSON.parse(localStorage.getItem(key) || '[]');
+    const filtered = existing.filter(r => !(r.start === start && r.end === end));
+    localStorage.setItem(key, JSON.stringify(filtered));
+  } catch(e) {}
+}
+
+// ── Remove human span ──
+function removeHumanSpan(el, start, end) {
+  if (!confirm('Remove this entity span?')) return;
+  humanSpans = humanSpans.filter(h => !(h.start === start && h.end === end));
+  renderText();
+  setDirty();
+}
+
+// ── Text selection → new entity span ──
+
+/**
+ * Calculate the character offset of a Range endpoint within the
+ * full text of the container div.
+ *
+ * The endpoint container may be a TEXT node or an ELEMENT node
+ * (browser normalizes selections at element boundaries to use
+ * the parent element with a child-index offset).  Handle both.
+ */
+function getOffsetPoint(container, endNode, endOffset) {
+  if (endNode === container) {
+    // endNode IS the container div itself.
+    // endOffset is a child index. Sum text content of all children
+    // up to that index.
+    let len = 0;
+    const kids = endNode.childNodes;
+    for (let i = 0; i < Math.min(endOffset, kids.length); i++) {
+      len += kids[i].textContent.length;
+    }
+    return len;
+  }
+
+  if (endNode.nodeType === Node.ELEMENT_NODE) {
+    // endNode is a span or other element. endOffset is child index.
+    let len = 0;
+    const kids = endNode.childNodes;
+    for (let i = 0; i < Math.min(endOffset, kids.length); i++) {
+      len += kids[i].textContent.length;
+    }
+    // Measure from container start to beginning of this element,
+    // then add the partial content within this element.
+    const range = document.createRange();
+    range.selectNodeContents(container);
+    range.setEndBefore(endNode);
+    return range.toString().length + len;
+  }
+
+  // endNode is a TEXT node. endOffset is a character offset directly.
+  // Just measure from container start to this point.
+  const range = document.createRange();
+  range.selectNodeContents(container);
+  range.setEnd(endNode, endOffset);
+  return range.toString().length;
+}
+
+/**
+ * Get clean selection offsets using Range boundary points.
+ */
+function getSelectionOffsets(container) {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+
+  const selRange = sel.getRangeAt(0);
+
+  // Get offset from container start to selection start
+  const start = getOffsetPoint(container, selRange.startContainer, selRange.startOffset);
+  // Get offset from container start to selection end
+  const end = getOffsetPoint(container, selRange.endContainer, selRange.endOffset);
+
+  const realStart = Math.min(start, end);
+  const realEnd = Math.max(start, end);
+  const selectedText = container.textContent.slice(realStart, realEnd).trim();
+
+  console.log('[ann] selection:', {
+    start: realStart,
+    end: realEnd,
+    text: selectedText,
+    textLen: container.textContent.length,
+    startNode: selRange.startContainer.nodeName,
+    endNode: selRange.endContainer.nodeName,
+    startOff: selRange.startOffset,
+    endOff: selRange.endOffset,
+  });
+
+  if (selectedText.length < 2) return null;
+
+  return { start: realStart, end: realEnd, text: selectedText };
+}
+
+document.addEventListener('mouseup', function(e) {
+  const popup = document.getElementById('selection-popup');
+  const selection = window.getSelection();
+  const container = document.getElementById('annotation-text');
+
+  if (!selection || selection.isCollapsed || !selection.toString().trim()) {
+    popup.style.display = 'none';
+    return;
+  }
+
+  // Make sure selection is inside the annotation text
+  if (!container.contains(selection.anchorNode) || !container.contains(selection.focusNode)) {
+    popup.style.display = 'none';
+    return;
+  }
+
+  const offsets = getSelectionOffsets(container);
+  if (!offsets || offsets.text.length < 2) {
+    popup.style.display = 'none';
+    return;
+  }
+
+  // Verify the extracted text looks right
+  const extractedFull = container.textContent.slice(offsets.start, offsets.end);
+  if (extractedFull.trim() !== offsets.text) {
+    console.warn('[ann] offset mismatch:', {
+      slice: extractedFull,
+      trimmed: offsets.text,
+      start: offsets.start,
+      end: offsets.end,
+    });
+  }
+
+  // Position popup near selection
+  const range = selection.getRangeAt(0);
+  const rect = range.getBoundingClientRect();
+  popup.style.left = Math.min(rect.left + window.scrollX, window.innerWidth - 160) + 'px';
+  popup.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+  popup.style.display = 'block';
+  popup.dataset.start = offsets.start;
+  popup.dataset.end = offsets.end;
+  popup.dataset.text = offsets.text;
+});
+
+document.getElementById('selection-popup')?.addEventListener('click', function() {
+  const start = parseInt(this.dataset.start);
+  const end = parseInt(this.dataset.end);
+  const text = this.dataset.text;
+
+  // Don't add if already a human span
+  if (humanSpans.some(h => h.start === start && h.end === end)) {
+    this.style.display = 'none';
+    return;
+  }
+
+  // Add human span
+  humanSpans.push({ start, end, text });
+  this.style.display = 'none';
+  window.getSelection().removeAllRanges();
+  renderText();
+  setDirty();
+});
+
+// ── Counts ──
+function updateCounts() {
+  const acceptedEls = document.querySelectorAll('.entity-highlight.accepted');
+  const pendingEls = document.querySelectorAll('.entity-highlight:not(.accepted):not(.rejected-hidden)');
+  const rejectedCount = (() => {
+    const key = `rejected_${SAMPLE_ID}`;
+    try {
+      return JSON.parse(localStorage.getItem(key) || '[]').length;
+    } catch(e) { return 0; }
+  })();
+
+  const humanOnly = document.querySelectorAll('.entity-highlight[data-human="true"]');
+  const autoAccepted = document.querySelectorAll('.entity-highlight.accepted:not([data-human="true"])');
+
+  document.getElementById('accepted-count').textContent = humanSpans.length;
+  document.getElementById('rejected-count').textContent = rejectedCount;
+  document.getElementById('auto-count').textContent = autoAccepted.length + pendingEls.length;
+  document.getElementById('accepted-list-count').textContent = humanSpans.length;
+
+  // Update accepted list sidebar
+  const listEl = document.getElementById('accepted-spans-list');
+  if (humanSpans.length === 0) {
+    listEl.innerHTML = '<p class="text-muted mb-0">No spans accepted yet. Click auto-detected spans to toggle.</p>';
+  } else {
+    listEl.innerHTML = humanSpans.map((s, i) =>
+      `<div class="d-flex justify-content-between align-items-start mb-1">
+        <span class="text-truncate" style="max-width:200px" title="${escapeHtml(s.text)}">${escapeHtml(s.text.slice(0, 40))}${s.text.length > 40 ? '…' : ''}</span>
+        <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="removeHumanSpan(null, ${s.start}, ${s.end})">✕</button>
+      </div>`
+    ).join('');
+  }
+}
+
+// ── Bulk actions ──
+function acceptAllAuto() {
+  const container = document.getElementById('annotation-text');
+  const pending = container.querySelectorAll('.entity-highlight:not(.accepted):not([data-human="true"])');
+  pending.forEach(el => {
+    const start = parseInt(el.dataset.autoStart);
+    const end = parseInt(el.dataset.autoEnd);
+    if (!humanSpans.some(h => h.start === start && h.end === end)) {
+      humanSpans.push({ start, end, text: getTextBetween(start, end) });
+    }
+    removeFromRejected(start, end);
+  });
+  renderText();
+  setDirty();
+}
+
+function rejectAllAuto() {
+  const container = document.getElementById('annotation-text');
+  const autoEls = container.querySelectorAll('.entity-highlight:not([data-human="true"])');
+  autoEls.forEach(el => {
+    const start = parseInt(el.dataset.autoStart);
+    const end = parseInt(el.dataset.autoEnd);
+    humanSpans = humanSpans.filter(h => !(h.start === start && h.end === end));
+    addToRejected(start, end);
+  });
+  renderText();
+  setDirty();
+}
+
+// ── Save ──
+function setDirty() {
+  dirty = true;
+  document.getElementById('save-indicator').textContent = '⚠ Unsaved changes';
+  document.getElementById('save-indicator').className = 'small text-danger';
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(saveSpans, 2000);
+}
+
+async function saveSpans() {
+  if (!dirty) return;
+  try {
+    const resp = await fetch('/annotation/api/save-spans', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sample_id: SAMPLE_ID,
+        human_spans: humanSpans,
+        status: document.getElementById('status-badge').textContent.trim().toLowerCase().replace(' ', '_'),
+      }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      dirty = false;
+      document.getElementById('save-indicator').textContent = '✓ Saved';
+      document.getElementById('save-indicator').className = 'small text-success';
+      updateDashboardStats();
+    }
+  } catch(e) {
+    document.getElementById('save-indicator').textContent = '✗ Save failed';
+    document.getElementById('save-indicator').className = 'small text-danger';
+  }
+}
+
+async function updateDashboardStats() {
+  try {
+    const resp = await fetch('/annotation/api/stats');
+    const data = await resp.json();
+    // Update title bar progress
+    if (data.total > 0) {
+      const pct = Math.round(data.reviewed / data.total * 100);
+      document.title = `[${data.reviewed}/${data.total}] Entity Mention Annotation`;
+    }
+  } catch(e) {}
+}
+
+// ── Mark reviewed ──
+async function markReviewed() {
+  await saveSpans();
+  // Force save with reviewed status
+  try {
+    const resp = await fetch('/annotation/api/save-spans', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sample_id: SAMPLE_ID,
+        human_spans: humanSpans,
+        status: 'reviewed',
+      }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      document.getElementById('status-badge').textContent = 'Reviewed';
+      document.getElementById('status-badge').style.background = '#10b981';
+      dirty = false;
+      document.getElementById('save-indicator').textContent = '✓ Reviewed';
+      document.getElementById('save-indicator').className = 'small text-success';
+
+      // Auto-advance to next item
+      const nextLink = document.querySelector('a[href*="/review/{{ item.sample_id + 1 if next_id else item.sample_id }}"]');
+      if ({{ next_id|tojson if next_id else 'null' }}) {
+        setTimeout(() => {
+          window.location.href = '/annotation/review/{{ item.sample_id + 1 if next_id else item.sample_id }}';
+        }, 500);
+      } else {
+        // Last item — go to dashboard
+        setTimeout(() => {
+          window.location.href = '/annotation/';
+        }, 500);
+      }
+    }
+  } catch(e) {
+    alert('Failed to save: ' + e.message);
+  }
+}
+
+// ── Jump to unreviewed ──
+async function jumpToUnreviewed() {
+  await saveSpans();
+  // Find next unreviewed via bulk scan
+  try {
+    const resp = await fetch('/annotation/api/stats');
+    const data = await resp.json();
+    if (data.unreviewed > 0) {
+      window.location.href = '/annotation/review/' + ({{ item.sample_id }} + 1);
+    } else {
+      alert('All items reviewed!');
+    }
+  } catch(e) {
+    window.location.href = '/annotation/review/' + ({{ item.sample_id }} + 1);
+  }
+}
+
+// ── Notes auto-save ──
+let notesTimeout = null;
+document.getElementById('notes-area')?.addEventListener('input', function() {
+  if (notesTimeout) clearTimeout(notesTimeout);
+  notesTimeout = setTimeout(async () => {
+    try {
+      await fetch('/annotation/api/save-notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sample_id: SAMPLE_ID,
+          notes: this.value,
+        }),
+      });
+    } catch(e) {}
+  }, 1000);
+});
+
+// ── Keyboard shortcuts ──
+document.addEventListener('keydown', function(e) {
+  if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+
+  if (e.key === 'ArrowRight' || e.key === 'n') {
+    const nextLink = document.querySelector('a[href*="/review/{{ next_id if next_id else 0 }}"]');
+    if (nextLink && {{ next_id|tojson if next_id else 'null' }}) {
+      e.preventDefault();
+      window.location.href = nextLink.href;
+    }
+  } else if (e.key === 'ArrowLeft' || e.key === 'p') {
+    const prevLink = document.querySelector('a[href*="/review/{{ prev_id if prev_id else 0 }}"]');
+    if (prevLink && {{ prev_id|tojson if prev_id else 'null' }}) {
+      e.preventDefault();
+      window.location.href = prevLink.href;
+    }
+  } else if (e.key === ' ' || e.key === 'Enter') {
+    if (humanSpans.length > 0 && !e.repeat) {
+      e.preventDefault();
+      markReviewed();
+    }
+  } else if (e.key === 'a' && e.ctrlKey) {
+    // Allow normal Ctrl+A for text selection
+  }
+});
+
+// ── Init ──
+const FULL_TEXT = {{ item.text | tojson }};
+document.getElementById('annotation-text').textContent = FULL_TEXT;
+renderText();
+</script>
+{% endif %}
+{% endblock %}

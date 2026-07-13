@@ -11,21 +11,24 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-SSH_TARGET="root@poliscopic.com"
+set -a; source .env 2>/dev/null || true; set +a
+
+SSH_TARGET="poliscopic@poliscopic.com"
+SSH_ROOT="root@poliscopic.com"
 APP_DIR="/opt/poliscopic"
 
 # ── 1. Verify production database is reachable ──
 echo "=== Step 1/5: Verify production database ==="
-ssh "$SSH_TARGET" ". /opt/poliscopic/.env && python3 -c \"
+.venv/bin/python -c "
 import psycopg2, os
-pg = psycopg2.connect(os.environ['DATABASE_URL'], options='-c client_encoding=UTF8')
+pg = psycopg2.connect(os.environ.get('PROD_DATABASE_URL', ''), options='-c client_encoding=UTF8')
 cur = pg.cursor()
 cur.execute('SELECT COUNT(*) FROM meetings')
 cnt = cur.fetchone()[0]
 cur.close()
 pg.close()
 print(f'Production DB OK: {cnt} meetings')
-\"" && echo "✅ Production database reachable."
+" && echo "✅ Production database reachable."
 
 # ── 2. Rsync code + assets ──
 #
@@ -36,31 +39,24 @@ print(f'Production DB OK: {cnt} meetings')
 # --checksum compares file content, not just timestamp+size, so edits
 # that don't change file size still get deployed.
 echo "=== Step 2/5: Deploy code ==="
-rsync -avz --checksum \
-  --exclude='.git/' \
-  --exclude='.venv/' \
-  --exclude='.cache/' \
-  --exclude='.env' \
-  --exclude='__pycache__/' \
-  --exclude='*.pyc' \
-  --exclude='permit-activity/' \
-  --exclude='snapshots/' \
-  --exclude='agendas/' \
-  --exclude='agenda-items/' \
-  --exclude='supporting-materials/' \
-  --exclude='analytics.sqlite' \
-  --exclude='bluesky_tracking.sqlite' \
-  --exclude='data/' \
-  --exclude='sync_db.sh' \
-  --exclude='scripts/db/sync_dev_to_prod.py' \
-  app.py \
-  requirements.txt \
-  scripts/ \
-  static/ \
-  templates/ \
-  root@poliscopic.com:/opt/poliscopic/
 
-rsync -avz --checksum routes/ root@poliscopic.com:/opt/poliscopic/routes/
+# Sync root-level files
+rsync -avz --checksum app.py requirements.txt ${SSH_TARGET}:${APP_DIR}/
+
+# Sync scripts/ to scripts/ (NOT to root — avoids scripts/db → db path breakage)
+rsync -avz --checksum \
+  --exclude='__pycache__/' --exclude='*.pyc' --exclude='.env' \
+  scripts/ ${SSH_TARGET}:${APP_DIR}/scripts/
+
+# Sync static assets and templates
+rsync -avz --checksum \
+  --exclude='__pycache__/' --exclude='*.pyc' \
+  static/ ${SSH_TARGET}:${APP_DIR}/static/
+
+rsync -avz --checksum templates/ ${SSH_TARGET}:${APP_DIR}/templates/
+
+# Sync routes
+rsync -avz --checksum routes/ ${SSH_TARGET}:${APP_DIR}/routes/
 
 # ── 3. Sync dev database → prod (unless --code-only) ──
 if [ "${1:-}" != "--code-only" ]; then
@@ -68,16 +64,17 @@ if [ "${1:-}" != "--code-only" ]; then
   set -a
   source .env
   set +a
-  .venv/bin/python scripts/db/sync_dev_to_prod.py
+  BATCH_SIZE=5000 BATCH_SLEEP_MS=100 .venv/bin/python scripts/db/sync_prod.py
   echo "✅ Database sync complete"
 fi
 
-# ── 4. Set ownership (rsync preserves local uid/gid which don't match server) ──
-echo "=== Step 4/5: Fix ownership ==="
-ssh root@poliscopic.com "chown -R poliscopic:poliscopic /opt/poliscopic/"
+# ── 4. Restart the app ──
+echo "=== Step 4/5: Restart app ==="
+ssh ${SSH_ROOT} "systemctl restart poliscopic" && echo "✅ App restarted."
 
-# ── 5. Restart the app ──
-echo "=== Step 5/5: Restart app ==="
-ssh root@poliscopic.com "systemctl restart poliscopic" && echo "✅ App restarted."
+
+# ── 5. Verify ──
+echo "=== Step 5/5: Verify ==="
+curl -sI https://poliscopic.com | head -3
 
 echo "Deploy complete — code and database are in sync."
