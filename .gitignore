@@ -95,7 +95,6 @@ data/tasks/
 scripts/db/sync_dev_to_prod.py
 scripts/scraper/ocr_pipeline.py
 scripts/migrate_doc_text.py
-scripts/task_utils.sh
 sync_db.sh
 
 # Reports and manifests
