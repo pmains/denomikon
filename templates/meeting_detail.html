@@ -209,7 +209,7 @@
                     <hr class="my-2">
                     {% endif %}
                 {% else %}
-                    {% if item.c_number or item.c_number_base %}
+                    {% if item.c_number or item.c_number_base or item.case_number %}
                     <div class="position-relative">
                     <span class="share-item-link text-muted"
                           data-item-number="{{ item.agenda_item_number }}"
@@ -231,6 +231,14 @@
                             {% if item.c_number_base and item.c_number_base != item.c_number %}
                             <span class="text-muted">(base: {{ item.c_number_base }})</span>
                             {% endif %}
+                        </dd>
+                        {% endif %}
+                        {% if item.case_number %}
+                        <dt class="col-sm-2">Case</dt>
+                        <dd class="col-sm-10">
+                            <a href="/cases/{{ item.case_number }}">
+                                <code>{{ item.case_number }}</code>
+                            </a>
                         </dd>
                         {% endif %}
                         {% if item.c_number_base and item.c_number_base != item.c_number %}
