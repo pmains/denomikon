@@ -14,7 +14,6 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
-JURISDICTION_ID = 23  # Town of Fountain Hills (new)
 SOURCE_SYSTEM = "civicclerk"
 SUBDOMAIN = "fountainhillsaz"
 API_BASE = f"https://{SUBDOMAIN}.api.civicclerk.com/v1"

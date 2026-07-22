@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session
 
 from db.models import (Base, Meeting, AgendaItem, SupportingDocument,
     AgendaItemVote, MemberVote, Supervisor, Case, CaseEvent,
-    PZItemDetail, MeetingSupervisor, PublicBodyMember, Person,
-    BodyMembership, PublicBody, MeetingAttendance, MemberVote)
+    PZItemDetail, MeetingMember, PublicBodyMember, Person,
+    BodyMembership, PublicBody, MeetingAttendance, MemberVote,
+    IngestFailure)
 from db.core import get_engine, get_session
 from db.queries import _resolve_jurisdiction_id
 from db.meeting_utils import (
@@ -226,6 +227,12 @@ def create_or_get_meeting(session: Session, body: str, meeting_dict: dict) -> Me
         )
     ).scalar_one_or_none()
     if existing:
+        # If the resolved jurisdiction differs (e.g. public body was added
+        # after the meeting was first synced), update it.
+        resolved_jur = _resolve_jurisdiction_id(session, body)
+        if resolved_jur and existing.jurisdiction_id != resolved_jur:
+            existing.jurisdiction_id = resolved_jur
+            existing.updated_at = datetime.now(timezone.utc)
         return existing
     jurisdiction_id = _resolve_jurisdiction_id(session, body)
     meeting = Meeting(
@@ -242,6 +249,126 @@ def create_or_get_meeting(session: Session, body: str, meeting_dict: dict) -> Me
     )
     session.add(meeting)
     return meeting
+
+
+# ── Error classification ──
+# Tags let us distinguish transient errors (retry later) from code bugs (fix code)
+# from data issues (fix config/data).  Prepended as [TAG] prefix on last_error.
+
+def _classify_error(error_str: str) -> str:
+    """Return error category tag: TRANSIENT, CODE, DATA, or UNKNOWN."""
+    if not error_str:
+        return "UNKNOWN"
+    error_lower = error_str.lower()
+
+    # Transient — infrastructure / networking issues, retryable
+    transient_patterns = [
+        r"5\d{2}",
+        r"timeout", r"timed ?out",
+        r"connection refused", r"connection reset",
+        r"connectionerror", r"dns lookup",
+        r"network is unreachable", r"econnrefused", r"econnreset",
+        r"read timed out", r"operation timed out",
+        r"ssl", r"certificate verify",
+        r"ratelimit", r"rate.limit", r"429",
+        r"received http 0",
+        r"temporary failure", r"temporarily unavailable",
+        r"server error", r"internal server error",
+        r"gateway", r"bad gateway",
+        r"service unavailable", r"service temporarily",
+        r"too many requests",
+        r"net::err_",
+        r"websocket",
+        r"playwright.*timeout",
+    ]
+    for pattern in transient_patterns:
+        if re.search(pattern, error_lower, re.IGNORECASE):
+            return "TRANSIENT"
+
+    # Code bug — programming errors that need a code change
+    code_patterns = [
+        r"typeerror", r"attributeerror",
+        r"importerror", r"modulenotfounderror",
+        r"keyerror", r"indexerror",
+        r"valueerror", r"zerodivisionerror",
+        r"assertionerror", r"notimplementederror",
+        r"syntaxerror", r"nameerror",
+        r"recursionerror", r"runtimeerror",
+        r"operator does not exist", r"type mismatch",
+        r"cannot import", r"no module named",
+        r"object.*has no attribute",
+        r"unsupported operand",
+        r"invalid literal for int",
+        r"not subscriptable", r"not iterable",
+        r"list index out of range",
+        r"not enough values to unpack",
+        r"undefinedfunction", r"undefinedcolumn",
+        r"psycopg2", r"database error",
+        r"dialect.*not supported",
+        r"sql type.*not recognized",
+    ]
+    for pattern in code_patterns:
+        if re.search(pattern, error_lower, re.IGNORECASE):
+            return "CODE"
+
+    # Data issue — configuration, data integrity, missing references
+    data_patterns = [
+        r"body not found", r"unknown body",
+        r"jurisdiction.*not found", r"unknown jurisdiction",
+        r"cannot determine body", r"no.*body.*field",
+        r"not found in database", r"meeting .* not found",
+        r"foreign key.*violation", r"duplicate key.*violation",
+        r"unique constraint", r"null value.*violation",
+        r"not-null constraint", r"invalid input value",
+        r"relation .* not exist", r"column .* not exist",
+        r"scalar.*returned more than one",
+        r"integrity.*constraint",
+        r"body.*empty", r"meeting.*empty",
+        r"cannot.*resolve", r"unable to determine",
+        r"missing.*flag", r"no.*source.*flag",
+        r"could not determine", r"could not resolve",
+    ]
+    for pattern in data_patterns:
+        if re.search(pattern, error_lower, re.IGNORECASE):
+            return "DATA"
+
+    return "UNKNOWN"
+
+
+def record_ingest_failure(
+    session: Session,
+    error: str,
+    *,
+    source: str = "unknown",
+    body: Optional[str] = None,
+    meeting_id: Optional[str] = None,
+    meeting_date: Optional[str] = None,
+    context: Optional[str] = None,
+) -> "IngestFailure":
+    """Record an import-side failure that can't reach the meetings table."""
+    category = _classify_error(error)
+    record = IngestFailure(
+        error_category=category,
+        source=source,
+        body=body,
+        meeting_id=meeting_id,
+        meeting_date=meeting_date,
+        error=error[:2000],
+        context=context[:2000] if context else None,
+    )
+    session.add(record)
+    return record
+
+
+def _tag_error(error: str, category: str) -> str:
+    """Prepend category tag to error string if not already tagged."""
+    if not error:
+        return error
+    tag = f"[{category}]"
+    if error.startswith(tag):
+        return error
+    return f"{tag} {error}"
+
 
 def update_sync_status(
     session: Session,
@@ -279,13 +406,13 @@ def update_sync_status(
         # These are classifications, not failures; don't increment retries
         meeting.retry_count = 0
         if error:
-            meeting.last_error = error
+            meeting.last_error = _tag_error(error, _classify_error(error))
         if status == "no_agenda":
             meeting.last_synced_at = now
     else:
         meeting.retry_count = (meeting.retry_count or 0) + 1
         if error:
-            meeting.last_error = error
+            meeting.last_error = _tag_error(error, _classify_error(error))
 
     if item_count_expected is not None:
         meeting.item_count_expected = item_count_expected
@@ -417,7 +544,7 @@ def persist_meeting(
             # meetings.
             existing = session.execute(
                 select(SupportingDocument.id).where(
-                    SupportingDocument.agenda_item_id == doc_dict.get("agenda_item_id", 0),
+                    SupportingDocument.agenda_item_id == doc_dict.get("agenda_item_id", "0"),
                     SupportingDocument.document_url == doc_dict.get("document_url", ""),
                 )
             ).scalar_one_or_none()
@@ -430,7 +557,7 @@ def persist_meeting(
                 continue
             doc = SupportingDocument(
                 body=body,
-                agenda_item_id=doc_dict.get("agenda_item_id", 0),
+                agenda_item_id=str(doc_dict.get("agenda_item_id", "0")),
                 meeting_id=meeting_id,
                 meeting_db_id=meeting_db_id_val,
                 agenda_item_number=str(doc_dict.get("agenda_item_number", "0") or "0"),
@@ -783,14 +910,11 @@ def persist_votes(
     warnings.filterwarnings("ignore", category=sa_exc.SAWarning, module="db")
     """Persist supervisor info and vote results for a meeting.
 
-    NOTE: This function writes to LEGACY tables ``meeting_supervisors`` and
-    ``supervisor_votes``.  New bodies should use ``member_votes`` and
-    ``meeting_attendance`` instead (via ``persist_pz_votes()``).
-    A future migration should redirect BOS vote data to ``member_votes``
-    and meeting attendance to ``meeting_attendance``.
+    Creates meeting_members (attendance) records and member_votes (vote)
+    records for a meeting.
 
     1. Upsert supervisor records (by normalized_name).
-    2. Delete existing meeting_supervisors, agenda_item_votes, supervisor_votes
+    2. Delete existing meeting_members, agenda_item_votes, member_votes
        for this meeting_id.
     3. Insert new records.
     4. Commit transactionally.
@@ -859,9 +983,9 @@ def persist_votes(
     # would collide with the fresh inserts below.
     with session.no_autoflush:
         session.execute(
-            MeetingSupervisor.__table__.delete().where(
-                MeetingSupervisor.body == body,
-                MeetingSupervisor.meeting_id == meeting_id,
+            MeetingMember.__table__.delete().where(
+                MeetingMember.body == body,
+                MeetingMember.meeting_id == meeting_id,
             )
         )
         existing_aiv_rows = session.execute(
@@ -888,21 +1012,21 @@ def persist_votes(
     # from within an active transaction (e.g. PZ sync loop).
     vote_count = 0
 
-    # 3. Insert meeting_supervisor records
+    # 3. Insert meeting_member records
     for sup in supervisors:
         norm = sup.get("normalized_name", sup.get("name", "").lower().strip())
         sup_id = supervisor_map.get(norm)
         if sup_id is None:
             continue
-        ms = MeetingSupervisor(
+        mm = MeetingMember(
             body=body,
             meeting_id=meeting_id,
             meeting_db_id=meeting_db_id_val,
-            supervisor_id=sup_id,
+            member_id=sup_id,
             role=sup.get("role"),
             present=sup.get("present", True),
         )
-        session.add(ms)
+        session.add(mm)
 
     # 4. Insert vote records
     seen_item_db_ids: set[int] = set()
@@ -1007,7 +1131,7 @@ def persist_votes(
     # 6. Infer absences and abstentions from missing votes
     #    After all explicit votes are stored, check each supervisor present at
     #    this meeting against the total number of AIVs.
-    #    -  0 votes for this meeting  → supervisor was absent (update MeetingSupervisor.present)
+    #    -  0 votes for this meeting  → member was absent (update MeetingMember.present)
     #    -  >0 but < total AIVs       → supervisor abstained on the missing items
     #
     #    Only infer on items where a vote was actually taken.  Skip:
@@ -1023,29 +1147,29 @@ def persist_votes(
         ]
         aiv_ids = [aiv.id for aiv in votable_aivs]
         aiv_count = len(aiv_ids)
-        # Load all MeetingSupervisor rows for this meeting
-        ms_rows = session.execute(
-            select(MeetingSupervisor).where(
-                MeetingSupervisor.body == body,
-                MeetingSupervisor.meeting_id == meeting_id,
+        # Load all MeetingMember rows for this meeting
+        mm_rows = session.execute(
+            select(MeetingMember).where(
+                MeetingMember.body == body,
+                MeetingMember.meeting_id == meeting_id,
             )
         ).scalars().all()
-        for ms in ms_rows:
+        for mm in mm_rows:
             sv_count = session.execute(
                 select(func.count()).select_from(MemberVote).where(
-                    MemberVote.member_id == ms.supervisor_id,
+                    MemberVote.member_id == mm.member_id,
                     MemberVote.agenda_item_vote_id.in_(aiv_ids),
                 )
             ).scalar()
             if sv_count == 0:
-                # Supervisor was listed as present but never voted — mark absent
-                ms.present = False
+                # Member was listed as present but never voted — mark absent
+                mm.present = False
             elif sv_count < aiv_count:
-                # Supervisor voted on some items but not all — abstain on the rest
+                # Member voted on some items but not all — abstain on the rest
                 existing_aiv_ids = set(
                     row[0] for row in session.execute(
                         select(MemberVote.agenda_item_vote_id).where(
-                            MemberVote.member_id == ms.supervisor_id,
+                            MemberVote.member_id == mm.member_id,
                             MemberVote.agenda_item_vote_id.in_(aiv_ids),
                         )
                     ).all()
@@ -1055,7 +1179,7 @@ def persist_votes(
                         session.add(MemberVote(
                             body=body,
                             agenda_item_vote_id=aiv_id,
-                            member_id=ms.supervisor_id,
+                            member_id=mm.member_id,
                             vote="abstain",
                             raw_vote_text="inferred abstention — no vote recorded on this item",
                         ))

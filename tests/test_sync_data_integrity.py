@@ -258,11 +258,11 @@ class TestVoteDataIntegrity(unittest.TestCase):
     def test_bos_votes_have_supervisor_names(self):
         """BOS votes reference actual Person records."""
         orphans = self.s.execute(text("""
-            SELECT COUNT(*) FROM supervisor_votes sv
-            LEFT JOIN persons p ON p.id = sv.supervisor_id
+            SELECT COUNT(*) FROM member_votes mv
+            LEFT JOIN persons p ON p.id = mv.member_id
             WHERE p.id IS NULL
         """)).scalar()
-        self.assertEqual(orphans, 0, f"{orphans} supervisor_votes with no Person record")
+        self.assertEqual(orphans, 0, f"{orphans} member_votes with no Person record")
 
     def test_pz_has_votes(self):
         """P&Z meetings have vote records (from PDF minutes)."""

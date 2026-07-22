@@ -280,13 +280,13 @@ class TestVotePersistence(unittest.TestCase):
     """Verify that parsed vote data can be persisted via persist_votes()."""
 
     def setUp(self):
-        from db import init_db, get_session, AgendaItem, Meeting, AgendaItemVote, SupportingDocument, SupervisorVote, MeetingSupervisor
+        from db import init_db, get_session, AgendaItem, Meeting, AgendaItemVote, SupportingDocument, MemberVote, MeetingMember
         import db.core as _dc
         self._saved_db_url = _dc.DATABASE_URL
         init_db()
         # Truncate tables for clean state
         s = get_session()
-        for tbl in [AgendaItemVote.__table__, AgendaItem.__table__, Meeting.__table__, SupportingDocument.__table__, SupervisorVote.__table__, MeetingSupervisor.__table__]:
+        for tbl in [AgendaItemVote.__table__, AgendaItem.__table__, Meeting.__table__, SupportingDocument.__table__, MemberVote.__table__, MeetingMember.__table__]:
             s.execute(tbl.delete())
         s.commit()
         s.close()
@@ -317,7 +317,7 @@ class TestVotePersistence(unittest.TestCase):
 
     def test_persist_full_vote_set(self):
         from scraper.tempe_summary import parse_summary_text
-        from db import get_session, persist_votes, AgendaItemVote, SupervisorVote
+        from db import get_session, persist_votes, AgendaItemVote, MemberVote
         from sqlalchemy import select, func
 
         text = _load_fixture("1687_summary.txt")
@@ -346,8 +346,8 @@ class TestVotePersistence(unittest.TestCase):
         self.assertGreater(aiv_count, 0, "No vote records persisted")
 
         sv_count = s.execute(
-            select(func.count()).select_from(SupervisorVote).where(
-                SupervisorVote.agenda_item_vote_id.in_(
+            select(func.count()).select_from(MemberVote).where(
+                MemberVote.agenda_item_vote_id.in_(
                     select(AgendaItemVote.id).where(
                         AgendaItemVote.body == "tempe-cc",
                         AgendaItemVote.meeting_id == "1687",
@@ -363,13 +363,13 @@ class TestVotePersistenceReplacesOnResync(unittest.TestCase):
     """Re-running persist_votes should replace old votes, not duplicate."""
 
     def setUp(self):
-        from db import init_db, get_session, AgendaItem, Meeting, AgendaItemVote, SupportingDocument, SupervisorVote, MeetingSupervisor
+        from db import init_db, get_session, AgendaItem, Meeting, AgendaItemVote, SupportingDocument, MemberVote, MeetingMember
         import db.core as _dc
         self._saved_db_url = _dc.DATABASE_URL
         init_db()
         # Truncate tables for clean state
         s = get_session()
-        for tbl in [AgendaItemVote.__table__, AgendaItem.__table__, Meeting.__table__, SupportingDocument.__table__, SupervisorVote.__table__, MeetingSupervisor.__table__]:
+        for tbl in [AgendaItemVote.__table__, AgendaItem.__table__, Meeting.__table__, SupportingDocument.__table__, MemberVote.__table__, MeetingMember.__table__]:
             s.execute(tbl.delete())
         s.commit()
         s.close()

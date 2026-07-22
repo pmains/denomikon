@@ -10,7 +10,7 @@ log = logging.getLogger(__name__)
 from sqlalchemy import func, inspect as sa_inspect, select, text, or_, case, and_
 from sqlalchemy.orm import Session
 
-from db.models import (Person, Supervisor, Meeting, MeetingSupervisor,
+from db.models import (Person, Supervisor, Meeting, MeetingMember,
     AgendaItem, AgendaItemVote, MemberVote, MeetingAttendance,
     ExecutiveSessionParticipant, BodyMembership, PublicBody, Jurisdiction,
     BodySeat)
@@ -226,18 +226,18 @@ def get_supervisor_by_slug_or_name(
 def get_bos_supervisors(session: Session) -> list[Supervisor]:
     """Get BOS supervisors with meaningful attendance (≥5 meeting appearances).
 
-    Uses meeting_supervisors (body='bos') to identify actual supervisors
+    Uses meeting_members (body='bos') to identify actual supervisors
     versus noise rows from vote-parsing artifacts.
     """
     rows = session.execute(
-        select(Supervisor, func.count(MeetingSupervisor.id).label("attendance"))
+        select(Supervisor, func.count(MeetingMember.id).label("attendance"))
         .join(
-            MeetingSupervisor,
-            MeetingSupervisor.supervisor_id == Supervisor.id,
+            MeetingMember,
+            MeetingMember.member_id == Supervisor.id,
         )
-        .where(MeetingSupervisor.body == "bos")
+        .where(MeetingMember.body == "bos")
         .group_by(Supervisor.id)
-        .having(func.count(MeetingSupervisor.id) >= 5)
+        .having(func.count(MeetingMember.id) >= 5)
         .order_by(Supervisor.name)
     ).all()
     # Also filter out obvious noise (long names, digits)
@@ -355,21 +355,21 @@ def get_supervisor_vote_stats(
     # --- 3. Attendance (already SQL, unchanged) ---
     present = session.execute(
         select(func.count())
-        .select_from(MeetingSupervisor)
+        .select_from(MeetingMember)
         .where(
-            MeetingSupervisor.supervisor_id == sup_id,
-            MeetingSupervisor.body == body,
-            MeetingSupervisor.present == True,
+            MeetingMember.member_id == sup_id,
+            MeetingMember.body == body,
+            MeetingMember.present == True,
         )
     ).scalar() or 0
 
     absent = session.execute(
         select(func.count())
-        .select_from(MeetingSupervisor)
+        .select_from(MeetingMember)
         .where(
-            MeetingSupervisor.supervisor_id == sup_id,
-            MeetingSupervisor.body == body,
-            MeetingSupervisor.present == False,
+            MeetingMember.member_id == sup_id,
+            MeetingMember.body == body,
+            MeetingMember.present == False,
         )
     ).scalar() or 0
 
@@ -562,9 +562,9 @@ def get_supervisor_abstentions(
 
     # Use raw SQL to avoid ORM join-ambiguity issues with the 4-table chain
     where_clauses = [
-        "sv.supervisor_id = :sup_id",
+        "mv.member_id = :sup_id",
         "aiv.body = :body",
-        "sv.vote IN ('abstain', 'abstained')",
+        "mv.vote IN ('abstain', 'abstained')",
     ]
     params: dict = {"sup_id": sup_id, "body": body}
     if start_date:
@@ -584,8 +584,8 @@ def get_supervisor_abstentions(
             ai.agenda_item_title,
             m.meeting_date,
             m.meeting_type
-        FROM supervisor_votes sv
-        JOIN agenda_item_votes aiv ON aiv.id = sv.agenda_item_vote_id
+        FROM member_votes mv
+        JOIN agenda_item_votes aiv ON aiv.id = mv.agenda_item_vote_id
         LEFT JOIN agenda_items ai
             ON ai.meeting_db_id = aiv.meeting_db_id
             AND ai.body = aiv.body
@@ -625,8 +625,8 @@ def get_supervisor_absences(
     Returns list of dicts with meeting_id, meeting_date, meeting_type, title.
     """
     conditions = [
-        MeetingSupervisor.supervisor_id == sup_id,
-        MeetingSupervisor.present == False,
+        MeetingMember.member_id == sup_id,
+        MeetingMember.present == False,
         Meeting.body == body,
     ]
     if start_date:
@@ -643,9 +643,9 @@ def get_supervisor_absences(
             Meeting.meeting_title,
         )
         .join(
-            MeetingSupervisor,
-            (MeetingSupervisor.meeting_id == Meeting.meeting_id)
-            & (MeetingSupervisor.body == Meeting.body),
+            MeetingMember,
+            (MeetingMember.meeting_id == Meeting.meeting_id)
+            & (MeetingMember.body == Meeting.body),
         )
         .where(*conditions)
         .order_by(Meeting.meeting_date)
@@ -679,7 +679,7 @@ def get_supervisor_full_voting_record(
 
     limit_clause = f" LIMIT {int(limit)}" if limit else ""
 
-    where_clauses = ["sv.supervisor_id = :sup_id", "aiv.body = :body"]
+    where_clauses = ["mv.member_id = :sup_id", "aiv.body = :body"]
     params: dict = {"sup_id": sup_id, "body": body}
     if start_date:
         where_clauses.append("m.meeting_date >= :start_date")
@@ -692,9 +692,9 @@ def get_supervisor_full_voting_record(
 
     sql = sa_text(f"""
         SELECT
-            sv.vote,
-            sv.raw_vote_text,
-            sv.agenda_item_vote_id,
+            mv.vote,
+            mv.raw_vote_text,
+            mv.agenda_item_vote_id,
             aiv.meeting_id,
             aiv.agenda_item_number,
             aiv.c_number,
@@ -702,8 +702,8 @@ def get_supervisor_full_voting_record(
             ai.agenda_item_title,
             m.meeting_date,
             m.meeting_type
-        FROM supervisor_votes sv
-        JOIN agenda_item_votes aiv ON aiv.id = sv.agenda_item_vote_id
+        FROM member_votes mv
+        JOIN agenda_item_votes aiv ON aiv.id = mv.agenda_item_vote_id
         LEFT JOIN agenda_items ai
             ON ai.meeting_db_id = aiv.meeting_db_id
             AND ai.body = aiv.body
@@ -841,7 +841,7 @@ def get_supervisor_majority_alignment_stats(
         })
         nv = _normalize_vote_value(av.vote)
         aiv_data[av.agenda_item_vote_id]["votes"].append(nv)
-        aiv_data[av.agenda_item_vote_id]["sup_votes"][av.supervisor_id] = nv
+        aiv_data[av.agenda_item_vote_id]["sup_votes"][av.member_id] = nv
 
     # Build sup vote map: aiv_id -> norm_vote for this specific supervisor
     sup_own_votes = {}
@@ -930,14 +930,14 @@ def get_supervisor_voting_alignment(
         for r in session.execute(
             select(Supervisor.id)
             .join(
-                MeetingSupervisor,
-                MeetingSupervisor.supervisor_id == Supervisor.id,
+                MeetingMember,
+                MeetingMember.member_id == Supervisor.id,
             )
             .where(
-                MeetingSupervisor.body == body,
+                MeetingMember.body == body,
             )
             .group_by(Supervisor.id)
-            .having(func.count(MeetingSupervisor.id) >= 5)
+            .having(func.count(MeetingMember.id) >= 5)
             .order_by(Supervisor.name)
         ).all()
     ]
@@ -994,7 +994,7 @@ def get_supervisor_voting_alignment(
     ).all():
         nv = _normalize_vote_value(r.vote)
         if nv in ("yes", "no"):
-            other_votes[r.supervisor_id][r.agenda_item_vote_id] = nv
+            other_votes[r.member_id][r.agenda_item_vote_id] = nv
 
     # Also determine which AIVs are split votes
     # For each AIV, collect all normalized votes to detect split
@@ -1131,7 +1131,7 @@ def get_supervisor_swing_votes(
         nv = _normalize_vote_value(r.vote)
         if nv in ("yes", "no"):
             aiv_tallies[r.agenda_item_vote_id][nv] += 1
-        if r.supervisor_id == sup_id:
+        if r.member_id == sup_id:
             sup_aiv_nv[r.agenda_item_vote_id] = nv
 
     # Identify swing AIVs: split vote, margin=1, sup with prevailing side
@@ -1305,6 +1305,184 @@ def get_body_members(body_code: str, page: int = 1, per_page: int = 10) -> dict:
             .offset(offset).limit(per_page)
         ).scalars().all()
         return list(members), total
+    finally:
+        session.close()
+
+
+def get_ingest_failures(
+    session: Session,
+    *,
+    since: Optional[datetime] = None,
+    category: Optional[str] = None,
+    limit: int = 100,
+) -> list[dict]:
+    """Get recent import-side failures from _ingest_failures.
+
+    Args:
+        since: Only failures after this timestamp.
+        category: Filter by error_category (TRANSIENT, CODE, DATA, UNKNOWN).
+        limit: Max records to return.
+
+    Returns list of dicts with keys:
+        id, error_category, source, body, meeting_id, meeting_date, error, created_at
+    """
+    from db.models import IngestFailure
+    q = select(IngestFailure).order_by(IngestFailure.created_at.desc())
+    if since:
+        q = q.where(IngestFailure.created_at >= since)
+    if category:
+        q = q.where(IngestFailure.error_category == category)
+    q = q.limit(limit)
+    rows = session.execute(q).scalars().all()
+    return [
+        {
+            "id": r.id,
+            "error_category": r.error_category,
+            "source": r.source,
+            "body": r.body,
+            "meeting_id": r.meeting_id,
+            "meeting_date": r.meeting_date,
+            "error": r.error,
+            "created_at": r.created_at,
+        }
+        for r in rows
+    ]
+
+
+def get_sync_report(
+    session: Session,
+    *,
+    since: Optional[datetime] = None,
+    body: Optional[str] = None,
+) -> dict:
+    """Get a structured summary of recent scrape failures.
+
+    Queries both the meetings table (for scrape failures with DB records)
+    and the _ingest_failures table (for import-side failures without DB records),
+    groups them by error category, and returns a human-readable summary.
+
+    When Pete asks "how did the scrape go?", this is the function to call.
+
+    Args:
+        since: Only consider failures after this time.  Defaults to 24 hours ago.
+        body: If set, only failures for this body code.
+
+    Returns dict with:
+        summary: Brief text summary like "3 meetings failed (2 transient, 1 code bug)"
+        by_category: List of {category, count, items} with details
+        total_failures: Total failure count
+        since: The cutoff time used
+    """
+    if since is None:
+        since = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # 1. Scrape failures from meetings table
+    from db.models import IngestFailure as _IF
+    meeting_q = select(Meeting).where(
+        Meeting.sync_status.in_(["failed", "partial"]),
+        Meeting.last_attempted_at >= since,
+    )
+    if body:
+        meeting_q = meeting_q.where(Meeting.body == body)
+    meeting_q = meeting_q.order_by(Meeting.last_attempted_at.desc())
+    failed_meetings = list(session.execute(meeting_q).scalars().all())
+
+    # 2. Ingest failures (import-side, no meeting record)
+    ingest_q = select(_IF).where(_IF.created_at >= since)
+    if body:
+        ingest_q = ingest_q.where(_IF.body == body)
+    ingest_q = ingest_q.order_by(_IF.created_at.desc())
+    ingest_failures = list(session.execute(ingest_q).scalars().all())
+
+    # 3. Categorize
+    from collections import defaultdict
+
+    by_category: dict[str, list[dict]] = defaultdict(list)
+
+    for m in failed_meetings:
+        err = m.last_error or ""
+        cat = "UNKNOWN"
+        for prefix in ("[TRANSIENT]", "[CODE]", "[DATA]", "[UNKNOWN]"):
+            if err.startswith(prefix):
+                cat = prefix.strip("[]")
+                break
+        by_category[cat].append({
+            "type": "scrape",
+            "body": m.body,
+            "meeting_id": m.meeting_id,
+            "meeting_date": m.meeting_date,
+            "sync_status": m.sync_status,
+            "retry_count": m.retry_count,
+            "error": err,
+            "last_attempted_at": m.last_attempted_at,
+        })
+
+    for f in ingest_failures:
+        by_category[f.error_category].append({
+            "type": "ingest",
+            "source": f.source,
+            "body": f.body,
+            "meeting_id": f.meeting_id,
+            "meeting_date": f.meeting_date,
+            "error": f.error,
+            "created_at": f.created_at,
+        })
+
+    # 4. Build summary
+    total = len(failed_meetings) + len(ingest_failures)
+    category_list = []
+    for cat_name in ("TRANSIENT", "CODE", "DATA", "UNKNOWN"):
+        items = by_category.get(cat_name, [])
+        if items:
+            category_list.append({
+                "category": cat_name,
+                "count": len(items),
+                "items": items,
+            })
+
+    summary_lines = []
+    if total == 0:
+        summary_lines.append(f"No failures since {since.isoformat()}")
+    else:
+        counts_str = ", ".join(
+            f"{c['count']} {c['category'].lower()}" for c in category_list
+        )
+        summary_lines.append(f"{total} failure(s) since {since.isoformat()}: {counts_str}")
+
+    return {
+        "summary": " | ".join(summary_lines),
+        "by_category": category_list,
+        "total_failures": total,
+        "since": since,
+    }
+
+
+if __name__ == "__main__":
+    """Quick diagnostic: query and print sync report from command line."""
+    import sys
+    from db.core import get_session
+    session = get_session()
+    try:
+        from datetime import timedelta
+        hours = int(sys.argv[1]) if len(sys.argv) > 1 else 24
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        report = get_sync_report(session, since=since)
+        print(f"\n{'='*60}")
+        print(f"SYNC REPORT — last {hours} hours")
+        print(f"{'='*60}")
+        print(report["summary"])
+        for cat in report["by_category"]:
+            print(f"\n  [{cat['category']}] {cat['count']} item(s):")
+            for item in cat["items"][:20]:
+                if item["type"] == "scrape":
+                    err_short = (item["error"] or "")[:80]
+                    print(f"    {item['body']} #{item['meeting_id']} ({item['meeting_date']}): {err_short}")
+                else:
+                    err_short = (item["error"] or "")[:80]
+                    print(f"    [import] {item['source']}: {item['meeting_id']} ({item['meeting_date']}): {err_short}")
+            if len(cat["items"]) > 20:
+                print(f"    ... and {len(cat['items']) - 20} more")
+        print()
     finally:
         session.close()
 

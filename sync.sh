@@ -13,6 +13,13 @@ cd "$(dirname "$0")"
 
 set -a; source .env 2>/dev/null || true; set +a
 
+# rsync wrapper that tolerates exit codes 23 (partial transfer due to
+# permission errors on server files owned by other users) and 24
+# (vanished source files), but still fails on real errors.
+rsync_safe() {
+  rsync "$@" || { rc=$?; [ $rc -le 24 ] && return 0 || exit $rc; }
+}
+
 SSH_TARGET="poliscopic@poliscopic.com"
 SSH_ROOT="root@poliscopic.com"
 APP_DIR="/opt/poliscopic"
@@ -41,22 +48,24 @@ print(f'Production DB OK: {cnt} meetings')
 echo "=== Step 2/5: Deploy code ==="
 
 # Sync root-level files
-rsync -avz --checksum app.py requirements.txt ${SSH_TARGET}:${APP_DIR}/
+rsync_safe -avz --checksum --no-t app.py requirements.txt ${SSH_TARGET}:${APP_DIR}/
 
 # Sync scripts/ to scripts/ (NOT to root — avoids scripts/db → db path breakage)
-rsync -avz --checksum \
+rsync_safe -avz --checksum --no-t \
   --exclude='__pycache__/' --exclude='*.pyc' --exclude='.env' \
   scripts/ ${SSH_TARGET}:${APP_DIR}/scripts/
 
 # Sync static assets and templates
-rsync -avz --checksum \
-  --exclude='__pycache__/' --exclude='*.pyc' \
+# NOTE: podcast/ is excluded — those are managed server-side and the
+# deploy user doesn't have read permission on the production server.
+rsync_safe -avz --checksum --no-t \
+  --exclude='__pycache__/' --exclude='*.pyc' --exclude='podcast/' \
   static/ ${SSH_TARGET}:${APP_DIR}/static/
 
-rsync -avz --checksum templates/ ${SSH_TARGET}:${APP_DIR}/templates/
+rsync_safe -avz --checksum --no-t templates/ ${SSH_TARGET}:${APP_DIR}/templates/
 
 # Sync routes
-rsync -avz --checksum routes/ ${SSH_TARGET}:${APP_DIR}/routes/
+rsync_safe -avz --checksum --no-t routes/ ${SSH_TARGET}:${APP_DIR}/routes/
 
 # ── 3. Sync dev database → prod (unless --code-only) ──
 if [ "${1:-}" != "--code-only" ]; then

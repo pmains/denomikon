@@ -26,7 +26,6 @@ log = logging.getLogger(__name__)
 
 # ── Constants ──
 
-JURISDICTION_ID = 13
 PUBLIC_BODY_CODE = "buckeye-cc"
 DEFAULT_BODY_SLUGS = ["buckeye-cc"]
 
@@ -407,3 +406,170 @@ def fetch_and_parse_agenda(meeting: dict) -> list[dict]:
                 if items:
                     return items
     return []
+
+
+def extract_agenda_pdf_url(agenda_viewer_url: str) -> Optional[str]:
+    """Extract the S3 agenda PDF URL from a Granicus AgendaViewer page.
+
+    The AgendaViewer page loads the agenda PDF via Google Docs viewer.
+    The S3 URL is embedded in the page's JavaScript initialization.
+    """
+    try:
+        html = fetch_page(agenda_viewer_url)
+        m = re.search(r'buckeyeaz/([a-f0-9]{30,40})\.pdf', html, re.IGNORECASE)
+        if m:
+            s3_key = m.group(1)
+            return (
+                "https://granicus_production_attachments.s3.amazonaws.com"
+                f"/buckeyeaz/{s3_key}.pdf"
+            )
+    except Exception as e:
+        log.debug("extract_agenda_pdf_url failed for %s: %s", agenda_viewer_url, e)
+    return None
+
+
+def _download_pdf_with_ssl_bypass(url: str) -> Optional[bytes]:
+    """Download a PDF, bypassing SSL verification for S3 hostname mismatches."""
+    try:
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(url, headers=HEADERS)
+        with urllib.request.urlopen(req, context=ctx, timeout=60) as resp:
+            return resp.read()
+    except Exception as e:
+        log.debug("Failed to download with SSL bypass %s: %s", url, e)
+        return None
+
+
+def extract_supporting_docs(agenda_viewer_url: str) -> list[dict]:
+    """Download the agenda PDF and extract hyperlinked supporting documents.
+
+    Buckeye's Granicus agenda PDFs embed hyperlinks on each item description
+    that link to individual item report PDFs on CloudFront. This function
+    extracts those links and matches them to their agenda item numbers.
+
+    Returns a list of dicts with keys:
+      - agenda_item_number : item number e.g. "4.A"
+      - document_title     : first ~120 chars of the linked item text
+      - document_url       : the CloudFront PDF URL
+      - document_type      : "Supporting Document"
+    """
+    if not agenda_viewer_url:
+        return []
+
+    pdf_url = extract_agenda_pdf_url(agenda_viewer_url)
+    if not pdf_url:
+        log.debug("No agenda PDF URL found from %s", agenda_viewer_url)
+        return []
+
+    pdf_bytes = _download_pdf_with_ssl_bypass(pdf_url)
+    if not pdf_bytes:
+        log.debug("Failed to download agenda PDF: %s", pdf_url)
+        return []
+
+    docs: list[dict] = []
+    seen_urls: set[str] = set()
+
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            links = page.get_links()
+            for link in links:
+                uri = link.get("uri", "")
+                if not uri or not uri.endswith(".pdf"):
+                    continue
+                if uri in seen_urls:
+                    continue
+                seen_urls.add(uri)
+
+                # Find text overlapping the link rectangle to determine
+                # which agenda item this link belongs to.
+                rect = link.get("from")
+                linked_text = ""
+                if rect:
+                    blocks = page.get_text("blocks")
+                    for b in blocks:
+                        bx0, by0, bx1, by1 = b[0:4]
+                        if (rect.x0 < bx1 and rect.x1 > bx0
+                                and rect.y0 < by1 and rect.y1 > by0):
+                            linked_text = b[4].strip()
+                            break
+
+                if not linked_text:
+                    continue
+
+                # Extract agenda item number from the beginning of linked text
+                # e.g. "*4.A\nCouncil to take action..." or "5.A\nCouncil to hold..."
+                item_num = ""
+                lines = linked_text.split("\n")
+                first_line = lines[0].strip() if lines else ""
+                item_m = re.match(r"^\*?(\d+(?:\.\w)?)\b", first_line)
+                if item_m:
+                    item_num = item_m.group(1)
+
+                # Build a clean title: skip the item number prefix, use the
+                # rest of the first line plus the second line if available.
+                title_parts = []
+                for line in lines:
+                    cleaned = re.sub(r"^\*?\d+(?:\.\w)?\s*", "", line, count=1).strip()
+                    if cleaned:
+                        title_parts.append(cleaned)
+                title = " ".join(title_parts)[:200] if title_parts else first_line[:120]
+
+                # Add the item report document
+                docs.append({
+                    "agenda_item_id": "0",
+                    "agenda_item_number": item_num,
+                    "document_title": title[:200],
+                    "document_url": uri,
+                    "document_type": "Item Report",
+                    "file_extension": ".pdf",
+                })
+
+                # --- Second layer: extract attachments inside the item report PDF ---
+                try:
+                    attachment_bytes = _download_pdf_with_ssl_bypass(uri)
+                    if attachment_bytes:
+                        inner_doc = fitz.open(stream=attachment_bytes, filetype="pdf")
+                        for inner_page_num in range(len(inner_doc)):
+                            inner_page = inner_doc[inner_page_num]
+                            inner_links = inner_page.get_links()
+                            for il in inner_links:
+                                iuri = il.get("uri", "")
+                                if not iuri or not iuri.endswith(".pdf"):
+                                    continue
+                                if iuri in seen_urls:
+                                    continue
+                                seen_urls.add(iuri)
+
+                                # Extract the attachment title from text near the link
+                                irect = il.get("from")
+                                att_title = ""
+                                if irect:
+                                    att_text = inner_page.get_text("text", clip=irect).strip()
+                                    if att_text:
+                                        att_title = att_text[:200]
+
+                                docs.append({
+                                    "agenda_item_id": "0",
+                                    "agenda_item_number": item_num,
+                                    "document_title": att_title or f"Attachment for Item {item_num}",
+                                    "document_url": iuri,
+                                    "document_type": "Attachment",
+                                    "file_extension": ".pdf",
+                                })
+                        inner_doc.close()
+                except Exception as ie:
+                    log.debug("Failed to extract attachments from %s: %s", uri, ie)
+
+        doc.close()
+    except ImportError:
+        log.warning("PyMuPDF (fitz) not available; cannot extract supporting docs")
+    except Exception as e:
+        log.warning("Failed to extract supporting docs from agenda PDF: %s", e)
+
+    return docs

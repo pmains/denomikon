@@ -43,7 +43,6 @@ log = logging.getLogger(__name__)
 
 # ── Jurisdiction / body constants ──
 
-JURISDICTION_ID = 9          # City of Glendale
 PUBLIC_BODY_CODE = "glendale-cc"
 SOURCE_SYSTEM = "legistar"
 SOURCE_INSTANCE_URL = "https://glendale-az.legistar.com"

@@ -115,6 +115,15 @@ config/
 do-ca.crt
 poliscopic-postgres-ca-certificate.crt
 
+# Training data (generated, not source code)
+entity-training-items.jsonl
+
+# ML model checkpoints (large binary artifacts)
+checkpoints/
+
+# Newsletter workflow definitions (internal orchestration)
+workflows/
+
 # Temp files
 tmp/
 

@@ -16,7 +16,6 @@ from scraper.io_utils import _normalize_text_date
 
 log = logging.getLogger(__name__)
 
-JURISDICTION_ID = 16  # City of Goodyear
 PUBLIC_BODY_CODE = "goodyear-cc"
 SOURCE_SYSTEM = "agendaquick"
 SOURCE_INSTANCE_URL = "https://public.destinyhosted.com"

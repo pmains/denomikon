@@ -19,7 +19,6 @@ log = logging.getLogger(__name__)
 BASE_URL = "https://paradisevalleyaz.granicus.com"
 VIEW_ID = 2
 SOURCE_SYSTEM = "granicus"
-JURISDICTION_ID = 15  # Paradise Valley
 
 RSS_URL = f"{BASE_URL}/ViewPublisherRSS.php?view_id={VIEW_ID}&mode=agendas"
 

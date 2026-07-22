@@ -563,7 +563,7 @@ def fetch_meeting_items(
                 doc_name = att.get("fileName", "") or att.get("mediaFileName", "Attachment")
                 if doc_url:
                     docs.append({
-                        "agenda_item_id": 0,
+                        "agenda_item_id": "0",
                         "agenda_item_number": child_number,
                         "document_title": doc_name,
                         "document_url": doc_url,
@@ -578,7 +578,7 @@ def fetch_meeting_items(
                 rep_name = rep.get("agendaObjItemReportName", "Item Report")
                 if rep_url:
                     docs.append({
-                        "agenda_item_id": 0,
+                        "agenda_item_id": "0",
                         "agenda_item_number": child_number,
                         "document_title": rep_name,
                         "document_url": rep_url,
@@ -595,7 +595,7 @@ def fetch_meeting_items(
             doc_name = att.get("fileName", "") or att.get("mediaFileName", "Attachment")
             if doc_url:
                 docs.append({
-                    "agenda_item_id": 0,
+                    "agenda_item_id": "0",
                     "agenda_item_number": item_number,
                     "document_title": doc_name,
                     "document_url": doc_url,
@@ -609,7 +609,7 @@ def fetch_meeting_items(
             rep_name = rep.get("agendaObjItemReportName", "Item Report")
             if rep_url:
                 docs.append({
-                    "agenda_item_id": 0,
+                    "agenda_item_id": "0",
                     "agenda_item_number": item_number,
                     "document_title": rep_name,
                     "document_url": rep_url,
@@ -625,7 +625,7 @@ def fetch_meeting_items(
         fname = pf.get("name", "") or ftype or "Meeting Document"
         if furl:
             docs.append({
-                "agenda_item_id": 0,
+                "agenda_item_id": "0",
                 "agenda_item_number": "",
                 "document_title": fname,
                 "document_url": furl,

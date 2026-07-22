@@ -1,0 +1,7 @@
+migrate.sh                    # Master orchestration — run full or step-by-step
+scripts/db/migrate_prod.py    # Step 1 + Step 6 — DDL + data copy + cleanup
+scripts/db/sync_prod.py       # Step 2 — incremental data sync
+scripts/deploy_code.sh        # Step 3 — rsync code to prod (dry-run by default)
+scripts/reload_gunicorn.sh    # Step 4 — graceful SIGHUP reload
+scripts/verify_deploy.py      # Step 5 — import check + HTTP health + DB query
+rollback.sh                   # Emergency — deploy old code, old table preserved

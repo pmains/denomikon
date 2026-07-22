@@ -6,11 +6,11 @@ Usage:
   DATABASE_URL=postgresql://... python scripts/daily_sync.py
 
 Design:
-  - Tier 1 & 2 (daily): 3-day rolling window — quick check for anything
-    newly posted in the last few days. This avoids re-checking hundreds
-    of completed meetings that never change.
-  - Tier 3 (weekly/Sunday): 30-day rolling window — safety net for
-    meetings that were posted further out than the 3-day window.
+  - Tier 1 & 2 (daily): 3-day rolling window back, 14-day rolling window
+    forward — quick check for anything newly posted in the last few days,
+    plus upcoming meetings (e.g. Maricopa County BOS on DataBank).
+  - Tier 3 (weekly/Sunday): 30-day rolling window back, 14 days forward
+    — safety net for meetings posted further out than the daily window.
   - After both tiers, a minutes check pass re-visits completed meetings
     without minutes_url to see if minutes have been published since.
 """
@@ -32,13 +32,19 @@ log = logging.getLogger("daily_sync")
 
 DAILY_WINDOW_DAYS = 3        # Tier 1 & 2 scan this far back
 WEEKLY_WINDOW_DAYS = 30      # Tier 3 (Sunday) scan
+FUTURE_WINDOW_DAYS = 14      # How far forward to search for upcoming meetings
 
 
 def _window_args(days: int) -> list[str]:
-    """Return ['--start-date=YYYY-MM-DD', '--end-date=YYYY-MM-DD'] for an N-day window."""
+    """Return ['--start-date=YYYY-MM-DD', '--end-date=YYYY-MM-DD'] for an N-day window.
+
+    The end date extends FUTURE_WINDOW_DAYS forward so that upcoming meetings
+    (e.g. Maricopa County BOS on DataBank's AgendaOnline) are captured.
+    """
     today = date.today()
     start = today - timedelta(days=days)
-    return [f"--start-date={start}", f"--end-date={today}"]
+    end = today + timedelta(days=FUTURE_WINDOW_DAYS)
+    return [f"--start-date={start}", f"--end-date={end}"]
 
 
 def _daily_args(label: str, *extra: str) -> list[str]:
@@ -84,6 +90,7 @@ TIER_2: list[list[str]] = [
     _daily_args("surprise-civicclerk", "--sync",
                 "--bodies=surprise-pz,surprise-arts,surprise-veterans,surprise-library,surprise-parks,surprise-psprs-fire,surprise-psprs-police,surprise-health-benefits,surprise-nominations,surprise-audit,surprise-tourism,surprise-judicial-selection"),
     _daily_args("gilbert", "--sync"),
+    _daily_args("gilbert-planning", "--sync"),
     _daily_args("tucson", "--sync"),
     _daily_args("tucson-pc", "--sync"),
     _daily_args("avondale", "--sync"),
@@ -125,6 +132,7 @@ TIER_3: list[list[str]] = [
     _weekly_args("surprise-civicclerk", "--sync",
                  "--bodies=surprise-pz,surprise-arts,surprise-veterans,surprise-library,surprise-parks,surprise-psprs-fire,surprise-psprs-police,surprise-health-benefits,surprise-nominations,surprise-audit,surprise-tourism,surprise-judicial-selection"),
     _weekly_args("gilbert", "--sync"),
+    _weekly_args("gilbert-planning", "--sync"),
     _weekly_args("tucson", "--sync"),
     _weekly_args("tucson-pc", "--sync"),
     _weekly_args("avondale", "--sync"),
@@ -169,9 +177,9 @@ def main():
     log.info("=== Daily sync start ===")
 
     daily_window = _window_args(DAILY_WINDOW_DAYS)
-    log.info("  Daily window: %s to %s (last %d days)",
+    log.info("  Daily window: %s to %s (%d days back, %d days forward)",
              daily_window[0].split("=")[1], daily_window[1].split("=")[1],
-             DAILY_WINDOW_DAYS)
+             DAILY_WINDOW_DAYS, FUTURE_WINDOW_DAYS)
 
     results: list[str] = []
 
@@ -193,9 +201,9 @@ def main():
     if is_sunday_morning:
         weekly_window = _window_args(WEEKLY_WINDOW_DAYS)
         log.info("--- Tier 3 (weekly safety net) ---")
-        log.info("  Weekly window: %s to %s (last %d days)",
+        log.info("  Weekly window: %s to %s (%d days back, %d days forward)",
                  weekly_window[0].split("=")[1], weekly_window[1].split("=")[1],
-                 WEEKLY_WINDOW_DAYS)
+                 WEEKLY_WINDOW_DAYS, FUTURE_WINDOW_DAYS)
         for arglist in TIER_3:
             code, summary = run_sync(arglist, arglist[0])
             results.append(summary)

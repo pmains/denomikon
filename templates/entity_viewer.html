@@ -1,0 +1,382 @@
+{% extends "base.html" %}
+{% block title %}Poliscopic — Entity Viewer{% endblock %}
+
+{% block head_extra %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/entity-viewer.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="ev-container">
+  <!-- Header -->
+  <div class="ev-header">
+    <h1>Entity Viewer</h1>
+    <p class="ev-subtitle">
+      Extract and classify entity candidates from agenda text.
+      Type resolution from GPT-4o-mini classifications.
+    </p>
+  </div>
+
+  <!-- Controls bar -->
+  <div class="ev-controls">
+    <div class="ev-control-group">
+      <label for="model-select">Model:</label>
+      <select id="model-select" class="ev-select">
+        {% for m in models %}
+        <option value="{{ m.id }}" {% if m.id == selected_model %}selected{% endif %}>
+          {{ m.name }} (F1: {{ m.f1 }})
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="ev-control-group">
+      <label for="type-filter">Filter type:</label>
+      <select id="type-filter" class="ev-select">
+        <option value="all">All types</option>
+        <option value="Person">Person</option>
+        <option value="Company">Company</option>
+        <option value="Developer">Developer</option>
+        <option value="Gov Agency">Gov Agency</option>
+        <option value="Law Firm">Law Firm</option>
+        <option value="Organization">Organization</option>
+        <option value="Planning">Planning</option>
+        <option value="Location">Location</option>
+        <option value="Permit">Permit</option>
+        <option value="Date">Date</option>
+        <option value="Unclassified">Unclassified</option>
+      </select>
+    </div>
+
+    <div class="ev-control-group ev-spacer"></div>
+
+    <button id="btn-classify" class="ev-btn ev-btn-primary">Classify</button>
+    <button id="btn-clear-text" class="ev-btn ev-btn-secondary">Clear</button>
+
+    <div class="ev-status" id="ev-status">Ready</div>
+  </div>
+
+  <!-- Split panes -->
+  <div class="ev-panes">
+    <!-- Left pane: raw text with highlights -->
+    <div class="ev-pane ev-pane-text">
+      <div class="ev-pane-header">
+        <h2>Agenda Text</h2>
+        <span class="ev-pane-badge" id="entity-count-badge">0 entities</span>
+      </div>
+      <textarea id="ev-text-input" class="ev-textarea" spellcheck="false">{{ text }}</textarea>
+      <div id="ev-highlighted" class="ev-highlighted" style="display:none;"></div>
+    </div>
+
+    <!-- Right pane: entity list -->
+    <div class="ev-pane ev-pane-entities">
+      <div class="ev-pane-header">
+        <h2>Entities</h2>
+        <span class="ev-pane-badge" id="entity-list-count">0 found</span>
+      </div>
+      <div class="ev-entity-search">
+        <input type="text" id="entity-search-input" placeholder="Search entities..." class="ev-search-input">
+      </div>
+      <div id="ev-entity-list" class="ev-entity-list">
+        <div class="ev-empty-state">
+          Click <strong>Classify</strong> to detect entities.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Entity detail modal -->
+<div id="ev-modal" class="ev-modal" style="display:none;" onclick="if(event.target===this)closeModal()">
+  <div class="ev-modal-content">
+    <span class="ev-modal-close" onclick="closeModal()">&times;</span>
+    <h3 id="modal-name"></h3>
+    <div class="ev-modal-detail">
+      <p><strong>Normalized:</strong> <span id="modal-normalized"></span></p>
+      <p><strong>Type:</strong> <span id="modal-type"></span></p>
+      <p><strong>Pattern:</strong> <span id="modal-pattern"></span></p>
+      <p><strong>Confidence:</strong> <span id="modal-confidence"></span></p>
+      <p><strong>Context:</strong></p>
+      <blockquote id="modal-context"></blockquote>
+    </div>
+    <div class="ev-modal-actions">
+      <button class="ev-btn ev-btn-accept" onclick="acceptEntity()">&#10003; Accept</button>
+      <button class="ev-btn ev-btn-reject" onclick="rejectEntity()">&#10007; Reject</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts_extra %}
+<script>
+// ── Entity colors from server ──────────────────────────────────────────
+const TYPE_COLORS = {{ type_colors | tojson }};
+let _currentResults = [];
+let _currentModel = "{{ selected_model }}";
+let _selectedEntity = null;
+
+// ── Helpers ─────────────────────────────────────────────────────────────
+function getColor(type) {
+  return TYPE_COLORS[type] || "#9E9E9E";
+}
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// ── Highlight text with entity spans ────────────────────────────────────
+function renderHighlightedText(text, results) {
+  const entities = results.filter(r => r.is_entity);
+  if (entities.length === 0) {
+    return escapeHtml(text);
+  }
+
+  // Sort by span_start
+  const sorted = [...entities].sort((a, b) => a.span_start - b.span_start);
+
+  // Build highlighted HTML — merge overlapping spans
+  let html = "";
+  let pos = 0;
+
+  for (const ent of sorted) {
+    const start = ent.span_start;
+    const end = ent.span_end;
+
+    // Text before this entity
+    if (start > pos) {
+      html += escapeHtml(text.slice(pos, start));
+    }
+
+    // The entity itself
+    const color = getColor(ent.entity_type);
+    // Truncate very long entity names for display
+    const displayLabel = ent.display_name.length > 60
+        ? ent.display_name.slice(0, 57) + "..."
+        : ent.display_name;
+    html += `<mark class="ev-entity-span" style="background-color:${color}22; border-bottom:2px solid ${color};" `;
+    html += `data-norm="${escapeHtml(ent.normalized_name)}" `;
+    html += `onclick="showDetail('${escapeHtml(ent.normalized_name)}')" `;
+    html += `title="${escapeHtml(ent.display_name)} [${ent.entity_type}] (${(ent.confidence*100).toFixed(0)}%)">`;
+    html += escapeHtml(displayLabel);
+    html += `</mark>`;
+
+    pos = Math.max(pos, end);
+  }
+
+  // Remaining text
+  if (pos < text.length) {
+    html += escapeHtml(text.slice(pos));
+  }
+
+  return html;
+}
+
+// ── Render entity list ──────────────────────────────────────────────────
+function renderEntityList(results, typeFilter, searchQuery) {
+  const container = document.getElementById("ev-entity-list");
+  const entities = results.filter(r => r.is_entity);
+
+  let filtered = entities;
+  if (typeFilter && typeFilter !== "all") {
+    filtered = filtered.filter(e => e.entity_type === typeFilter);
+  }
+  if (searchQuery) {
+    const q = searchQuery.toLowerCase();
+    filtered = filtered.filter(e =>
+      e.display_name.toLowerCase().includes(q) ||
+      e.normalized_name.toLowerCase().includes(q) ||
+      e.entity_type.toLowerCase().includes(q)
+    );
+  }
+
+  document.getElementById("entity-list-count").textContent = `${filtered.length} / ${entities.length}`;
+
+  if (filtered.length === 0) {
+    container.innerHTML = `<div class="ev-empty-state">No matching entities found.</div>`;
+    return;
+  }
+
+  let html = "";
+  for (const ent of filtered) {
+    const color = getColor(ent.entity_type);
+    const confidencePct = (ent.confidence * 100).toFixed(0);
+    html += `<div class="ev-entity-card" onclick="showDetail('${escapeHtml(ent.normalized_name)}')">`;
+    html += `  <div class="ev-entity-type" style="background-color:${color};">${escapeHtml(ent.entity_type)}</div>`;
+    html += `  <div class="ev-entity-body">`;
+    html += `    <div class="ev-entity-name">${escapeHtml(ent.display_name)}</div>`;
+    html += `    <div class="ev-entity-meta">`;
+    html += `      <span>${escapeHtml(ent.pattern)}</span>`;
+    html += `      <span class="ev-confidence">${confidencePct}%</span>`;
+    html += `    </div>`;
+    html += `  </div>`;
+    html += `</div>`;
+  }
+
+  container.innerHTML = html;
+}
+
+// ── Show detail modal ───────────────────────────────────────────────────
+function showDetail(normalizedName) {
+  const ent = _currentResults.find(r => r.normalized_name === normalizedName);
+  if (!ent) return;
+
+  _selectedEntity = ent;
+
+  document.getElementById("modal-name").textContent = ent.display_name;
+  document.getElementById("modal-normalized").textContent = ent.normalized_name;
+  document.getElementById("modal-type").textContent = ent.entity_type;
+  document.getElementById("modal-pattern").textContent = ent.pattern;
+  document.getElementById("modal-confidence").textContent = (ent.confidence * 100).toFixed(1) + "%";
+  document.getElementById("modal-context").textContent = ent.context_snippet || "(no context)";
+  document.getElementById("ev-modal").style.display = "block";
+}
+
+function closeModal() {
+  document.getElementById("ev-modal").style.display = "none";
+  _selectedEntity = null;
+}
+
+// ── Accept / Reject feedback ────────────────────────────────────────────
+async function saveFeedback(action) {
+  if (!_selectedEntity) return;
+  try {
+    const resp = await fetch("/entity-viewer/feedback", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        normalized_name: _selectedEntity.normalized_name,
+        display_name: _selectedEntity.display_name,
+        entity_type: _selectedEntity.entity_type,
+        confidence: _selectedEntity.confidence,
+        model: _currentModel,
+        action: action,
+      }),
+    });
+    const data = await resp.json();
+    closeModal();
+    // Highlight the card
+    const cards = document.querySelectorAll(".ev-entity-card");
+    cards.forEach(c => c.classList.remove("ev-accepted", "ev-rejected"));
+  } catch (e) {
+    console.error("Feedback save failed:", e);
+  }
+}
+
+function acceptEntity() { saveFeedback("accept"); }
+function rejectEntity() { saveFeedback("reject"); }
+
+// ── Classify ────────────────────────────────────────────────────────────
+async function runClassification() {
+  const textarea = document.getElementById("ev-text-input");
+  const text = textarea.value;
+  const model = document.getElementById("model-select").value;
+  const statusEl = document.getElementById("ev-status");
+
+  if (!text.trim()) {
+    statusEl.textContent = "Error: No text to classify";
+    return;
+  }
+
+  statusEl.textContent = "Classifying...";
+  document.getElementById("btn-classify").disabled = true;
+
+  try {
+    const resp = await fetch("/entity-viewer/classify", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ text, model }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json();
+      statusEl.textContent = `Error: ${err.error || resp.statusText}`;
+      document.getElementById("btn-classify").disabled = false;
+      return;
+    }
+
+    const data = await resp.json();
+    _currentResults = data.results;
+    _currentModel = data.model;
+
+    // Update status
+    statusEl.textContent = `Model: ${data.model}  |  ${data.entities} entities  |  ${data.noise} filtered`;
+
+    // Entity count badge
+    document.getElementById("entity-count-badge").textContent = `${data.entities} entities`;
+
+    // Highlight text
+    const highlightedDiv = document.getElementById("ev-highlighted");
+    highlightedDiv.innerHTML = renderHighlightedText(text, data.results);
+    highlightedDiv.style.display = "block";
+
+    // Hide textarea
+    document.getElementById("ev-text-input").style.display = "none";
+
+    // Render entity list
+    const typeFilter = document.getElementById("type-filter").value;
+    const searchQuery = document.getElementById("entity-search-input").value;
+    renderEntityList(data.results, typeFilter, searchQuery);
+
+  } catch (e) {
+    statusEl.textContent = `Error: ${e.message}`;
+  } finally {
+    document.getElementById("btn-classify").disabled = false;
+  }
+}
+
+// ── Clear ───────────────────────────────────────────────────────────────
+function clearText() {
+  document.getElementById("ev-text-input").value = "";
+  document.getElementById("ev-text-input").style.display = "block";
+  document.getElementById("ev-highlighted").style.display = "none";
+  document.getElementById("ev-highlighted").innerHTML = "";
+  document.getElementById("ev-entity-list").innerHTML = `<div class="ev-empty-state">Click <strong>Classify</strong> to detect entities.</div>`;
+  document.getElementById("entity-count-badge").textContent = "0 entities";
+  document.getElementById("entity-list-count").textContent = "0 found";
+  document.getElementById("ev-status").textContent = "Cleared";
+  _currentResults = [];
+}
+
+// ── Event bindings ──────────────────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("btn-classify").addEventListener("click", runClassification);
+  document.getElementById("btn-clear-text").addEventListener("click", clearText);
+
+  // Type filter change
+  document.getElementById("type-filter").addEventListener("change", () => {
+    const typeFilter = document.getElementById("type-filter").value;
+    const searchQuery = document.getElementById("entity-search-input").value;
+    renderEntityList(_currentResults, typeFilter, searchQuery);
+  });
+
+  // Search input
+  document.getElementById("entity-search-input").addEventListener("input", () => {
+    const typeFilter = document.getElementById("type-filter").value;
+    const searchQuery = document.getElementById("entity-search-input").value;
+    renderEntityList(_currentResults, typeFilter, searchQuery);
+  });
+
+  // Model selector keyboard shortcut: Ctrl+Enter to classify
+  document.getElementById("ev-text-input").addEventListener("keydown", (e) => {
+    if (e.ctrlKey && e.key === "Enter") {
+      e.preventDefault();
+      runClassification();
+    }
+  });
+
+  // Close modal on Escape
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeModal();
+  });
+
+  // Auto-classify on load if model selected and text present
+  const textarea = document.getElementById("ev-text-input");
+  if (textarea.value.trim()) {
+    // Auto-run on load
+    setTimeout(runClassification, 500);
+  }
+});
+</script>
+{% endblock %}

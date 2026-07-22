@@ -19,7 +19,6 @@ from scraper.io_utils import normalize_meeting_date
 
 log = logging.getLogger(__name__)
 
-JURISDICTION_ID = 22  # City of Apache Junction (new)
 SOURCE_SYSTEM = "legistar"
 BASE_URL = "https://apachejunction.legistar.com"
 CALENDAR_URL = f"{BASE_URL}/Calendar.aspx"

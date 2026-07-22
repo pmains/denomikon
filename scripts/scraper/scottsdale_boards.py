@@ -60,7 +60,6 @@ BOARDS = {
     },
 }
 
-JURISDICTION_ID = 7
 
 
 def fetch_page(url: str, timeout: int = 30) -> str:

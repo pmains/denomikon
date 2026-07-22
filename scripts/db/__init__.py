@@ -22,11 +22,12 @@ from db.core import _engine, _SessionLocal
 from sqlalchemy import text
 from db.models import (
     Base,
-    Person, Supervisor, MeetingSupervisor, AgendaItemVote, MemberVote,
+    Person, Supervisor, MeetingMember, AgendaItemVote, MemberVote,
     Meeting, Case, PZItemDetail, CaseEvent, AgendaItem,
     PublicBodyMember, MeetingAttendance, MemberVote,
     ExecutiveSessionParticipant, SupportingDocument,
-     Jurisdiction, PublicBody, BodySeat, BodyMembership,
+    Jurisdiction, PublicBody, BodySeat, BodyMembership,
+    IngestFailure,
 )
 from db.helper import _parse_date
 from db.meeting_utils import (
@@ -47,6 +48,7 @@ from db.persist import (
     persist_meeting, _upsert_case_and_event, replace_meeting_data_safe,
     persist_votes, persist_pz_votes, _detect_vote_attributes, _ensure_membership,
     _find_or_create_person, infer_absence_for_meeting,
+    record_ingest_failure, _classify_error,
 )
 from db.queries import (
     _resolve_jurisdiction_id,
@@ -62,6 +64,7 @@ from db.queries import (
     get_supervisor_voting_alignment, get_supervisor_swing_votes,
     get_public_bodies_by_jurisdiction, get_body_members,
     _enhance_member_for_template,
+    get_ingest_failures, get_sync_report,
 )
 from db.votes import (
     _normalize_vote_value, _make_supervisor_slug,

@@ -29,7 +29,6 @@ from scraper.utils import get_async_playwright
 
 log = logging.getLogger(__name__)
 
-JURISDICTION_ID = 25
 SOURCE_SYSTEM = "valleymetro-drupal"
 SOURCE_INSTANCE_URL = "https://www.valleymetro.org"
 

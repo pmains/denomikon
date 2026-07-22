@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from db import (
     get_session, Meeting, AgendaItem, SupportingDocument,
-    AgendaItemVote, MemberVote, Supervisor, MeetingSupervisor,
+    AgendaItemVote, MemberVote, Supervisor, MeetingMember,
     PZItemDetail, BodyMembership, Person, _enhance_member_for_template,
     Case, CaseEvent, Jurisdiction, PublicBody,
 )

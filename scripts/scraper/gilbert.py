@@ -19,7 +19,6 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 PUBLIC_BODY_CODE = "gilbert-tc"
-JURISDICTION_ID = 6
 
 BASE_URL = "https://gilbertaz.databankcloud.com/GilbertAgendaOnline"
 SEARCH_URL = f"{BASE_URL}/Meetings/Search"

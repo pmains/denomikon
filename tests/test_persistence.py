@@ -449,11 +449,11 @@ class TestVoteTablesCreated(unittest.TestCase):
         self.assertIn("agenda_item_votes", tables)
         session.close()
 
-    def test_supervisor_votes_table_exists(self):
+    def test_member_votes_table_exists(self):
         session = get_session()
         inspector = sa_inspect(session.get_bind())
         tables = inspector.get_table_names()
-        self.assertIn("supervisor_votes", tables)
+        self.assertIn("member_votes", tables)
         session.close()
 
     def test_supervisors_table_exists(self):
@@ -463,11 +463,11 @@ class TestVoteTablesCreated(unittest.TestCase):
         self.assertIn("persons", tables, "The 'supervisors' table was renamed to 'persons'")
         session.close()
 
-    def test_meeting_supervisors_table_exists(self):
+    def test_meeting_members_table_exists(self):
         session = get_session()
         inspector = sa_inspect(session.get_bind())
         tables = inspector.get_table_names()
-        self.assertIn("meeting_supervisors", tables)
+        self.assertIn("meeting_members", tables)
         session.close()
 
 
@@ -589,11 +589,11 @@ class TestPersistVotes(unittest.TestCase):
         self.persist_votes(self.s, "bos", "TEST001", sups, v)
         self.s.commit()
 
-        from db import MeetingSupervisor, AgendaItemVote
+        from db import MeetingMember, AgendaItemVote
         ms = self.s.execute(
-            select(MeetingSupervisor).where(
-                MeetingSupervisor.body == "bos",
-                MeetingSupervisor.meeting_id == "TEST001",
+            select(MeetingMember).where(
+                MeetingMember.body == "bos",
+                MeetingMember.meeting_id == "TEST001",
             )
         ).scalars().all()
         aiv = self.s.execute(
@@ -613,8 +613,8 @@ class TestPersistVotes(unittest.TestCase):
             self.persist_votes(self.s, "bos", mid, sups, self._make_vote(i + 1))
             self.s.commit()
 
-        from db import MeetingSupervisor
-        total = self.s.execute(select(MeetingSupervisor)).scalars().all()
+        from db import MeetingMember
+        total = self.s.execute(select(MeetingMember)).scalars().all()
         self.assertEqual(len(total), 6)
 
     def test_persist_votes_stale_session_after_failure(self):
@@ -629,19 +629,19 @@ class TestPersistVotes(unittest.TestCase):
         self.persist_votes(self.s, "bos", "TEST011", sups, self._make_vote(1))
         self.s.commit()
 
-        from db import MeetingSupervisor
+        from db import MeetingMember
         ms10 = self.s.execute(
-            select(MeetingSupervisor).where(MeetingSupervisor.meeting_id == "TEST010")
+            select(MeetingMember).where(MeetingMember.meeting_id == "TEST010")
         ).scalars().all()
         ms11 = self.s.execute(
-            select(MeetingSupervisor).where(MeetingSupervisor.meeting_id == "TEST011")
+            select(MeetingMember).where(MeetingMember.meeting_id == "TEST011")
         ).scalars().all()
         self.assertEqual(len(ms10), 2)
         self.assertEqual(len(ms11), 2)
 
     def test_persist_votes_creates_membership_for_new_person(self):
         """Creating a new supervisor via persist_votes also creates a BodyMembership."""
-        from db import MeetingSupervisor
+        from db import MeetingMember
         from datetime import date
 
         # Need a real meeting in the DB for date resolution

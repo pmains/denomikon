@@ -711,10 +711,10 @@ _EXECUTIVE_ROLE_PATTERNS: list[tuple[str, str]] = [
 def extract_executive_session_participants(
     agenda_items: list[dict],
     meeting_id: str,
+    body: str,
     source_url: str = "",
-    body: str = "bos",
 ) -> list[dict]:
-    """Extract executive session participants from BOS Executive meeting agenda items.
+    """Extract executive session participants from a meeting's agenda items.
 
     Scans all agenda items for known advisor names and role patterns.
     Applies a known-name lookup for frequently-encountered attorneys and staff,
@@ -725,7 +725,7 @@ def extract_executive_session_participants(
                      "agenda_item_number" keys.
         meeting_id: The meeting ID.
         source_url: The meeting source URL.
-        body: Body identifier (default "bos").
+        body: Body identifier (required).
 
     Returns:
         List of dicts suitable for inserting into executive_session_participants.

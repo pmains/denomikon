@@ -274,12 +274,12 @@ class TestSplitVoteDetection(unittest.TestCase):
                 sup = Supervisor(name=sup_name, normalized_name=norm)
                 session.add(sup)
                 session.flush()
-            sv = db.SupervisorVote(
+            mv = db.MemberVote(
                 agenda_item_vote_id=aiv.id,
-                supervisor_id=sup.id,
+                member_id=sup.id,
                 vote=sv_data["vote"],
             )
-            session.add(sv)
+            session.add(mv)
         session.flush()
         return aiv
 
@@ -465,18 +465,18 @@ class TestDissentDetection(unittest.TestCase):
                 sup = Supervisor(name=sup_name, normalized_name=norm)
                 session.add(sup)
                 session.flush()
-            sv = db.SupervisorVote(
+            mv = db.MemberVote(
                 agenda_item_vote_id=aiv.id,
-                supervisor_id=sup.id,
+                member_id=sup.id,
                 vote=sv_data["vote"],
             )
-            session.add(sv)
+            session.add(mv)
         session.flush()
         db._detect_vote_attributes([aiv])
         session.commit()
-        # Re-fetch SupervisorVote rows to check is_dissent
+        # Re-fetch MemberVote rows to check is_dissent
         return session.execute(
-            select(db.SupervisorVote).where(db.SupervisorVote.agenda_item_vote_id == aiv.id)
+            select(db.MemberVote).where(db.MemberVote.agenda_item_vote_id == aiv.id)
         ).scalars().all()
 
     def test_no_dissent_when_majority(self):

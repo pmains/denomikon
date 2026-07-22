@@ -7,7 +7,7 @@ from flask import Blueprint, render_template, request, jsonify, redirect
 from sqlalchemy import select, func, case, text as sa_text, or_, and_
 
 from db import (
-    get_session, Supervisor, MeetingSupervisor, Person,
+    get_session, Supervisor, MeetingMember, Person,
     BodyMembership, _enhance_member_for_template,
     get_bos_supervisors, get_supervisor_by_slug_or_name,
     get_supervisor_vote_stats, get_supervisor_split_votes,
@@ -1140,14 +1140,14 @@ def debug_inferred_abstentions():
                 m.meeting_date,
                 aiv.agenda_item_number,
                 aiv.vote_text,
-                sv.supervisor_id,
+                mv.member_id,
                 sup.name,
                 sup.normalized_name
-            FROM supervisor_votes sv
-            JOIN agenda_item_votes aiv ON aiv.id = sv.agenda_item_vote_id
-            JOIN persons sup ON sup.id = sv.supervisor_id
+            FROM member_votes mv
+            JOIN agenda_item_votes aiv ON aiv.id = mv.agenda_item_vote_id
+            JOIN persons sup ON sup.id = mv.member_id
             LEFT JOIN meetings m ON m.id = aiv.meeting_db_id AND m.body = aiv.body
-            WHERE sv.raw_vote_text LIKE :prefix
+            WHERE mv.raw_vote_text LIKE :prefix
               AND aiv.body = :body
             ORDER BY aiv.meeting_id, aiv.agenda_item_number
         """)

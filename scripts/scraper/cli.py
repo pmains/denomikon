@@ -13,43 +13,38 @@ def _print_top_level_help() -> None:
     print("Scrape meeting materials from Maricopa County and City of Tempe public governance boards.")
     print()
     print("Subcommands:")
-    print("  bos       Board of Supervisors (default when no subcommand given)")
-    print("  pz        Planning & Zoning Commission")
-    print("  adj       Board of Adjustment")
-    print("  drain     Drainage Review Board (2011\u20132013, defunct)")
-    print("  health    Board of Health")
-    print("  tab       Transportation Advisory Board")
-    print("  ida       Industrial Development Authority (WordPress site)")
+    print("  maricopa  Maricopa County boards: --list-bodies, --body=mc-bos|mc-pz|...")
     print("  tempe     City of Tempe (Council, DRC, BOA, HPC, etc.)")
     print("  mesa      City of Mesa (Council, PZ, DRB, BOA, HPB, etc. via Legistar)")
     print("  chandler  City of Chandler (Council, PZ, DRC, BOA, HPC via AgendaQuick)")
-    print("  avondale            City of Avondale (Council, P&Z, BOA, boards via CivicClerk — current)")
-    print("  avondale-granicus   City of Avondale (Council, P&Z, BOA via Granicus — legacy, no items)")
-    print("  fountain-hills  Town of Fountain Hills (Council, P&Z, boards via CivicClerk)")
-    print("  gilbert   Town of Gilbert (Council via OnBase)")
-    print("  scottsdale City of Scottsdale (Council via PDF archive)")
-    print("  scottsdale-boards Scottsdale P&Z, BOA, DRB, HPC, Bldg Appeals")
-    print("  glendale  City of Glendale (Council via Legistar)")
-    print("  glendale-new  City of Glendale (Council, PC, BOA via AgendaQuick)")
-    print("  buckeye         City of Buckeye (Council, P&Z, BOA, PRC via NovusAgenda — legacy)")
-    print("  buckeye-granicus City of Buckeye (Council, P&Z, PSPRS, CFD, Youth via Granicus ViewPublisher)")
+    print("  avondale  City of Avondale (Council, P&Z, BOA, etc. via CivicClerk)")
+    print("  buckeye   City of Buckeye (Council, P&Z, PSPRS, CFD, Youth via Granicus)")
     print("  el-mirage City of El Mirage (Council, P&Z, YAC, PSPRS via AgendaQuick)")
+    print("  fountain-hills  Town of Fountain Hills (Council, P&Z, boards via CivicClerk)")
+    print("  gilbert   Town of Gilbert (Council + Planning — use --list-bodies, --body)")
+    print("  glendale  City of Glendale (Council via Legistar; Planning via AgendaQuick)")
     print("  goodyear  City of Goodyear (Council, P&Z, boards via AgendaQuick)")
     print("  paradise-valley  Town of Paradise Valley (Council, Planning, BOA via Granicus)")
-    print("  queen-creek  Town of Queen Creek (Council, Planning, boards via Granicus)")
-    print("  apache-junction  City of Apache Junction (Council, P&Z, boards via Legistar)")
     print("  peoria    City of Peoria (Council, P&Z, BOA, DRB, HPC via NovusAgenda)")
-    print("  surprise              City of Surprise (Council via Granicus, legacy)")
-    print("  wickenburg          Town of Wickenburg (Common Council, P&Z, boards via Destiny/AgendaQuick)")
-    print("  tolleson            City of Tolleson (City Council, P&Z via CivicClerk)")
-    print("  surprise-civicclerk   City of Surprise (all bodies via CivicClerk API)")
-    print("  avondale            City of Avondale (City Council, P&Z, BOA, boards via CivicClerk)")
-    print("  tucson                City of Tucson (Mayor & Council via OnBase)")
-    print("  tucson-pc             City of Tucson (Planning Commission via listing page + PDF)")
-    print("  phoenix-aem  Phoenix boards/commissions via Adobe AEM (Planning, Village, Historic Pres, etc.)")
-    print("  all       Sync all Maricopa County boards: BOS, PZ, ADJ, Drain, Health, TAB, IDA")
-    print("  mcacc     All remaining Maricopa County boards via AgendaCenter")
+    print("  phoenix   City of Phoenix (Council, boards via RSS feed)")
+    print("  queen-creek  Town of Queen Creek (Council, Planning, boards via Granicus)")
+    print("  scottsdale City of Scottsdale (Council + boards — use --list-bodies, --body)")
+    print("  surprise  City of Surprise (all bodies via CivicClerk API)")
+    print("  tolleson  City of Tolleson (City Council, P&Z via CivicClerk)")
+    print("  tucson    City of Tucson (Mayor & Council via OnBase; Planning via listing page)")
+    print("  wickenburg Town of Wickenburg (Common Council, P&Z, boards via Destiny/AgendaQuick)")
+    print("  apache-junction  City of Apache Junction (Council, P&Z, boards via Legistar)")
+    print("  all       Sync ALL jurisdictions (32 cities + county boards via daily_sync.py)")
     print("  mag       Maricopa Association of Governments (MAG) committees (via browser)")
+    print()
+    print("Deprecated/Legacy:")
+    print("  avondale-granicus   City of Avondale via Granicus (use avondale instead)")
+    print("  buckeye-novusagenda City of Buckeye via NovusAgenda (use buckeye instead)")
+    print("  scottsdale-boards   Scottsdale P&Z, BOA, DRB via PDF (use scottsdale --body=...)")
+    print("  gilbert-planning    Gilbert Planning Commission (use gilbert --body=planning)")
+    print("  glendale-new        City of Glendale via AgendaQuick (use glendale instead)")
+    print("  tucson-pc           Tucson Planning Commission (use tucson instead)")
+    print("  phoenix-aem         Phoenix boards via AEM (use phoenix instead)")
     print()
     print("Common options (varies per subcommand; use <subcommand> --help for details):")
     print("  --sync                    Search online, extract, and persist to database")
@@ -59,6 +54,7 @@ def _print_top_level_help() -> None:
     print("  --end-date=YYYY-MM-DD    End date for search")
     print("  --date=YYYY-MM-DD        Single day shorthand")
     print("  --meeting-id=ID           Single meeting to sync (bypasses date search)")
+    print("  --list-bodies             List available bodies for this jurisdiction")
     print("  --retry-failed            Re-sync meetings with failed/partial/pending status")
     print("  --init-db                 Create database tables")
     print("  --status                  Print sync status summary")
@@ -122,6 +118,284 @@ def _normalize_year_month(args, parser) -> None:
         args.end_date = f"{year:04d}-{month:02d}-{last_day:02d}"
 
 
+def _parse_maricopa_args(rest: list[str]) -> argparse.Namespace:
+    """Parse Maricopa County board arguments.
+
+    Supports --body=mc-bos, --body=mc-pz, and --list-bodies.
+    """
+    MARICOPA_BODIES = {
+        "mc-bos": "Board of Supervisors (default)",
+        "mc-pz": "Planning & Zoning Commission",
+        "mc-adj": "Board of Adjustment",
+        "mc-drain": "Drainage Review Board (2011-2013, defunct)",
+        "mc-health": "Board of Health",
+        "mc-tab": "Transportation Advisory Board",
+        "mc-ida": "Industrial Development Authority",
+        "mc-mcacc": "All remaining boards via AgendaCenter",
+    }
+
+    p = argparse.ArgumentParser(description="Scrape Maricopa County board meetings", prog="maricopa")
+    p.add_argument("--sync", action="store_true", help="Fetch and persist meetings to database")
+    p.add_argument("--body", default="mc-bos", choices=list(MARICOPA_BODIES.keys()),
+                   help="Maricopa County board to sync (default: mc-bos)")
+    p.add_argument("--list-bodies", action="store_true", help="List available Maricopa County boards and exit")
+    p.add_argument("--start-date", help="Start date YYYY-MM-DD")
+    p.add_argument("--end-date", help="End date YYYY-MM-DD")
+    p.add_argument("--date", help="Single date YYYY-MM-DD")
+    p.add_argument("--year", help="Sync an entire year (e.g. --year=2026)")
+    p.add_argument("--month", help="Sync an entire month (e.g. --month=2026-04)")
+    p.add_argument("--meeting-id", help="Single meeting ID to sync")
+    p.add_argument("--retry-failed", action="store_true", help="Re-sync failed/partial/pending meetings")
+    p.add_argument("--force", action="store_true", help="Re-sync even if status is complete")
+    p.add_argument("--limit", type=int, default=0, help="Max meetings to process")
+    p.add_argument("--init-db", action="store_true", help="Create database tables")
+    p.add_argument("--status", action="store_true", help="Print sync status summary")
+    p.add_argument("--failed", action="store_true", help="List failed/partial meetings")
+    p.add_argument("--skip-complete", action="store_true",
+                   help="Skip meetings with sync_status=complete when using --meeting-id")
+    p.add_argument("--headed", action="store_true", help="Run Playwright headed")
+    p.add_argument("--download", action="store_true", help="Download PDF notices")
+    p.add_argument("--parallel", type=int, default=1, help="Process N meetings concurrently (default 1)")
+    p.add_argument("--meeting-date", help="Meeting date YYYY-MM-DD (for --meeting-id path)")
+    p.add_argument("--meeting-type", help="Meeting type (e.g. Formal)")
+    p.add_argument("--offline", action="store_true",
+                   help="Sync from a locally saved HTML file. Use with --sync --meeting-id.")
+    p.add_argument("--retry-count", type=int, default=3, help="Max retry attempts for network/page operations (default 3)")
+    p.add_argument("--include-manual-review", action="store_true",
+                   help="Include manual_review meetings in retry/sync operations")
+    p.add_argument("--bodies", default=None,
+                   help="Body codes to sync (comma-separated). For mc-mcacc body filter.")
+    p.add_argument("--sync-votes", action="store_true",
+                   help="Extract vote results from meeting summaries")
+
+    args = p.parse_args(rest)
+
+    # Convert body code to internal source name
+    body_to_source = {
+        "mc-bos": "bos",
+        "mc-pz": "pz",
+        "mc-adj": "adj",
+        "mc-drain": "drain",
+        "mc-health": "health",
+        "mc-tab": "tab",
+        "mc-ida": "ida",
+        "mc-mcacc": "mcacc",
+    }
+    args.maricopa_source = body_to_source.get(args.body, "bos")
+
+    if args.list_bodies:
+        print("Maricopa County boards:")
+        for code, desc in MARICOPA_BODIES.items():
+            print(f"  {code:<12} {desc}")
+        raise SystemExit(0)
+
+    _normalize_year_month(args, p)
+    return args
+
+
+JURISDICTION_BODIES = {
+    "bos": {"bos": "Board of Supervisors"},
+    "pz": {"pz": "Planning & Zoning Commission"},
+    "adj": {"adj": "Board of Adjustment"},
+    "drain": {"drain": "Drainage Review Board (2011\u20132013, defunct)"},
+    "health": {"health": "Board of Health"},
+    "tab": {"tab": "Transportation Advisory Board"},
+    "ida": {"ida": "Industrial Development Authority"},
+    "mcacc": {"mcacc": "All remaining Maricopa County boards via AgendaCenter"},
+    "maricopa": {
+        "mc-bos": "Board of Supervisors",
+        "mc-pz": "Planning & Zoning Commission",
+        "mc-adj": "Board of Adjustment",
+        "mc-drain": "Drainage Review Board (2011\u20132013, defunct)",
+        "mc-health": "Board of Health",
+        "mc-tab": "Transportation Advisory Board",
+        "mc-ida": "Industrial Development Authority",
+        "mc-mcacc": "All remaining boards via AgendaCenter",
+    },
+    "tempe": {
+        "tempe-cc": "City Council",
+        "tempe-drc": "Development Review Commission",
+        "tempe-boa": "Board of Adjustment",
+        "tempe-hpc": "Historic Preservation Commission",
+    },
+    "mesa": {
+        "mesa-cc": "City Council",
+        "mesa-pz": "Planning & Zoning Board",
+        "mesa-drb": "Development Review Board",
+        "mesa-boa": "Board of Adjustment",
+        "mesa-hpb": "Historic Preservation Board",
+    },
+    "chandler": {
+        "chandler-cc": "City Council",
+        "chandler-pz": "Planning & Zoning",
+        "chandler-drc": "Development Review Commission",
+        "chandler-boa": "Board of Adjustment",
+        "chandler-hpc": "Historic Preservation Commission",
+    },
+    "glendale": {
+        "glendale-cc": "City Council (via Legistar)",
+        "glendale-pc": "Planning Commission (via AgendaQuick)",
+        "glendale-boa": "Board of Adjustment",
+    },
+    "scottsdale": {
+        "scottsdale-cc": "City Council (via PDF archive)",
+        "scottsdale-pz": "Planning & Zoning",
+        "scottsdale-boa": "Board of Adjustment",
+        "scottsdale-drb": "Development Review Board",
+        "scottsdale-hpc": "Historic Preservation Commission",
+    },
+    "tucson": {
+        "tucson-cc": "Mayor & Council (via OnBase)",
+        "tucson-pc": "Planning Commission (via listing page + PDF)",
+    },
+    "phoenix": {
+        "phoenix-cc": "City Council (formal, policy, special, work study)",
+        "phoenix-pc": "Planning Commission",
+        "phoenix-cs": "Community Services Subcommittee",
+        "phoenix-ed": "Economic Development Subcommittee",
+        "phoenix-ps": "Public Safety Subcommittee",
+        "phoenix-ti": "Transportation, Infrastructure & Planning Subcommittee",
+        "phoenix-bh": "Budget Hearing",
+    },
+    "phoenix-aem": {
+        "phoenix-village": "Village Planning Committees",
+        "phoenix-planning": "Planning Commission",
+        "phoenix-hpc": "Historic Preservation Commission",
+    },
+    "gilbert": {
+        "gilbert-cc": "Town Council (via OnBase)",
+        "gilbert-planning": "Planning Commission (via CivicPlus)",
+    },
+    "surprise": {
+        "surprise-cc": "City Council",
+        "surprise-pz": "Planning & Zoning",
+        "surprise-boa": "Board of Adjustment",
+    },
+    "buckeye": {
+        "buckeye-cc": "City Council",
+        "buckeye-pz": "Planning & Zoning",
+        "buckeye-boa": "Board of Adjustment",
+        "buckeye-prc": "Parks & Recreation",
+        "buckeye-hpc": "Historic Preservation",
+        "buckeye-lib": "Library Board",
+        "buckeye-psprs": "PSPRS Board",
+        "buckeye-airport": "Airport Advisory",
+        "buckeye-pollution": "Pollution Control",
+        "buckeye-youth": "Youth Council",
+        "buckeye-cfd": "CFD",
+    },
+}
+
+
+def _print_jurisdiction_bodies(jurisdiction: str) -> None:
+    """Print available bodies for a jurisdiction and exit."""
+    bodies = JURISDICTION_BODIES.get(jurisdiction)
+    if not bodies:
+        print(f"No body listing available for '{jurisdiction}'.")
+        print("Use --help to see all available subcommands.")
+        return
+    print(f"Bodies for {jurisdiction}:")
+    for code, desc in bodies.items():
+        print(f"  {code:<20} {desc}")
+    print()
+
+
+def _parse_scottsdale_args(rest: list[str]) -> argparse.Namespace:
+    """Parse Scottsdale sync arguments with --body support."""
+    SCOTTSDALE_BODIES = {
+        "scottsdale-cc": "City Council (via PDF archive)",
+        "scottsdale-pz": "Planning & Zoning",
+        "scottsdale-boa": "Board of Adjustment",
+        "scottsdale-drb": "Development Review Board",
+        "scottsdale-hpc": "Historic Preservation Commission",
+    }
+    p = argparse.ArgumentParser(description="Scrape Scottsdale meetings", prog="scottsdale")
+    p.add_argument("--sync", action="store_true")
+    p.add_argument("--body", default="scottsdale-cc", choices=list(SCOTTSDALE_BODIES.keys()),
+                   help="Board to sync (default: scottsdale-cc)")
+    p.add_argument("--list-bodies", action="store_true")
+    p.add_argument("--start-date", help="Start date YYYY-MM-DD")
+    p.add_argument("--end-date", help="End date YYYY-MM-DD")
+    p.add_argument("--date", help="Single date YYYY-MM-DD")
+    p.add_argument("--year", help="Sync an entire year (e.g. --year=2026)")
+    p.add_argument("--month", help="Sync an entire month (e.g. --month=2026-04)")
+    p.add_argument("--meeting-id", help="Single meeting ID to sync")
+    p.add_argument("--force", action="store_true")
+    p.add_argument("--limit", type=int, default=0, help="Max meetings to process")
+    p.add_argument("--headed", action="store_true")
+    p.add_argument("--init-db", action="store_true")
+    p.add_argument("--status", action="store_true")
+    p.add_argument("--failed", action="store_true")
+    p.add_argument("--retry-failed", action="store_true")
+    p.add_argument("--retry-count", type=int, default=3)
+    p.add_argument("--download", action="store_true")
+    p.add_argument("--offline", action="store_true")
+
+    args = p.parse_args(rest)
+
+    if args.list_bodies:
+        print("Scottsdale boards:")
+        for code, desc in SCOTTSDALE_BODIES.items():
+            print(f"  {code:<20} {desc}")
+        raise SystemExit(0)
+
+    # Map body to internal source
+    body_to_source = {
+        "scottsdale-cc": "scottsdale",
+        "scottsdale-pz": "scottsdale-boards",
+        "scottsdale-boa": "scottsdale-boards",
+        "scottsdale-drb": "scottsdale-boards",
+        "scottsdale-hpc": "scottsdale-boards",
+    }
+    args.scottsdale_source = body_to_source.get(args.body, "scottsdale")
+    _normalize_year_month(args, p)
+    return args
+
+
+def _parse_gilbert_args(rest: list[str]) -> argparse.Namespace:
+    """Parse Gilbert sync arguments with --body support."""
+    GILBERT_BODIES = {
+        "gilbert-cc": "Town Council (via OnBase)",
+        "gilbert-planning": "Planning Commission (via CivicPlus)",
+    }
+    p = argparse.ArgumentParser(description="Scrape Gilbert meetings", prog="gilbert")
+    p.add_argument("--sync", action="store_true")
+    p.add_argument("--body", default="gilbert-cc", choices=list(GILBERT_BODIES.keys()),
+                   help="Board to sync (default: gilbert-cc)")
+    p.add_argument("--list-bodies", action="store_true")
+    p.add_argument("--start-date", help="Start date YYYY-MM-DD")
+    p.add_argument("--end-date", help="End date YYYY-MM-DD")
+    p.add_argument("--date", help="Single date YYYY-MM-DD")
+    p.add_argument("--year", help="Sync an entire year (e.g. --year=2026)")
+    p.add_argument("--month", help="Sync an entire month (e.g. --month=2026-04)")
+    p.add_argument("--meeting-id", help="Single meeting ID to sync")
+    p.add_argument("--force", action="store_true")
+    p.add_argument("--limit", type=int, default=0, help="Max meetings to process")
+    p.add_argument("--headed", action="store_true")
+    p.add_argument("--init-db", action="store_true")
+    p.add_argument("--status", action="store_true")
+    p.add_argument("--failed", action="store_true")
+    p.add_argument("--retry-failed", action="store_true")
+    p.add_argument("--download", action="store_true")
+
+    args = p.parse_args(rest)
+
+    if args.list_bodies:
+        print("Gilbert boards:")
+        for code, desc in GILBERT_BODIES.items():
+            print(f"  {code:<20} {desc}")
+        raise SystemExit(0)
+
+    # Map body to internal source
+    body_to_source = {
+        "gilbert-cc": "gilbert",
+        "gilbert-planning": "gilbert-planning",
+    }
+    args.gilbert_source = body_to_source.get(args.body, "gilbert")
+    _normalize_year_month(args, p)
+    return args
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     """Two-pass argparse: detect source subcommand first, then parse with the right parser.
 
@@ -136,14 +410,29 @@ def parse_args(argv=None) -> argparse.Namespace:
     rest = list(argv if argv is not None else sys.argv[1:])
 
     # Intercept top-level --help / -h (no subcommand given)
+    # Intercept --list-bodies (no subcommand given or after subcommand)
+    if "--list-bodies" in rest:
+        # Find the subcommand index if present
+        try:
+            sc_idx = next(i for i, a in enumerate(rest) if not a.startswith("-"))
+        except StopIteration:
+            sc_idx = -1
+        if sc_idx >= 0 and not rest[sc_idx].startswith("-"):
+            source = rest.pop(sc_idx)
+        _print_jurisdiction_bodies(source)
+        raise SystemExit(0)
+
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("hearings", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-granicus", "goodyear", "el-mirage", "wickenburg", "paradise-valley", "queen-creek", "fountain-hills", "apache-junction", "mcacc", "mag", "phoenix", "phoenix-rss", "phoenix-aem", "tempe-subcommittees", "tolleson", "tucson", "tucson-pc", "valley-metro", "all", "all-jurisdictions"):
+    if rest and rest[0] in ("hearings", "maricopa", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "gilbert-planning", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-novusagenda", "goodyear", "el-mirage", "wickenburg", "paradise-valley", "queen-creek", "fountain-hills", "apache-junction", "mcacc", "mag", "phoenix", "phoenix-rss", "phoenix-aem", "tempe-subcommittees", "tolleson", "tucson", "tucson-pc", "valley-metro", "all", "all-jurisdictions"):
         source = rest.pop(0)
 
     if source == "valley-metro":
         args = _parse_valley_metro_args(rest)
+    elif source == "maricopa":
+        args = _parse_maricopa_args(rest)
+        source = args.maricopa_source
     elif source == "bos":
         args = _parse_bos_args(rest)
     elif source == "adj":
@@ -163,13 +452,17 @@ def parse_args(argv=None) -> argparse.Namespace:
     elif source == "chandler":
         args = _parse_mesa_args(rest)
     elif source == "gilbert":
+        args = _parse_gilbert_args(rest)
+        source = args.gilbert_source
+    elif source == "gilbert-planning":
         args = _parse_mesa_args(rest)
     elif source == "tucson":
         args = _parse_mesa_args(rest)
     elif source == "tucson-pc":
         args = _parse_mesa_args(rest)
     elif source == "scottsdale":
-        args = _parse_mesa_args(rest)
+        args = _parse_scottsdale_args(rest)
+        source = args.scottsdale_source
     elif source == "scottsdale-boards":
         args = _parse_mesa_args(rest)
     elif source == "glendale":
@@ -195,9 +488,9 @@ def parse_args(argv=None) -> argparse.Namespace:
         args = _parse_surprise_args(rest)
     elif source == "avondale-granicus":
         args = _parse_mesa_args(rest)
-    elif source == "buckeye-granicus":
-        args = _parse_mesa_args(rest)
     elif source == "buckeye":
+        args = _parse_mesa_args(rest)
+    elif source == "buckeye-novusagenda":
         args = _parse_mesa_args(rest)
     elif source == "goodyear":
         args = _parse_mesa_args(rest)

@@ -42,7 +42,7 @@ def _extract_supporting_docs_from_table(table_html: str, agenda_item_dict: dict,
         ext = path.suffix.lstrip(".") or None
 
         docs.append({
-            "agenda_item_id": 0,
+            "agenda_item_id": "0",
             "meeting_id": agenda_item_dict.get("meeting_id", ""),
             "agenda_item_number": int(agenda_item_dict.get("agenda_item_number", 0)),
             "c_number": agenda_item_dict.get("c_number", "") or None,

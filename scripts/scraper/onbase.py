@@ -849,7 +849,7 @@ def fetch_item_details_batch(
                 # Convert DownloadFile URLs to ViewDocument URLs
                 # (DownloadFile requires JavaScript; ViewDocument serves directly)
                 for doc in item_docs:
-                    doc["agenda_item_id"] = 0
+                    doc["agenda_item_id"] = "0"
                     url = doc.get("document_url", "")
                     if "DownloadFile" in url or "Downloadfile" in url:
                         resolved = resolve_downloadfile_to_viewdocument(url, config.base_url)

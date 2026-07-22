@@ -24,7 +24,6 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 PUBLIC_BODY_CODE = "scottsdale-cc"
-JURISDICTION_ID = 7
 
 BASE_URL = "https://ww2.scottsdaleaz.gov"
 CURRENT_PAGE = f"{BASE_URL}/council/meeting-information/agendas-minutes"

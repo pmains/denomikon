@@ -13,7 +13,6 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
-JURISDICTION_ID = 10
 SOURCE_SYSTEM = "primegov"
 BASE_URL = "https://peoriaaz.primegov.com"
 API_URL = f"{BASE_URL}/api/v2/PublicPortal/ListArchivedMeetings"

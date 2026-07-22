@@ -39,7 +39,6 @@ from scraper.onbase import (
 log = logging.getLogger(__name__)
 
 # ── Identifiers ──
-JURISDICTION_ID = 8          # City of Tucson
 # Naming note: the Tucson City Council is titled 'Mayor & Council' on the
 # OnBase instance, but we use 'Tucson City Council' as the body name for
 # consistency with other jurisdictions.
@@ -216,7 +215,6 @@ PC_PAGE_URL = (
     "Public-Meetings-Boards-Committees-Commissions/Planning-Commission"
 )
 PUBLIC_BODY_CODE_PC = "tucson-pc"
-PC_JURISDICTION_ID = JURISDICTION_ID  # Same jurisdiction (City of Tucson)
 
 PC_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "

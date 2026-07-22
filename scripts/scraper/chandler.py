@@ -19,7 +19,6 @@ from scraper.destiny_common import (
 
 log = logging.getLogger(__name__)
 
-JURISDICTION_ID = 2
 PUBLIC_BODY_CODE = "chandler-cc"
 CHANDLER_ID = "24263"
 CHANDLER_ORG_ID = 24263

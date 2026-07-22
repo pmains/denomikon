@@ -54,7 +54,6 @@ RESULTS_BASE = (
 
 DAM_BASE = "https://www.phoenix.gov"
 
-JURISDICTION_ID = 4  # City of Phoenix
 SOURCE_SYSTEM = "phoenix-aem"
 SOURCE_INSTANCE_URL = "https://www.phoenix.gov"
 

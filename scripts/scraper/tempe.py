@@ -27,7 +27,6 @@ CLIENT = OnBaseAgendaClient(TEMPE_CONFIG)
 
 # Public body slug for this source
 SOURCE_BODY = "tempe-cc"
-JURISDICTION_ID = 2  # City of Tempe
 PUBLIC_BODY_CODE = "tempe-cc"
 
 # Mapping from OnBase meeting type IDs to our public body slugs

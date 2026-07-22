@@ -13,7 +13,7 @@ Process:
     3. Map to the correct meeting record
     4. Download the PDF, run pdftotext
     5. Parse votes (per-member breakdowns)
-    6. Persist directly to meeting_supervisors, agenda_item_votes, supervisor_votes
+    6. Persist directly to meeting_members, agenda_item_votes, member_votes
 """
 
 from __future__ import annotations
@@ -29,13 +29,14 @@ from argparse import ArgumentParser
 from typing import Optional
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db import get_session, init_db
 from db.models import (
     AgendaItem,
     AgendaItemVote,
     Meeting,
-    MeetingSupervisor,
+    MeetingMember,
     Person,
     MemberVote,
 )
@@ -665,8 +666,8 @@ def _persist_minutes_votes(
     count = 0
 
     # Delete existing records for this meeting
-    session.execute(MeetingSupervisor.__table__.delete().where(
-        MeetingSupervisor.body == body, MeetingSupervisor.meeting_id == meeting_id,
+    session.execute(MeetingMember.__table__.delete().where(
+        MeetingMember.body == body, MeetingMember.meeting_id == meeting_id,
     ))
     subq = select(AgendaItemVote.id).where(
         AgendaItemVote.body == body, AgendaItemVote.meeting_id == meeting_id,
@@ -695,17 +696,23 @@ def _persist_minutes_votes(
             session.flush()
             person_map[norm] = p.id
 
-    # Insert meeting_supervisors
+    # Bulk insert meeting_members (idempotent)
+    mm_values = []
     for sup in supervisors:
-        norm = sup["normalized_name"]
+        norm = sup.get("normalized_name")
         if norm not in person_map:
             continue
-        ms = MeetingSupervisor(
-            body=body, meeting_id=meeting_id, meeting_db_id=meeting_db_id,
-            supervisor_id=person_map[norm], role=sup.get("role"),
-            present=sup.get("present", True),
-        )
-        session.add(ms)
+        mm_values.append({
+            "body": body,
+            "meeting_id": meeting_id,
+            "meeting_db_id": meeting_db_id,
+            "member_id": person_map[norm],
+            "role": sup.get("role"),
+            "present": sup.get("present", True),
+        })
+    if mm_values:
+        stmt = pg_insert(MeetingMember).values(mm_values).on_conflict_do_nothing()
+        session.execute(stmt)
 
     # Insert agenda_item_votes
     seen_nums: set[str] = set()

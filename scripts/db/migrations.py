@@ -11,8 +11,9 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from db.models import (Base, Meeting, AgendaItem, SupportingDocument,
-    CaseEvent, MeetingSupervisor, AgendaItemVote, PZItemDetail,
-    BodyMembership, Person, BodySeat, PublicBody, Jurisdiction)
+    CaseEvent, MeetingMember, AgendaItemVote, PZItemDetail,
+    BodyMembership, Person, BodySeat, PublicBody, Jurisdiction,
+    IngestFailure)
 from db.core import get_engine, get_session
 
 def init_db() -> None:
@@ -40,18 +41,19 @@ def init_db() -> None:
     _migrate_col(engine, "agenda_items", "case_number", "VARCHAR(32) NOT NULL DEFAULT ''")
 
     _migrate_table("persons")
-    _migrate_table("meeting_supervisors")
+    _migrate_meeting_members_table()
+    _migrate_table("meeting_members")
     _migrate_table("agenda_item_votes")
     _migrate_col(engine, "agenda_item_votes", "conditions", "TEXT DEFAULT NULL")
     _migrate_col(engine, "agenda_item_votes", "is_split_vote", "BOOLEAN DEFAULT NULL")
     _migrate_col(engine, "agenda_item_votes", "unanimous", "BOOLEAN DEFAULT NULL")
     _migrate_col(engine, "agenda_item_votes", "majority_position", "VARCHAR(16) DEFAULT NULL")
-    _migrate_table("supervisor_votes")
-    _migrate_col(engine, "supervisor_votes", "is_dissent", "BOOLEAN DEFAULT NULL")
+    # supervisor_votes was migrated to member_votes — table no longer exists
     _migrate_table("public_body_members")
     _migrate_table("meeting_attendance")
     _migrate_table("member_votes")
     _migrate_table("executive_session_participants")
+    _migrate_table("_ingest_failures")
 
     # Resumable sync columns
     _migrate_col(engine, "meetings", "sync_status", "VARCHAR(32) NOT NULL DEFAULT 'pending'")
@@ -100,8 +102,8 @@ def init_db() -> None:
     _migrate_col(engine, "supporting_documents", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
     _migrate_col(engine, "case_events", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
     _migrate_col(engine, "case_events", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
-    _migrate_col(engine, "meeting_supervisors", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
-    _migrate_col(engine, "meeting_supervisors", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
+    _migrate_col(engine, "meeting_members", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
+    _migrate_col(engine, "meeting_members", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
     _migrate_col(engine, "agenda_item_votes", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
     _migrate_col(engine, "agenda_item_votes", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
     _migrate_col(engine, "pz_item_details", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
@@ -253,20 +255,20 @@ def backfill_body_column(engine: Engine) -> None:
       to match their meeting's body value.
     - Uses _body_backfilled flag as a migration marker.
     """
-    inspector = sa_inspect(engine)
-
     # Ensure marker column exists using safe approach (PostgreSQL-compatible)
     _add_col_safe(engine, "meetings", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
     _add_col_safe(engine, "agenda_items", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
     _add_col_safe(engine, "supporting_documents", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
     _add_col_safe(engine, "case_events", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
-    _add_col_safe(engine, "meeting_supervisors", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
+    _add_col_safe(engine, "meeting_members", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
     _add_col_safe(engine, "agenda_item_votes", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
     _add_col_safe(engine, "pz_item_details", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
 
+    inspector = sa_inspect(engine)
+
     tables_to_backfill = [
         "meetings", "agenda_items", "supporting_documents",
-        "case_events", "meeting_supervisors", "agenda_item_votes", "pz_item_details",
+        "case_events", "meeting_members", "agenda_item_votes", "pz_item_details",
     ]
 
     with engine.connect() as conn:
@@ -280,12 +282,8 @@ def backfill_body_column(engine: Engine) -> None:
                 text(f"SELECT COUNT(*) FROM {table} WHERE _body_backfilled IS false")
             ).scalar()
             if not row or row == 0:
-                # Already backfilled or no rows — drop the marker
-                try:
-                    conn.execute(text(f"ALTER TABLE {table} DROP COLUMN _body_backfilled"))
-                    conn.commit()
-                except Exception:
-                    pass
+                # Already backfilled — skip, don't drop the column (it's needed
+                # by the queries below, and the final cleanup loop handles removal)
                 continue
 
         # Backfill meetings body column
@@ -306,7 +304,7 @@ def backfill_body_column(engine: Engine) -> None:
                     conn.rollback()
 
             # Backfill related tables by joining to meetings
-            for table in ["agenda_items", "supporting_documents", "case_events", "meeting_supervisors", "agenda_item_votes", "pz_item_details"]:
+            for table in ["agenda_items", "supporting_documents", "case_events", "meeting_members", "agenda_item_votes", "pz_item_details"]:
                 if table not in inspector.get_table_names():
                     continue
                 existing_cols = {c["name"] for c in inspector.get_columns(table)}
@@ -341,6 +339,52 @@ def backfill_body_column(engine: Engine) -> None:
                 except Exception:
                     pass
             conn.commit()
+
+def _migrate_meeting_members_table() -> None:
+    """Migrate meeting_supervisors → meeting_members if the old table exists.
+
+    Renames the table and the supervisor_id column.  Drops and recreates
+    the unique constraint so the constraint name matches the new table.
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    engine = get_engine()
+    inspector = sa_inspect(engine)
+    tables = inspector.get_table_names()
+
+    if "meeting_supervisors" not in tables:
+        return  # Already migrated or never existed
+
+    if "meeting_members" in tables:
+        # Both exist — migrate data from the old table, then drop it.
+        # This happens when Base.metadata.create_all() created an empty
+        # meeting_members BEFORE this migration ran.
+        with engine.connect() as conn:
+            conn.execute(text(
+                "INSERT INTO meeting_members "
+                "(body, meeting_id, meeting_db_id, member_id, role, present, created_at, updated_at) "
+                "SELECT body, meeting_id, meeting_db_id, supervisor_id, role, present, created_at, updated_at "
+                "FROM meeting_supervisors "
+                "ON CONFLICT (body, meeting_id, member_id) DO NOTHING"
+            ))
+            conn.execute(text("DROP TABLE IF EXISTS meeting_supervisors CASCADE"))
+            conn.commit()
+        return
+
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE meeting_supervisors RENAME TO meeting_members"))
+        conn.execute(text("ALTER TABLE meeting_members RENAME COLUMN supervisor_id TO member_id"))
+        # Drop and recreate the unique constraint with the new name
+        conn.execute(text("ALTER TABLE meeting_members DROP CONSTRAINT IF EXISTS uq_meeting_supervisor"))
+        try:
+            conn.execute(text(
+                "ALTER TABLE meeting_members "
+                "ADD CONSTRAINT uq_meeting_member UNIQUE (body, meeting_id, member_id)"
+            ))
+        except Exception:
+            pass  # May fail if SQLite doesn't support constraint renaming mid-flight
+        conn.commit()
+
 
 def _migrate_table(table_name: str) -> None:
     """Create a table via raw SQL if the model doesn't already exist."""
@@ -1198,14 +1242,14 @@ def _migrate_membership_model() -> None:
     """One-time migration from flat Person fields to BodyMembership rows.
 
     Creates BodyMembership rows for every person who has attended meetings
-    (recorded in meeting_supervisors) or who has explicit term data on their
+    (recorded in meeting_members) or who has explicit term data on their
     Person record (active_from/active_to).
 
     Uses `_membership_migrated` marker column on persons to run once.
     """
     engine = get_engine()
     inspector = sa_inspect(engine)
-    needed = {"persons", "public_bodies", "meeting_supervisors", "meetings"}
+    needed = {"persons", "public_bodies", "meeting_members", "meetings"}
     existing_tables = set(inspector.get_table_names())
     if not needed.issubset(existing_tables):
         return
@@ -1271,7 +1315,7 @@ def _migrate_membership_model() -> None:
                    p.active_to,
                    COUNT(ms.id) AS attendance
             FROM persons p
-            JOIN meeting_supervisors ms ON ms.supervisor_id = p.id
+            JOIN meeting_members ms ON ms.member_id = p.id
             JOIN meetings m ON m.meeting_id = ms.meeting_id AND m.body = ms.body
             WHERE p._membership_migrated = 0
               AND LENGTH(p.name) < 40

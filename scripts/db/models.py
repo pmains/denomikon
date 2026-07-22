@@ -59,18 +59,19 @@ class Person(Base):
     )
 
 
-# Backward-compatible alias for existing code that references "Supervisor"
+# Backward-compatible alias — code that imported Supervisor still works
 Supervisor = Person
 
 
-class MeetingSupervisor(Base):
-    __tablename__ = "meeting_supervisors"
+class MeetingMember(Base):
+    """Per-meeting attendance for members of any public body."""
+    __tablename__ = "meeting_members"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     body = Column(String(16), nullable=False, default="", index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
     meeting_db_id = Column(Integer, nullable=False, default=0, index=True)
-    supervisor_id = Column(Integer, nullable=False, index=True)
+    member_id = Column(Integer, nullable=False, index=True)
     role = Column(String(64), nullable=True, default=None)
     present = Column(Boolean, nullable=True, default=None)
     created_at = Column(
@@ -84,7 +85,7 @@ class MeetingSupervisor(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("body", "meeting_id", "supervisor_id", name="uq_meeting_supervisor"),
+        UniqueConstraint("body", "meeting_id", "member_id", name="uq_meeting_member"),
     )
 
 
@@ -330,7 +331,7 @@ class MeetingAttendance(Base):
 
 
 class MemberVote(Base):
-    """Generalized vote table for non-BOS bodies. Preserves supervisor_votes for BOS."""
+    """Individual member vote per agenda item for any public body."""
     __tablename__ = "member_votes"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -622,4 +623,26 @@ class EntityRelationship(Base):
     __table_args__ = (
         Index("ix_relationships_from", "from_entity_id"),
         Index("ix_relationships_to", "to_entity_id"),
+    )
+
+
+class IngestFailure(Base):
+    """Records import-side failures that can't reach the meetings table.
+
+    When a scraper or import process fails before a meeting record exists
+    (e.g. CSV persist with unknown body, body resolution failure), the error
+    goes here so it's queryable instead of being silently dropped.
+    """
+    __tablename__ = "_ingest_failures"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    error_category = Column(String(32), nullable=False)  # TRANSIENT, CODE, DATA, UNKNOWN
+    source = Column(String(64), nullable=False)  # e.g. "csv-persist", "body-resolution"
+    body = Column(String(16), nullable=True)  # The attempted body, if known
+    meeting_id = Column(String(32), nullable=True)  # The meeting_id, if known
+    meeting_date = Column(String(16), nullable=True)  # The meeting date, if known
+    error = Column(Text, nullable=False)  # Full error message
+    context = Column(Text, nullable=True)  # Additional context
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )

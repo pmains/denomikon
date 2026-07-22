@@ -20,7 +20,6 @@ log = logging.getLogger(__name__)
 BASE_URL = "https://queencreekaz.granicus.com"
 VIEW_ID = 3
 SOURCE_SYSTEM = "granicus"
-JURISDICTION_ID = 18  # Queen Creek
 RSS_URL = f"{BASE_URL}/ViewPublisherRSS.php?view_id={VIEW_ID}&mode=agendas"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
 

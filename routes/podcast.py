@@ -32,7 +32,11 @@ def feed():
     feed_path = PODCAST_DIR / "feed.xml"
     if not feed_path.exists():
         abort(404)
-    return send_from_directory(PODCAST_DIR, "feed.xml", mimetype="application/rss+xml")
+    resp = send_from_directory(PODCAST_DIR, "feed.xml", mimetype="application/rss+xml")
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 @podcast_bp.route("/<path:filename>")

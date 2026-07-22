@@ -198,6 +198,7 @@ def create_app() -> Flask:
     from routes.topics import topics_bp
     from routes.entities import entities_bp
     from routes.entity_annotation import annotation_bp
+    from routes.entity_viewer import entity_viewer_bp
     from routes.podcast import podcast_bp
     app.register_blueprint(meetings_bp)
     app.register_blueprint(bodies_bp)
@@ -208,6 +209,7 @@ def create_app() -> Flask:
     app.register_blueprint(entities_bp)
     app.register_blueprint(podcast_bp)
     app.register_blueprint(annotation_bp)
+    app.register_blueprint(entity_viewer_bp)
 
     # Admin and auth are only registered when admin is enabled
     if not _disable_admin:

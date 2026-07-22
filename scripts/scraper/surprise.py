@@ -29,7 +29,6 @@ log = logging.getLogger(__name__)
 
 # ── Jurisdiction / body constants ──
 
-JURISDICTION_ID = 11  # City of Surprise
 SOURCE_SYSTEM = "civicclerk"
 SOURCE_INSTANCE_URL = "https://surpriseaz.portal.civicclerk.com"
 BASE_URL = "https://surpriseaz.portal.civicclerk.com"
@@ -414,7 +413,7 @@ def _parse_event_to_meeting(ev: dict) -> Optional[dict]:
         "body": body_code,
         "body_slug": body_slug,
         "body_name": category_name or event_name,
-        "jurisdiction_id": JURISDICTION_ID,
+        # jurisdiction_id resolved from public_bodies table in create_or_get_meeting
         "source_system": SOURCE_SYSTEM,
         "source_instance_url": SOURCE_INSTANCE_URL,
         "agenda_url": agenda_url or "",
@@ -708,7 +707,7 @@ def discover_meetings(
             # Try to get agenda items from meeting detail
             m_detail = fetch_meeting_detail(int(event_id))
             if m_detail and m_detail.get("items"):
-                meeting["_agenda_items"] = parse_agenda_items(m_detail, str(event_id))
+                meeting["agenda_items"] = parse_agenda_items(m_detail, str(event_id))
 
     return meetings
 
@@ -797,6 +796,12 @@ def parse_agenda_items_from_pdf_text(text: str) -> list[dict]:
     current_category = ""
     sort_order = 0
     seen_numbered_item = False  # track so lettered sub-items only match after numbers
+    _pending_letter = None  # "A." on its own line, title on next line
+
+    # Filter patterns for non-agenda content (defined before pre-clean)
+    _legal_citation = re.compile(r'^[\s\(]*\d+\.\s+(Discussion|Consideration|Executive|Receive|Consult)[\s,]|A\.R\.S\.|§', re.IGNORECASE)
+    _attachment_label = re.compile(r'^0\d\s+[A-Z]{2}\d+[-]')
+    _minutes_text = re.compile(r'^[A-Z]\s*[-–]\s*(?:In attendance|Commissioner|Chair|Vice Chair|Councilmember|Mayor|Present were|Absent)', re.IGNORECASE)
 
     # Pre-clean: normalise whitespace and strip blank/trivial lines
     lines_raw = text.split("\n")
@@ -815,6 +820,15 @@ def parse_agenda_items_from_pdf_text(text: str) -> list[dict]:
         if s.lower().startswith("city of surprise"):
             continue
         if s.lower().startswith("printed on") or s.lower().startswith("printed:"):
+            continue
+        # Filter legal boilerplate (A.R.S. citations, executive session procedures)
+        if _legal_citation.search(s):
+            continue
+        # Filter attachment labels like "01 FS25-0733 Zaxby's..."
+        if _attachment_label.match(s):
+            continue
+        # Filter minutes-inspired text ("Commissioner X", "Chair Y", etc.)
+        if _minutes_text.match(s):
             continue
         lines.append(s)
 
@@ -848,6 +862,8 @@ def parse_agenda_items_from_pdf_text(text: str) -> list[dict]:
     # Lettered section header: "A. Call To Order", "B. Roll Call"
     # Matches single capital letter followed by period and text
     letter_section_re = re.compile(r'^([A-Z])\.\s+(.*)')
+    # Single letter on its own line: "A." — title on next line
+    solo_letter_re = re.compile(r'^([A-Z])\.\s*$')
 
     # Lettered sub-item: "a)", "b.", "(c)", "a" — only matched after numbered items
     lettered_re = re.compile(r'^[\s\(]*([a-zA-Z])\)?\.?[\s\):]+(.*)')
@@ -856,8 +872,18 @@ def parse_agenda_items_from_pdf_text(text: str) -> list[dict]:
     while i < len(lines):
         s = lines[i]
 
-        # ── Section header detection ──
-        if section_re.match(s) or big_section_re.match(s):
+        # ── Check letter-section patterns before section keywords ──
+        # ("B. Roll Call" should be letter item, not "Roll Call" section)
+        letter_sec_match = None
+        if not _pending_letter:
+            letter_sec_match = letter_section_re.match(s)
+        
+        if letter_sec_match:
+            letter = letter_sec_match.group(1)
+            title = letter_sec_match.group(2).strip()
+        elif _pending_letter:
+            pass  # handled in letter block below
+        elif section_re.match(s) or big_section_re.match(s):
             current_category = s.upper()
             sort_order += 1
             items.append({
@@ -869,23 +895,67 @@ def parse_agenda_items_from_pdf_text(text: str) -> list[dict]:
                 "sort_order": sort_order,
             })
             i += 1
+            # Skip content under Executive Session — all boilerplate legal text
+            if "EXECUTIVE SESSION" in current_category:
+                # Skip lines until the next section header (not lettered sub-items)
+                while i < len(lines):
+                    if section_re.match(lines[i]) or big_section_re.match(lines[i]):
+                        break
+                    i += 1
+                continue
+            # Stop parsing after adjournment — everything after is staff reports / attachments
+            if "ADJOURN" in current_category:
+                break
+            continue
+
+        # ── Single letter on its own line ("A." — title on next line) ──
+        solo_match = solo_letter_re.match(s)
+        if solo_match:
+            _pending_letter = solo_match.group(1)
+            i += 1
             continue
 
         # ── Letter-based section (A. Call To Order, B. Roll Call) ──
-        letter_sec_match = letter_section_re.match(s)
-        if letter_sec_match:
+        letter = None
+        title = None
+        if _pending_letter:
+            letter = _pending_letter
+            title = s
+            _pending_letter = None
+        elif letter_sec_match is not None:
             letter = letter_sec_match.group(1)
             title = letter_sec_match.group(2).strip()
+
+        if letter is not None:
+            # Skip content under Executive Session — all boilerplate legal text
+            if "EXECUTIVE SESSION" in (title or "").upper():
+                sort_order += 1
+                items.append({
+                    "agenda_item_number": letter,
+                    "agenda_item_title": title,
+                    "agenda_item_text": title,
+                    "item_type": "item",
+                    "agenda_category": "EXECUTIVE SESSION",
+                    "sort_order": sort_order,
+                })
+                # Consume all lines until next section header (skip lettered items — they're legal boilerplate)
+                j = i + 1
+                while j < len(lines):
+                    if section_re.match(lines[j]) or big_section_re.match(lines[j]):
+                        break
+                    j += 1
+                i = j
+                continue
 
             # Peek ahead for continuation lines
             body_lines: list[str] = [f"{letter}. {title}"]
             j = i + 1
             while j < len(lines):
                 next_s = lines[j]
-                # Stop at next section header, letter section, numbered item, or sub-item
+                # Stop at next section header, letter section, solo letter, numbered item, or sub-item
                 if section_re.match(next_s) or big_section_re.match(next_s):
                     break
-                if letter_section_re.match(next_s):
+                if letter_section_re.match(next_s) or solo_letter_re.match(next_s):
                     break
                 next_num = numbered_re.match(next_s)
                 if next_num:

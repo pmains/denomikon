@@ -8,3 +8,4 @@ flask-wtf>=1.2
 markdown>=3.5
 openpyxl>=3.1
 xlrd>=2.0
+pymupdf>=1.28.0

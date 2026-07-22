@@ -19,7 +19,6 @@ from scraper.destiny_common import (
 
 log = logging.getLogger(__name__)
 
-JURISDICTION_ID = 9
 PUBLIC_BODY_CODE = "glendale-cc"
 SOURCE_SYSTEM = "agendaquick"
 SOURCE_INSTANCE_URL = "https://public.destinyhosted.com"

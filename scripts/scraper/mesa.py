@@ -35,7 +35,6 @@ log = logging.getLogger(__name__)
 
 # ── Jurisdiction / body constants ──
 
-JURISDICTION_ID = 5   # City of Mesa
 PUBLIC_BODY_CODE = "mesa-cc"
 SOURCE_SYSTEM = "legistar"
 SOURCE_INSTANCE_URL = "https://mesa.legistar.com"

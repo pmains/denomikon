@@ -402,7 +402,6 @@ async def main() -> int:
         from scraper.tempe_summary import fetch_and_parse_summary
         from scraper.tempe import (
             search_tempe_meetings,
-            JURISDICTION_ID,
             PUBLIC_BODY_CODE,
         )
         from scraper.onbase import TEMPE_CONFIG, fetch_item_details_batch
@@ -498,12 +497,15 @@ async def main() -> int:
                 return pb
             return None
 
-        # Pre-resolve jurisdiction_id
+        # Pre-resolve jurisdiction_id from DB — no hard-coded fallback
         from db import Jurisdiction as JurisdictionModel
         jur = session.execute(
             select(JurisdictionModel).where(JurisdictionModel.slug == "tempe")
         ).scalar_one_or_none()
-        jur_id = jur.id if jur else JURISDICTION_ID
+        jur_id = jur.id if jur else None
+        if not jur_id:
+            log.warning("Tempe jurisdiction not found in DB")
+            jur_id = 2  # hard-coded last resort for bootstrap safety
 
         def _ensure_tempe_members(session, sup_list):
             """Ensure Tempe council members have BodyMembership rows.
@@ -705,7 +707,7 @@ async def main() -> int:
             summary_url = m.get("summary_url", "")
             if packet_url:
                 supp_docs.append({
-                    "agenda_item_id": 0,
+                    "agenda_item_id": "0",
                     "agenda_item_number": "0",
                     "document_title": "Agenda Packet",
                     "document_url": packet_url,
@@ -715,7 +717,7 @@ async def main() -> int:
                 })
             if summary_url:
                 supp_docs.append({
-                    "agenda_item_id": 0,
+                    "agenda_item_id": "0",
                     "agenda_item_number": "0",
                     "document_title": "Legal Action Summary",
                     "document_url": summary_url,
@@ -807,7 +809,7 @@ async def main() -> int:
         from scraper.chandler import (
             search_chandler_meetings, parse_agenda_items,
             fetch_page, build_month_url,
-            JURISDICTION_ID, PUBLIC_BODY_CODE,
+            PUBLIC_BODY_CODE,
         )
         from scraper.destiny_common import fetch_agenda_memo_docs
 
@@ -908,7 +910,7 @@ async def main() -> int:
                             docs = fetch_agenda_memo_docs(memo_url, timeout=15)
                             for doc in docs:
                                 an = it.get("agenda_item_number", "")
-                                doc["agenda_item_id"] = 0
+                                doc["agenda_item_id"] = "0"
                                 doc["agenda_item_number"] = an
                                 supp_docs.append(doc)
                         except Exception as de:
@@ -1008,8 +1010,14 @@ async def main() -> int:
         init_db()
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
         body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
-        year_val = getattr(args, "year", None)
-        year = int(year_val) if year_val else _dt.date.today().year
+        _month_val = getattr(args, "month", None)
+        _year_val = getattr(args, "year", None)
+        if _month_val:
+            year = int(_month_val.split("-")[0])
+        elif _year_val:
+            year = int(_year_val)
+        else:
+            year = _dt.date.today().year
         print("Searching Goodyear meetings for %d..." % year)
         meetings = search_goodyear_meetings(year, body_slugs=body_slugs)
         if not meetings:
@@ -1017,6 +1025,13 @@ async def main() -> int:
             return 0
         if args.limit:
             meetings = meetings[:args.limit]
+        # Post-filter by month if --month was specified
+        if _month_val:
+            _before = len(meetings)
+            meetings = [m for m in meetings if m.get("meeting_date", "").startswith(_month_val)]
+            print("Filtered to %d meeting(s) in %s" % (len(meetings), _month_val))
+            if not meetings:
+                return 0
         print("Found %d Goodyear meeting(s)" % len(meetings))
         session = get_session()
         total_items = 0
@@ -1128,7 +1143,7 @@ async def main() -> int:
                         # Extract supporting documents from this memo
                         docs = fetch_agenda_memo_docs(memo_url, timeout=15)
                         for doc in docs:
-                            doc["agenda_item_id"] = 0
+                            doc["agenda_item_id"] = "0"
                             doc["agenda_item_number"] = an
                             supp_docs.append(doc)
                         # Extract item text from memo page
@@ -1263,7 +1278,7 @@ async def main() -> int:
                 seen_doc_urls.add(doc_url)
                 if doc_url.endswith(".pdf"):
                     supp_docs.append({
-                        "agenda_item_id": 0,
+                        "agenda_item_id": "0",
                         "agenda_item_number": "0",
                         "document_title": doc_title or "Meeting Document",
                         "document_url": doc_url,
@@ -1282,7 +1297,7 @@ async def main() -> int:
                 if doc_url and doc_url not in seen_doc_urls:
                     seen_doc_urls.add(doc_url)
                     supp_docs.append({
-                        "agenda_item_id": 0,
+                        "agenda_item_id": "0",
                         "agenda_item_number": "0",
                         "document_title": label.replace("_", " ").title(),
                         "document_url": doc_url,
@@ -1673,8 +1688,14 @@ async def main() -> int:
             parse_gilbert_agenda, PUBLIC_BODY_CODE,
         )
 
-        year_val = getattr(args, "year", None)
-        yr = int(year_val) if year_val else _dt.date.today().year
+        _month_val = getattr(args, "month", None)
+        _year_val = getattr(args, "year", None)
+        if _month_val:
+            yr = int(_month_val.split("-")[0])
+        elif _year_val:
+            yr = int(_year_val)
+        else:
+            yr = _dt.date.today().year
         pz_start = "01/01/%d" % yr
         pz_end = _dt.date.today().strftime("%m/%d/%Y")
 
@@ -1785,6 +1806,75 @@ async def main() -> int:
         print("%s Synced %d Gilbert agenda items across %d meeting(s)" % (ts, total_items, meeting_count))
         return 0
 
+    # ── Gilbert Planning Commission sync (via CivicPlus Document Folder) ──
+    if args.source == "gilbert-planning" and args.sync:
+        import datetime as _dt
+        from db import get_session, init_db, replace_meeting_data_safe
+        from db import Meeting as MeetingModel
+        from sqlalchemy import select
+
+        from scraper.gilbert_planning import sync as gilbert_pc_sync
+
+        init_db()
+
+        start_date = getattr(args, "start_date", None)
+        end_date = getattr(args, "end_date", None)
+        limit = getattr(args, "limit", 0) or 0
+
+        meetings = gilbert_pc_sync(
+            start_date=start_date or "",
+            end_date=end_date or "",
+            limit=limit,
+        )
+        if not meetings:
+            print("No Gilbert Planning Commission meetings found.")
+            return 0
+
+        session = get_session()
+        total = 0
+
+        for m in meetings:
+            meeting_id = m["meeting_id"]
+            meeting_date = m["meeting_date"]
+            body_code = m["body_code"]
+            minutes_url = m.get("minutes_url", "")
+            minutes_title = m.get("minutes_title", "")
+
+            if not meeting_date:
+                continue
+
+            meeting_dict = {
+                "meeting_id": meeting_id,
+                "meeting_date": meeting_date,
+                "meeting_type": m.get("meeting_type", "Regular Meeting"),
+                "meeting_title": m.get("meeting_title", "Gilbert Planning Commission"),
+                "minutes_url": minutes_url,
+                "source_url": minutes_url or "",
+            }
+
+            existing = session.execute(
+                select(MeetingModel).where(
+                    MeetingModel.body == body_code,
+                    MeetingModel.meeting_id == meeting_id,
+                )
+            ).scalar_one_or_none()
+
+            if existing and existing.sync_status == "complete" and not args.force:
+                continue
+
+            try:
+                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
+                total += 1
+                ts = _dt.datetime.now().strftime("%H:%M:%S")
+                log.info("%s %s %s minutes=%s", ts, meeting_date, meeting_id[:35], minutes_url[:50])
+            except Exception as e:
+                log.debug("Failed to sync Gilbert PC meeting %s: %s", meeting_id, e)
+
+        session.close()
+        ts = _dt.datetime.now().strftime("%H:%M:%S")
+        log.info("%s Synced %d Gilbert Planning Commission meetings", ts, total)
+        return 0
+
     # ── Scottsdale sync (via PDF archive) ──
     if args.source == "scottsdale" and args.sync:
         import datetime as _dt
@@ -1800,8 +1890,14 @@ async def main() -> int:
 
         init_db()
 
-        year_val = getattr(args, "year", None)
-        yr = int(year_val) if year_val else _dt.date.today().year
+        _month_val = getattr(args, "month", None)
+        _year_val = getattr(args, "year", None)
+        if _month_val:
+            yr = int(_month_val.split("-")[0])
+        elif _year_val:
+            yr = int(_year_val)
+        else:
+            yr = _dt.date.today().year
 
         meetings = search_meetings(int(yr))
         if not meetings:
@@ -1809,6 +1905,13 @@ async def main() -> int:
             return 0
         if args.limit:
             meetings = meetings[:args.limit]
+        # Post-filter by month if --month was specified
+        if _month_val:
+            _before = len(meetings)
+            meetings = [m for m in meetings if m.get("date", m.get("meeting_date", "")).startswith(_month_val)]
+            print("Filtered to %d meeting(s) in %s" % (len(meetings), _month_val))
+            if not meetings:
+                return 0
         print("Found %d Scottsdale meeting(s)" % len(meetings))
 
         session = get_session()
@@ -1998,7 +2101,6 @@ async def main() -> int:
             fetch_page,
             parse_legislation_detail_from_html,
             BODY_CODE_MAP,
-            JURISDICTION_ID,
             PUBLIC_BODY_CODE,
             DEFAULT_BODY_SLUGS,
         )
@@ -2146,7 +2248,7 @@ async def main() -> int:
                                         ext = ".doc"
 
                                     supporting_doc_dicts.append({
-                                        "agenda_item_id": 0,
+                                        "agenda_item_id": "0",
                                         "agenda_item_number": an,
                                         "document_title": att_title,
                                         "document_url": att_url,
@@ -2279,8 +2381,14 @@ async def main() -> int:
         init_db()
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
         body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
-        year_val = getattr(args, "year", None)
-        year = int(year_val) if year_val else _dt.date.today().year
+        _month_val = getattr(args, "month", None)
+        _year_val = getattr(args, "year", None)
+        if _month_val:
+            year = int(_month_val.split("-")[0])
+        elif _year_val:
+            year = int(_year_val)
+        else:
+            year = _dt.date.today().year
         print("Searching Glendale (AgendaQuick) meetings for %d..." % year)
         meetings = search_glendale_meetings(year, body_slugs=body_slugs)
         if args.limit:
@@ -2288,6 +2396,13 @@ async def main() -> int:
         if not meetings:
             print("No Glendale (AgendaQuick) meetings found for %d." % year)
             return 0
+        # Post-filter by month if --month was specified
+        if _month_val:
+            _before = len(meetings)
+            meetings = [m for m in meetings if m.get("meeting_date", "").startswith(_month_val)]
+            print("Filtered to %d meeting(s) in %s" % (len(meetings), _month_val))
+            if not meetings:
+                return 0
         print("Found %d Glendale (AgendaQuick) meeting(s)" % len(meetings))
         session = get_session()
         total_items = 0
@@ -2503,8 +2618,14 @@ async def main() -> int:
         init_db()
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
         body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
-        year_val = getattr(args, "year", None)
-        year = int(year_val) if year_val else _dt.date.today().year
+        _month_val = getattr(args, "month", None)
+        _year_val = getattr(args, "year", None)
+        if _month_val:
+            year = int(_month_val.split("-")[0])
+        elif _year_val:
+            year = int(_year_val)
+        else:
+            year = _dt.date.today().year
         print("Searching El Mirage meetings for %d..." % year)
         meetings = search_el_mirage_meetings(year, body_slugs=body_slugs)
         if args.limit:
@@ -2512,6 +2633,13 @@ async def main() -> int:
         if not meetings:
             print("No El Mirage meetings found for %d." % year)
             return 0
+        # Post-filter by month if --month was specified
+        if _month_val:
+            _before = len(meetings)
+            meetings = [m for m in meetings if m.get("meeting_date", "").startswith(_month_val)]
+            print("Filtered to %d meeting(s) in %s" % (len(meetings), _month_val))
+            if not meetings:
+                return 0
         print("Found %d El Mirage meeting(s)" % len(meetings))
         session = get_session()
         total_items = 0
@@ -2549,7 +2677,7 @@ async def main() -> int:
                             docs = fetch_agenda_memo_docs(memo_url, timeout=15)
                             for doc in docs:
                                 an = it.get("agenda_item_number", "")
-                                doc["agenda_item_id"] = 0
+                                doc["agenda_item_id"] = "0"
                                 doc["agenda_item_number"] = an
                                 supp_docs.append(doc)
                         except Exception as de:
@@ -2557,17 +2685,22 @@ async def main() -> int:
                                       meeting_id, it.get("agenda_item_number", ""), de)
 
                 agenda_item_dicts = []
+                seen_packet_ids: set[str] = set()
                 for it in items:
                     an = it.get("agenda_item_number", "")
                     item_url = it.get("agenda_item_url", "") or it.get("source_url", "")
-                    agenda_item_dicts.append({"agenda_item_id": body_code + "-" + meeting_id + "_" + an, "meeting_id": meeting_id, "agenda_item_number": an, "agenda_item_title": it.get("agenda_item_title", ""), "agenda_item_text": it.get("agenda_item_text", ""), "agenda_item_url": item_url, "source_body": body_code, "source_url": agenda_url, "sort_order": it.get("sort_order", 0)})
+                    item_id = body_code + "-" + meeting_id + "_" + an
+                    if item_id in seen_packet_ids:
+                        continue
+                    seen_packet_ids.add(item_id)
+                    agenda_item_dicts.append({"agenda_item_id": item_id, "meeting_id": meeting_id, "agenda_item_number": an, "agenda_item_title": it.get("agenda_item_title", ""), "agenda_item_text": it.get("agenda_item_text", ""), "agenda_item_url": item_url, "source_body": body_code, "source_url": agenda_url, "sort_order": it.get("sort_order", 0)})
                 replace_meeting_data_safe(
                     session, body_code, meeting_id, meeting_dict,
                     agenda_item_dicts, supporting_doc_dicts=supp_docs,
                 )
-                total_items += len(items)
+                total_items += len(agenda_item_dicts)
                 doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
-                print("  [%d/%d] %s %s: %d item(s)%s" % (idx, meeting_count, meeting_id, meeting_date, len(items), doc_summary))
+                print("  [%d/%d] %s %s: %d item(s)%s" % (idx, meeting_count, meeting_id, meeting_date, len(agenda_item_dicts), doc_summary))
             except Exception as e:
                 log.error("Failed El Mirage meeting %s: %s", meeting_id, e)
         session.close()
@@ -2587,8 +2720,14 @@ async def main() -> int:
         init_db()
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
         body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
-        year_val = getattr(args, "year", None)
-        year = int(year_val) if year_val else _dt.date.today().year
+        _month_val = getattr(args, "month", None)
+        _year_val = getattr(args, "year", None)
+        if _month_val:
+            year = int(_month_val.split("-")[0])
+        elif _year_val:
+            year = int(_year_val)
+        else:
+            year = _dt.date.today().year
         print("Searching Wickenburg meetings for %d..." % year)
         meetings = search_wickenburg_meetings(year, body_slugs=body_slugs)
         if args.limit:
@@ -2596,6 +2735,13 @@ async def main() -> int:
         if not meetings:
             print("No Wickenburg meetings found for %d." % year)
             return 0
+        # Post-filter by month if --month was specified
+        if _month_val:
+            _before = len(meetings)
+            meetings = [m for m in meetings if m.get("meeting_date", "").startswith(_month_val)]
+            print("Filtered to %d meeting(s) in %s" % (len(meetings), _month_val))
+            if not meetings:
+                return 0
         print("Found %d Wickenburg meeting(s)" % len(meetings))
         session = get_session()
         total_items = 0
@@ -2633,7 +2779,7 @@ async def main() -> int:
                             docs = fetch_agenda_memo_docs(memo_url, timeout=15)
                             for doc in docs:
                                 an = it.get("agenda_item_number", "")
-                                doc["agenda_item_id"] = 0
+                                doc["agenda_item_id"] = "0"
                                 doc["agenda_item_number"] = an
                                 supp_docs.append(doc)
                         except Exception as de:
@@ -2828,6 +2974,13 @@ async def main() -> int:
             return 0
         print("Found %d Avondale CivicClerk meeting(s)" % len(meetings))
 
+        # Filter by requested end_date, then unreasonable future dates
+        today = _dt.date.today()
+        end_filter = _dt.date.fromisoformat(end_date) if getattr(args, "end_date", None) else today + _dt.timedelta(days=60)
+        meetings = [m for m in meetings if _dt.date.fromisoformat(m["meeting_date"]) <= end_filter]
+        if args.limit:
+            meetings = meetings[:args.limit]
+
         session = get_session()
         total_items = 0
         meeting_count = len(meetings)
@@ -2865,7 +3018,7 @@ async def main() -> int:
                 supp_docs = []
                 for sf in m.get("supporting_files", []):
                     supp_docs.append({
-                        "agenda_item_id": 0,
+                        "agenda_item_id": "0",
                         "agenda_item_number": "",
                         "document_title": sf["file_name"],
                         "document_url": sf.get("api_url") or sf["url"],
@@ -2895,8 +3048,14 @@ async def main() -> int:
         from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
         from scraper.avondale import search_avondale_meetings, PUBLIC_BODY_CODE
         init_db()
-        year_val = getattr(args, "year", None)
-        year = int(year_val) if year_val else _dt.date.today().year
+        _month_val = getattr(args, "month", None)
+        _year_val = getattr(args, "year", None)
+        if _month_val:
+            year = int(_month_val.split("-")[0])
+        elif _year_val:
+            year = int(_year_val)
+        else:
+            year = _dt.date.today().year
         print("Searching Avondale (Granicus legacy) meetings for %d..." % year)
         meetings = search_avondale_meetings(year)
         if args.limit:
@@ -2904,6 +3063,13 @@ async def main() -> int:
         if not meetings:
             print("No Avondale (Granicus legacy) meetings found for %d." % year)
             return 0
+        # Post-filter by month if --month was specified
+        if _month_val:
+            _before = len(meetings)
+            meetings = [m for m in meetings if m.get("meeting_date", "").startswith(_month_val)]
+            print("Filtered to %d meeting(s) in %s" % (len(meetings), _month_val))
+            if not meetings:
+                return 0
         print("Found %d Avondale (Granicus legacy) meeting(s)" % len(meetings))
         session = get_session()
         total_items = 0
@@ -2932,16 +3098,24 @@ async def main() -> int:
         print("Synced %d Avondale (Granicus legacy) meetings (no items)" % meeting_count)
         return 0
 
-    if args.source == "buckeye-granicus" and args.sync:
+    if args.source == "buckeye" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
         from scraper.buckeye_granicus import (
             search_buckeye_meetings, fetch_and_parse_agenda,
+            extract_supporting_docs,
             BASE_URL, SOURCE_INSTANCE_URL, SOURCE_SYSTEM,
         )
         init_db()
-        year_val = getattr(args, "year", None)
-        year = int(year_val) if year_val else _dt.date.today().year
+        # Determine search year: --year takes priority, then --month, then current year
+        _month_val = getattr(args, "month", None)
+        _year_val = getattr(args, "year", None)
+        if _month_val:
+            year = int(_month_val.split("-")[0])
+        elif _year_val:
+            year = int(_year_val)
+        else:
+            year = _dt.date.today().year
         print("Searching Buckeye (Granicus) meetings for %d..." % year)
         meetings = search_buckeye_meetings(year=year, use_html=True)
         if args.limit:
@@ -2949,7 +3123,30 @@ async def main() -> int:
         if not meetings:
             print("No Buckeye (Granicus) meetings found for %d." % year)
             return 0
+        # Further filter by month if --month was specified
+        if _month_val:
+            _prefix = _month_val  # already YYYY-MM format
+            _before = len(meetings)
+            meetings = [m for m in meetings if m.get("meeting_date", "").startswith(_prefix)]
+            print("Filtered to %d meeting(s) in %s" % (len(meetings), _month_val))
+            if not meetings:
+                return 0
         print("Found %d Buckeye (Granicus) meeting(s)" % len(meetings))
+        if args.meeting_id:
+            target_id = str(args.meeting_id)
+            target_body = (getattr(args, "body", None) or "").strip().lower()
+            meetings = [
+                m for m in meetings
+                if str(m.get("event_id", m.get("meeting_id", ""))) == target_id
+                and (not target_body or m.get("body_code", "").lower() == target_body)
+            ]
+            if not meetings:
+                msg = "Meeting %s not found" % target_id
+                if target_body:
+                    msg += " for body '%s'" % target_body
+                print(msg)
+                return 0
+            print("Filtered to 1 meeting: %s (body: %s)" % (target_id, meetings[0].get("body_code", "?")))
         session = get_session()
         total_items = 0
         meeting_count = len(meetings)
@@ -2971,24 +3168,48 @@ async def main() -> int:
                 continue
             try:
                 items = []
+                supporting_docs = []
                 if m.get("packet_url"):
                     try:
                         from scraper.buckeye_granicus import fetch_and_parse_agenda
                         raw_items = fetch_and_parse_agenda(m)
+                        item_counter = 0
+                        seen_in_packet: set[str] = set()
+                        items = []
                         for it in raw_items:
                             an = (it.get("agenda_item_number", "") or "").strip()
-                            it["agenda_item_id"] = body_code + "-" + meeting_id + "_" + an
+                            if not an:
+                                item_counter += 1
+                                an = f"auto-{item_counter}"
+                            item_id = body_code + "-" + meeting_id + "_" + an
+                            if item_id in seen_in_packet:
+                                continue
+                            seen_in_packet.add(item_id)
+                            it["agenda_item_id"] = item_id
                             it["meeting_id"] = meeting_id
                             it["meeting_date"] = meeting_date
                             it["meeting_type"] = meeting_type
                             it["source_body"] = body_code
                             it["source_url"] = source_url
-                        items = raw_items
+                            items.append(it)
                         if items:
                             print(f"  Parsed {len(items)} agenda items from packet")
                     except Exception as pe:
                         log.debug("Packet parsing failed for %s: %s", meeting_id, pe)
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, items)
+
+                # Extract supporting documents from the agenda PDF
+                if source_url:
+                    try:
+                        supporting_docs = extract_supporting_docs(source_url)
+                        if supporting_docs:
+                            print(f"  Extracted {len(supporting_docs)} supporting documents from agenda")
+                    except Exception as de:
+                        log.debug("Supporting doc extraction failed for %s: %s", meeting_id, de)
+
+                replace_meeting_data_safe(
+                    session, body_code, meeting_id, meeting_dict, items,
+                    supporting_doc_dicts=supporting_docs,
+                )
                 total_items += len(items)
                 print("  [%d/%d] %s %s: %d items synced" % (idx, meeting_count, meeting_id, meeting_date, len(items)))
             except Exception as e:
@@ -2997,7 +3218,7 @@ async def main() -> int:
         print("Synced %d Buckeye (Granicus) meetings" % meeting_count)
         return 0
 
-    if args.source == "buckeye" and args.sync:
+    if args.source == "buckeye-novusagenda" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe
         from scraper.buckeye import search_buckeye_meetings, fetch_agenda_items_async, SLUG_TO_CODE, BODY_CODE_MAP, DEFAULT_BODY_SLUGS
@@ -3090,12 +3311,38 @@ async def main() -> int:
             try:
                 items = m.get("agenda_items", [])
                 if not items:
-                    replace_meeting_data_safe(session, body_code, str(meeting_id), meeting_dict, [])
-                    print("  [%d/%d] %s %s: no items" % (idx, meeting_count, meeting_id, meeting_date))
-                    continue
+                    # Try PDF fallback — agenda items may only be in the packet PDF
+                    import re as _re
+                    import fitz as _fitz
+                    packet_url = m.get("agenda_packet_url") or m.get("agenda_url", "")
+                    file_id_m = _re.search(r'fileId=(\d+)', packet_url, _re.I)
+                    if file_id_m:
+                        try:
+                            from scraper.surprise import download_meeting_file, parse_agenda_items_from_pdf_text
+                            pdf_bytes = download_meeting_file(int(file_id_m.group(1)))
+                            if pdf_bytes:
+                                pdf_doc = _fitz.open(stream=pdf_bytes, filetype="pdf")
+                                pdf_text = "".join(page.get_text() for page in pdf_doc)
+                                pdf_doc.close()
+                                if pdf_text and len(pdf_text) > 50:
+                                    pdf_items = parse_agenda_items_from_pdf_text(pdf_text)
+                                    if pdf_items:
+                                        items = pdf_items
+                                        print(f"  Parsed {len(items)} items from agenda packet")
+                        except Exception as pe:
+                            log.debug("PDF fallback failed for %s: %s", meeting_id, pe)
+                    
+                    if not items:
+                        replace_meeting_data_safe(session, body_code, str(meeting_id), meeting_dict, [])
+                        print("  [%d/%d] %s %s: no items" % (idx, meeting_count, meeting_id, meeting_date))
+                        continue
+                agenda_item_counter = 0
                 agenda_item_dicts = []
                 for it in items:
-                    an = str(it.get("agenda_item_number", ""))
+                    an = str(it.get("agenda_item_number", "") or "")
+                    if not an:
+                        agenda_item_counter += 1
+                        an = f"sec-{agenda_item_counter}"
                     agenda_item_dicts.append({"agenda_item_id": body_code + "-" + str(meeting_id) + "_" + an, "meeting_id": str(meeting_id), "agenda_item_number": an, "agenda_item_title": it.get("agenda_item_title", ""), "agenda_item_text": it.get("agenda_item_text", ""), "source_body": body_code, "source_url": meeting_url, "sort_order": it.get("sort_order", 0)})
                 replace_meeting_data_safe(session, body_code, str(meeting_id), meeting_dict, agenda_item_dicts)
                 total_items += len(items)
@@ -3880,7 +4127,6 @@ async def main() -> int:
                 extract_tempe_agenda_items as extract_items_fn,
                 normalize_tempe_meeting_title as normalize_title_fn,
                 extract_meeting_type_from_title,
-                JURISDICTION_ID,
                 PUBLIC_BODY_CODE,
             )
             def fmt_date_fn(x): return x
@@ -4220,7 +4466,7 @@ async def main() -> int:
         return 0
 
     if getattr(args, "persist", False):
-        from db import get_session, persist_meeting
+        from db import get_session, persist_meeting, record_ingest_failure
         import csv
 
         csv_path = AGENDA_ITEMS_CSV
@@ -4254,13 +4500,30 @@ async def main() -> int:
                 "source_url": first.get("source_url", ""),
             }
             try:
-                body = first.get("body", "bos") if "body" in first else args.source if hasattr(args, 'source') else "bos"
+                body = first.get("body") or getattr(args, 'source', None)
+                if not body:
+                    raise ValueError(
+                        f"Cannot determine body for meeting {meeting_id} ({meeting_date}): "
+                        f"no 'body' field in CSV data and no --source flag provided"
+                    )
                 count = persist_meeting(session, body, meeting_id, items)
                 total += count
                 print(f"  {meeting_id} {meeting_date}: {count} items")
             except Exception as e:
                 errors += 1
                 print(f"  {meeting_id} {meeting_date}: FAILED - {e}")
+                try:
+                    record_ingest_failure(
+                        session,
+                        str(e),
+                        source="csv-persist",
+                        meeting_id=meeting_id,
+                        meeting_date=meeting_date,
+                        context=f"Attempted to persist {len(items)} agenda items",
+                    )
+                    session.commit()
+                except Exception as record_err:
+                    print(f"    (failed to record ingest error: {record_err})")
 
         session.close()
         print(f"Persisted {total} agenda items across {len(groups)} meeting(s)")
@@ -4438,6 +4701,10 @@ async def main() -> int:
                         except Exception as e:
                             docs_ok = False
                             log.warning("%s docs_extraction_failed error=%s", meeting_prefix, str(e)[:200])
+
+                        # Normalize supporting docs' agenda_item_id to match prefixed items
+                        for doc in docs:
+                            doc["agenda_item_id"] = f"{args.source}-{doc['agenda_item_id']}"
 
                         if not docs_ok:
                             # Items succeeded but docs failed - partial
@@ -4690,7 +4957,7 @@ async def main() -> int:
                                     meeting_time="",
                                     meeting_title=db_m.meeting_title,
                                     meeting_type=db_m.meeting_type,
-                                    body=db_m.body if hasattr(db_m, 'body') and db_m.body else "bos",
+                                    body=db_m.body,  # Must not be null — fails loudly if body unknown
                                     row_text="",
                                     detail_url="",
                                     agenda_url=db_m.source_url,
@@ -4926,6 +5193,9 @@ async def main() -> int:
                         # Normalize agenda_item_id to include body prefix for global uniqueness
                         for it in items:
                             it["agenda_item_id"] = f"{args.source}-{it['agenda_item_id']}"
+                        # Also normalize supporting docs' IDs to match the prefixed format
+                        for doc in docs:
+                            doc["agenda_item_id"] = f"{args.source}-{doc['agenda_item_id']}"
 
                         try:
                             log.info("%s phase=persist started", meeting_prefix)

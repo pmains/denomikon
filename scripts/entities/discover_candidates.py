@@ -437,12 +437,21 @@ def _is_valid_candidate(raw: str) -> bool:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def extract_candidates(text: str, jurisdiction_id: int,
-                       source_type: str, source_id: int) -> list[dict]:
-    """Run all patterns against a block of text, return candidate records.
+def extract_candidates_from_text(text: str) -> list[dict]:
+    """Run all regex patterns against plain text and return candidate records.
 
-    Each record: { normalized_name, display_name, pattern, jurisdiction_id,
-                    source_type, source_id, context_snippet }
+    This is a standalone function that does NOT require jurisdiction_id or
+    source tracking. It simply finds candidate entity names in arbitrary text.
+    Useful for on-the-fly entity discovery (e.g. Flask entity viewer).
+
+    Each record: {
+        "normalized_name": str,
+        "display_name": str,
+        "pattern": str,
+        "context_snippet": str,
+        "span_start": int,
+        "span_end": int,
+    }
     """
     if not text:
         return []
@@ -450,7 +459,7 @@ def extract_candidates(text: str, jurisdiction_id: int,
     results = []
     seen_norms = set()
 
-    def add(norm: str, display: str, pat_name: str, ctx: str):
+    def add(norm: str, display: str, pat_name: str, ctx: str, span_start: int, span_end: int):
         if norm in seen_norms:
             return
         if not _is_valid_candidate(display):
@@ -460,10 +469,9 @@ def extract_candidates(text: str, jurisdiction_id: int,
             "normalized_name": norm,
             "display_name": display,
             "pattern": pat_name,
-            "jurisdiction_id": jurisdiction_id,
-            "source_type": source_type,
-            "source_id": source_id,
             "context_snippet": ctx[:200],
+            "span_start": span_start,
+            "span_end": span_end,
         })
 
     # Structured field patterns
@@ -473,7 +481,7 @@ def extract_candidates(text: str, jurisdiction_id: int,
             norm = normalize_name(candidate)
             ctx_start = max(0, m.start() - 40)
             ctx = text[ctx_start:m.end() + 60]
-            add(norm, candidate, "field", ctx)
+            add(norm, candidate, "field", ctx, m.start(1), m.end(1))
 
     # Ampersand patterns
     for m in AMPERSAND_PATTERN.finditer(text):
@@ -481,7 +489,7 @@ def extract_candidates(text: str, jurisdiction_id: int,
         norm = normalize_name(candidate)
         ctx_start = max(0, m.start() - 40)
         ctx = text[ctx_start:m.end() + 60]
-        add(norm, candidate, "ampersand", ctx)
+        add(norm, candidate, "ampersand", ctx, m.start(1), m.end(1))
 
     # Organization keyword patterns
     for m in ORG_KEYWORD_PATTERN.finditer(text):
@@ -489,7 +497,7 @@ def extract_candidates(text: str, jurisdiction_id: int,
         norm = normalize_name(candidate)
         ctx_start = max(0, m.start() - 40)
         ctx = text[ctx_start:m.end() + 60]
-        add(norm, candidate, "org_keyword", ctx)
+        add(norm, candidate, "org_keyword", ctx, m.start(1), m.end(1))
 
     # Legal suffix patterns
     for m in LEGAL_END_PATTERN.finditer(text):
@@ -497,7 +505,7 @@ def extract_candidates(text: str, jurisdiction_id: int,
         norm = normalize_name(candidate)
         ctx_start = max(0, m.start() - 40)
         ctx = text[ctx_start:m.end() + 60]
-        add(norm, candidate, "legal_suffix", ctx)
+        add(norm, candidate, "legal_suffix", ctx, m.start(1), m.end(1))
 
     # Person-in-context patterns
     for m in PERSON_PATTERN.finditer(text):
@@ -506,9 +514,29 @@ def extract_candidates(text: str, jurisdiction_id: int,
             norm = normalize_name(candidate)
             ctx_start = max(0, m.start() - 40)
             ctx = text[ctx_start:m.end() + 60]
-            add(norm, candidate, "person_role", ctx)
+            add(norm, candidate, "person_role", ctx, m.start(1), m.end(1))
 
     return results
+
+
+def extract_candidates(text: str, jurisdiction_id: int,
+                       source_type: str, source_id: int) -> list[dict]:
+    """Run all patterns against a block of text, return candidate records
+    with DB source tracking.
+
+    Each record: { normalized_name, display_name, pattern, jurisdiction_id,
+                    source_type, source_id, context_snippet }
+    """
+    candidates = extract_candidates_from_text(text)
+    # Add DB source tracking to each candidate
+    for c in candidates:
+        c["jurisdiction_id"] = jurisdiction_id
+        c["source_type"] = source_type
+        c["source_id"] = source_id
+        # Remove span info not needed for DB-oriented use
+        c.pop("span_start", None)
+        c.pop("span_end", None)
+    return candidates
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# run-newsletter-workflow.sh — Cron entry point for the newsletter workflow
+#
+# Launched by cron at 5:00 AM Mon-Fri. Backgrounds the workflow script,
+# records the PID, and exits immediately (follows Serenity philosophy).
+#
+# The log file is the source of truth. Check it with:
+#   tail -20 data/runs/newsletter-$(date +%Y-%m-%d)-*/pipeline.log
+#
+# Usage:
+#   bash scripts/newsletter/run-newsletter-workflow.sh
+#
+# Designed for cron integration. Exits in < 2 seconds.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+WORKFLOW_SCRIPT="$SCRIPT_DIR/workflow.sh"
+TIMESTAMP="$(date +%Y%m%d-%H%M)"
+RUN_ID="newsletter-$(date +%Y-%m-%d-%H%M)"
+RUN_DIR="$PROJECT_ROOT/data/runs/${RUN_ID}"
+
+# Ensure directories
+mkdir -p "$RUN_DIR"
+
+# Log file for the nohup process
+LOGFILE="$RUN_DIR/launch.log"
+
+# Check if already running for this date
+IDEMPOTENCY_FILE="$PROJECT_ROOT/data/newsletter/sent.idempotency"
+DATE_KEY="$(date +%Y-%m-%d)"
+IDEMPOTENCY_KEY="newsletter:${DATE_KEY}"
+if [ -f "$IDEMPOTENCY_FILE" ] && grep -Fxq "$IDEMPOTENCY_KEY" "$IDEMPOTENCY_FILE" 2>/dev/null; then
+    echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] Already sent for $DATE_KEY — skipping." | tee "$LOGFILE"
+    exit 0
+fi
+
+# Background the workflow via nohup (Serenity)
+echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] Launching newsletter workflow..." | tee "$LOGFILE"
+echo "  Run ID: $RUN_ID" | tee -a "$LOGFILE"
+echo "  Log:    $RUN_DIR/pipeline.log" | tee -a "$LOGFILE"
+echo "  PID:    $$" | tee -a "$LOGFILE"
+
+cd "$PROJECT_ROOT"
+nohup bash "$WORKFLOW_SCRIPT" > "$RUN_DIR/pipeline.log" 2>&1 &
+
+WPID=$!
+echo "  Workflow PID: $WPID" | tee -a "$LOGFILE"
+echo "$WPID" > "$RUN_DIR/workflow.pid"
+
+echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] Workflow backgrounded. Exiting." | tee -a "$LOGFILE"

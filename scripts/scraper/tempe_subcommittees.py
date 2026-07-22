@@ -459,7 +459,7 @@ def sync_subcommittee(
         # Build supporting documents
         supporting_doc_dicts = [
             {
-                "agenda_item_id": 0,
+                "agenda_item_id": "0",
                 "agenda_item_number": "1",
                 "document_title": f"Agenda: {clean_title}",
                 "document_url": pdf_url,
@@ -470,7 +470,7 @@ def sync_subcommittee(
         ]
         if minutes_url:
             supporting_doc_dicts.append({
-                "agenda_item_id": 0,
+                "agenda_item_id": "0",
                 "agenda_item_number": "1",
                 "document_title": f"Minutes: {clean_title}",
                 "document_url": minutes_url,
