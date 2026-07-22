@@ -10,9 +10,9 @@ cd "$PROJECT_ROOT"
 
 DUMP="data/prod-backup-20260721-2354-full.dump"
 PG18_BIN="/opt/homebrew/Cellar/postgresql@18/18.4/bin"
-DEV_HOST="100.91.173.66"
+DEV_HOST="${DEV_HOST:?Set DEV_HOST env var (e.g. 100.91.173.66)}"
 DEV_PORT="5432"
-DEV_PASS="CHANGEME"
+DEV_PASS="${DEV_PASS:?Set DEV_PASS env var}"
 
 echo "═══ Step 1: Create temporary database (via Windows SSH) ═══"
 ssh windows-tailscale "C:\pgsql\pgsql\bin\psql -U postgres -c \"DROP DATABASE IF EXISTS poliscopic_restored;\" -c \"CREATE DATABASE poliscopic_restored;\" -c \"GRANT ALL ON SCHEMA public TO poliscopic;\" -c \"ALTER DATABASE poliscopic_restored OWNER TO poliscopic;\"" 2>&1
@@ -37,7 +37,9 @@ echo "═══ Step 4: Run schema migration (init_db) against poliscopic_restor
 PYTHONPATH="$PROJECT_ROOT/scripts:$PROJECT_ROOT" .venv/bin/python3 << ENDPYTHON
 import os, sys
 
-restored_url = f"postgresql://poliscopic:{os.environ.get('DEV_PASS', 'CHANGEME')}@100.91.173.66:5432/poliscopic_restored"
+dev_pass = os.environ['DEV_PASS']
+dev_host = os.environ.get('DEV_HOST', '127.0.0.1')
+restored_url = f"postgresql://poliscopic:{dev_pass}@{dev_host}:5432/poliscopic_restored"
 os.environ["DATABASE_URL"] = restored_url
 
 # Clear cached engine state

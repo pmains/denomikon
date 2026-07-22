@@ -22,7 +22,7 @@ load_dotenv(_here / ".env")
 
 _database_url = os.environ.get("DATABASE_URL")
 if not _database_url:
-    _database_url = "postgresql://poliscopic:CHANGEME@100.91.173.66:5432/poliscopic_dev"
+    _database_url = os.environ.get("DATABASE_URL")
     os.environ["DATABASE_URL"] = _database_url
 
 print(f"Database URL: {_database_url}", file=sys.stderr)

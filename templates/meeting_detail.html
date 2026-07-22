@@ -134,7 +134,7 @@
                     data-bs-target="#collapse{{ item.id }}"
                     aria-expanded="false" aria-controls="collapse{{ item.id }}">
                 <span class="fw-bold me-2">{{ item.agenda_item_number }}.</span>
-                <a href="?item={{ item.agenda_item_number }}" class="text-decoration-none text-muted small me-2" title="Link to this item">¶</a>
+                <a href="?item={{ item.agenda_item_number }}" class="text-decoration-none text-muted small me-1" title="Link to this item">¶</a>
                 <span class="flex-grow-1">{{ item.agenda_item_title }}</span>
                 {% if item.agenda_category in ('Consent', 'Non-Consent') %}
                 <span class="badge bg-secondary text-white ms-2 me-1 small">{{ item.agenda_category }}</span>
@@ -210,6 +210,17 @@
                     {% endif %}
                 {% else %}
                     {% if item.c_number or item.c_number_base %}
+                    <div class="position-relative">
+                    <span class="share-item-link text-muted"
+                          data-item-number="{{ item.agenda_item_number }}"
+                          title="Copy link to this item"
+                          onclick="copyItemLink(this)"
+                          style="cursor: pointer; position: absolute; top: 0; right: 0;">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M4.715 6.542 3.343 7.914a3 3 0 1 0 4.243 4.243l1.828-1.829A3 3 0 0 0 8.586 5.5L8 6.086a1.002 1.002 0 0 0-.154.199 2 2 0 0 1 .861 3.337L6.88 11.45a2 2 0 1 1-2.83-2.83l.793-.792a4.018 4.018 0 0 1-.128-1.287z"/>
+                            <path d="M6.586 4.672A3 3 0 0 0 7.414 9.5l.775-.776a2 2 0 0 1-.896-3.346L9.12 3.55a2 2 0 1 1 2.83 2.83l-.793.792c.112.42.155.855.128 1.287l1.372-1.372a3 3 0 1 0-4.243-4.243L6.586 4.672z"/>
+                        </svg>
+                    </span>
                     <dl class="row small mb-2">
                         {% if item.c_number %}
                         <dt class="col-sm-2">C-number</dt>
@@ -235,6 +246,7 @@
                         <dd class="col-sm-10">{{ item.c_number_revision }}</dd>
                         {% endif %}
                     </dl>
+                    </div>
                     <hr class="my-2">
                     {% endif %}
                 {% endif %}
@@ -487,6 +499,55 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 });
+
+// Copy link to individual agenda item to clipboard
+function copyItemLink(btn) {
+    var itemNum = btn.getAttribute('data-item-number');
+    var url = window.location.protocol + '//' + window.location.host + window.location.pathname + '?item=' + itemNum;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(function() {
+            showCopiedToast(btn);
+        }).catch(function() {
+            fallbackCopy(btn, url);
+        });
+    } else {
+        fallbackCopy(btn, url);
+    }
+}
+function fallbackCopy(btn, url) {
+    var ta = document.createElement('textarea');
+    ta.value = url;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+        document.execCommand('copy');
+        showCopiedToast(btn);
+    } catch (e) {
+        window.prompt('Copy this link:', url);
+    }
+    document.body.removeChild(ta);
+}
+var _toastEl = null;
+function showCopiedToast(btn) {
+    if (!_toastEl) {
+        _toastEl = document.createElement('div');
+        _toastEl.className = 'position-fixed bottom-0 end-0 p-3';
+        _toastEl.style.zIndex = '9999';
+        _toastEl.innerHTML = '<div id="clipToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">'
+            + '<div class="toast-body bg-success text-white rounded">'
+            + '🔗 Copied</div></div>';
+        document.body.appendChild(_toastEl);
+    }
+    var t = document.getElementById('clipToast');
+    if (t) {
+        t.classList.remove('show');
+        void t.offsetWidth;
+        t.classList.add('show');
+        setTimeout(function() { t.classList.remove('show'); }, 1500);
+    }
+}
 </script>
 {% endif %}
 {% endblock %}

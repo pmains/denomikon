@@ -48,10 +48,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()  # Load .env — supplies DATABASE_URL
 
-_DEV_PG = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://poliscopic@100.91.173.66:5432/poliscopic_dev"
-)
+_DEV_PG = os.environ["DATABASE_URL"]
 _SQLITE_FALLBACK = str((Path(__file__).resolve().parent.parent.parent / "data" / "maricopa.sqlite").resolve())
 
 # ── Resolution order ──────────────────────────────────────────────────

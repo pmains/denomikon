@@ -8,7 +8,7 @@ Usage:
 Requirements: psycopg2-binary, PostgreSQL 18 pg_restore on PATH
 """
 
-import argparse, logging, shlex, subprocess, sys, tempfile
+import argparse, logging, os, shlex, subprocess, sys, tempfile
 from pathlib import Path
 
 log = logging.getLogger("restore")
@@ -98,7 +98,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dump", required=True)
     ap.add_argument("--dev-dsn",
-        default="host=localhost dbname=poliscopic_dev user=poliscopic password=CHANGEME")
+        default=f"host=localhost dbname=poliscopic_dev user=poliscopic password={os.environ.get('DEV_PASS', 'CHANGE_ME')}")
     ap.add_argument("--pg-bin", default="", help="e.g. C:\\Program Files\\PostgreSQL\\18\\bin\\")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()

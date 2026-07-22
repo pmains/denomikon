@@ -25,7 +25,7 @@ if not exist "%DUMP%" (
 set PG_BIN=
 :: set PG_BIN=C:\Program Files\PostgreSQL\18\bin\
 
-set DEV_DSN=host=localhost dbname=poliscopic_dev user=poliscopic password=CHANGEME
+set DEV_DSN=host=localhost dbname=poliscopic_dev user=poliscopic password=%DEV_PASS%
 
 :: Verify connection
 %PG_BIN%psql -d "%DEV_DSN:"=%" -c "SELECT 1" >nul 2>&1
