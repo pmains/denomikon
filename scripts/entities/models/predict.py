@@ -278,7 +278,7 @@ def predict(text: str, model_name: str = "fasttext") -> list[dict]:
     model_obj = _model_cache[model_name]
 
     # Extract candidates using the standalone function from discover_candidates
-    from entities.discover_candidates import extract_candidates_from_text
+    from entities.models.discover_candidates import extract_candidates_from_text
     candidates = extract_candidates_from_text(text)
 
     # Deduplicate by normalized_name, keeping the first occurrence's span

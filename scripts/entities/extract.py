@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-Entity extraction pipeline — Phase 1 of the entity layer.
+Entity extraction orchestrator + shared utilities.
 
-Extracts organizations (developers, law firms, planning firms) and people
-(attorneys, planners) from agenda items and supporting documents, normalizes
-names, and persists to the entity graph.
+Orchestrates targeted extractors (people, parcels, cases, firms) and
+houses shared helpers (KNOWN_ORGANIZATIONS, normalize_name, DB utils).
+
+Targeted extractors live in sibling modules and can be run independently:
+    python -m entities.people --help
+    python -m entities.parcels --help
+    python -m entities.cases --help
 
 Usage:
     PYTHONPATH=scripts .venv/bin/python scripts/entities/extract.py
@@ -588,13 +592,11 @@ def detect_withdrawals(engine: Engine, dry_run: bool = False, limit: int = None)
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Entity extraction pipeline")
+    parser = argparse.ArgumentParser(description="Entity extraction orchestrator")
     parser.add_argument("--seed-only", action="store_true",
-                        help="Only seed from pz_item_details + known orgs")
+                        help="Only seed known orgs + pz_item_details")
     parser.add_argument("--scan-only", action="store_true",
                         help="Only scan agenda items (skip seed)")
-    parser.add_argument("--scan-agenda", action="store_true",
-                        help="Run agenda item scan after seeding")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show what would be done without writing")
     parser.add_argument("--limit", type=int, default=None,
@@ -611,16 +613,24 @@ def main():
         log.info("Phase 1: Seed known organizations (%d entries)...", len(KNOWN_ORGANIZATIONS))
         seed_known_organizations(engine, dry_run=args.dry_run)
 
-        # ── 2. Seed from pz_item_details ──
-        log.info("Phase 2: Seed from pz_item_details...")
-        processed = seed_from_pz_items(engine, dry_run=args.dry_run)
-        log.info("Phase 2 complete: %d rows processed", processed)
+        # ── 2. Seed people & firms from pz_item_details ──
+        log.info("Phase 2: Seed people from pz_item_details...")
+        try:
+            from entities.people import seed_from_applicants
+            processed = seed_from_applicants(engine, dry_run=args.dry_run)
+            log.info("Phase 2 complete: %d rows processed", processed)
+        except Exception as e:
+            log.warning("Phase 2 (people) skipped: %s", e)
 
-    # ── 3. Scan all agenda items ──
+    # ── 3. Scan agenda items for people ──
     if (not args.seed_only or args.scan_only) and not args.withdrawals:
-        log.info("Phase 3: Scanning agenda items...")
-        matched = scan_agenda_items(engine, dry_run=args.dry_run, limit=args.limit)
-        log.info("Phase 3 complete: %d items matched", matched)
+        log.info("Phase 3: Scanning agenda items for people...")
+        try:
+            from entities.people import scan_for_people
+            matched = scan_for_people(engine, dry_run=args.dry_run, limit=args.limit)
+            log.info("Phase 3 complete: %d items matched", matched)
+        except Exception as e:
+            log.warning("Phase 3 (people) skipped: %s", e)
 
     # ── 4. Withdrawal detection ──
     if args.withdrawals:
