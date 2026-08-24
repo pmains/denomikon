@@ -48,24 +48,24 @@ print(f'Production DB OK: {cnt} meetings')
 echo "=== Step 2/5: Deploy code ==="
 
 # Sync root-level files
-rsync_safe -avz --checksum --no-t app.py requirements.txt ${SSH_TARGET}:${APP_DIR}/
+rsync_safe -avz --checksum app.py requirements.txt ${SSH_TARGET}:${APP_DIR}/
 
 # Sync scripts/ to scripts/ (NOT to root — avoids scripts/db → db path breakage)
-rsync_safe -avz --checksum --no-t \
+rsync_safe -avz --checksum \
   --exclude='__pycache__/' --exclude='*.pyc' --exclude='.env' \
   scripts/ ${SSH_TARGET}:${APP_DIR}/scripts/
 
 # Sync static assets and templates
 # NOTE: podcast/ is excluded — those are managed server-side and the
 # deploy user doesn't have read permission on the production server.
-rsync_safe -avz --checksum --no-t \
+rsync_safe -avz --checksum \
   --exclude='__pycache__/' --exclude='*.pyc' --exclude='podcast/' \
   static/ ${SSH_TARGET}:${APP_DIR}/static/
 
-rsync_safe -avz --checksum --no-t templates/ ${SSH_TARGET}:${APP_DIR}/templates/
+rsync_safe -avz --checksum templates/ ${SSH_TARGET}:${APP_DIR}/templates/
 
 # Sync routes
-rsync_safe -avz --checksum --no-t routes/ ${SSH_TARGET}:${APP_DIR}/routes/
+rsync_safe -avz --checksum routes/ ${SSH_TARGET}:${APP_DIR}/routes/
 
 # ── 3. Sync dev database → prod (unless --code-only) ──
 if [ "${1:-}" != "--code-only" ]; then

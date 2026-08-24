@@ -114,7 +114,7 @@ class TestTabSearchUrlConstruction(unittest.TestCase):
     """Test tab search URL construction."""
 
     def test_tab_search_url_uses_cid11(self):
-        from scraper.tab import build_tab_search_url
+        from scraper.county.tab import build_tab_search_url
         url = build_tab_search_url("01/01/2026", "01/31/2026")
         self.assertIn("CIDs=11", url)
         self.assertIn("mcdot.maricopa.gov", url)
@@ -123,7 +123,7 @@ class TestTabSearchUrlConstruction(unittest.TestCase):
         self.assertIn("endDate=01%2F31%2F2026", url)
 
     def test_tab_search_url_format_via_main(self):
-        from scraper.tab import build_tab_search_url, _format_mm_dd_yyyy
+        from scraper.county.tab import build_tab_search_url, _format_mm_dd_yyyy
         start = _format_mm_dd_yyyy("2026-01-01")
         end = _format_mm_dd_yyyy("2026-12-31")
         self.assertEqual(start, "01/01/2026")
@@ -133,7 +133,7 @@ class TestTabSearchUrlConstruction(unittest.TestCase):
         self.assertIn("mcdot.maricopa.gov", url)
 
     def test_tab_search_url_not_using_www_domain(self):
-        from scraper.tab import build_tab_search_url
+        from scraper.county.tab import build_tab_search_url
         url = build_tab_search_url("01/01/2026", "01/31/2026")
         self.assertNotIn("www.maricopa.gov", url)
 
@@ -160,7 +160,7 @@ class TestParseTabMeetingsFromHTMLFixture(unittest.TestCase):
         </tbody></table>
         </body></html>
         """
-        from scraper.tab import parse_tab_meetings_from_html
+        from scraper.county.tab import parse_tab_meetings_from_html
         meetings = parse_tab_meetings_from_html(html, "https://mcdot.maricopa.gov/AgendaCenter/Search")
         self.assertEqual(len(meetings), 1)
         m = meetings[0]
@@ -182,7 +182,7 @@ class TestParseTabMeetingsFromHTMLFixture(unittest.TestCase):
         </tbody></table>
         </body></html>
         """
-        from scraper.tab import parse_tab_meetings_from_html
+        from scraper.county.tab import parse_tab_meetings_from_html
         meetings = parse_tab_meetings_from_html(html, "https://mcdot.maricopa.gov/AgendaCenter/Search")
         for m in meetings:
             self.assertEqual(m.body, "tab")
@@ -213,7 +213,7 @@ class TestTabYearTabExtraction(unittest.TestCase):
     """Test year-tab extraction for TAB (CID=11)."""
 
     def test_extract_tab_year_tabs_from_html(self):
-        from scraper.tab import _extract_tab_year_tabs_from_html as fn
+        from scraper.county.tab import _extract_tab_year_tabs_from_html as fn
         html = """
         <a href="javascript:changeYear(2026, 11,'a0')">2026</a>
         <a href="javascript:changeYear(2025, 11, 'a1')">2025</a>
@@ -222,12 +222,12 @@ class TestTabYearTabExtraction(unittest.TestCase):
         self.assertEqual(fn(html), [2024, 2025, 2026])
 
     def test_extract_tab_year_tabs_deduplicates(self):
-        from scraper.tab import _extract_tab_year_tabs_from_html as fn
+        from scraper.county.tab import _extract_tab_year_tabs_from_html as fn
         html = '<a href="javascript:changeYear(2026, 11,\'a0\')">2026</a>'
         self.assertEqual(fn(html), [2026])
 
     def test_extract_tab_year_tabs_no_tabs(self):
-        from scraper.tab import _extract_tab_year_tabs_from_html as fn
+        from scraper.county.tab import _extract_tab_year_tabs_from_html as fn
         self.assertEqual(fn("<html></html>"), [])
 
 
@@ -235,13 +235,13 @@ class TestTabYearTabExtraction(unittest.TestCase):
 
 class TestTabFormatFunctions(unittest.TestCase):
     def test_format_mm_dd_yyyy_converts_iso(self):
-        from scraper.tab import _format_mm_dd_yyyy
+        from scraper.county.tab import _format_mm_dd_yyyy
         self.assertEqual(_format_mm_dd_yyyy("2026-01-01"), "01/01/2026")
         self.assertEqual(_format_mm_dd_yyyy("2026-02-25"), "02/25/2026")
         self.assertEqual(_format_mm_dd_yyyy("2025-12-31"), "12/31/2025")
 
     def test_format_mm_dd_yyyy_empty(self):
-        from scraper.tab import _format_mm_dd_yyyy
+        from scraper.county.tab import _format_mm_dd_yyyy
         self.assertIsNone(_format_mm_dd_yyyy(""))
 
 
@@ -252,7 +252,7 @@ class TestRealTabFixture2026(unittest.TestCase):
 
     def setUp(self):
         html = _load_fixture("tab_meetings_2026.html")
-        from scraper.tab import parse_tab_meetings_from_html
+        from scraper.county.tab import parse_tab_meetings_from_html
         self.meetings = parse_tab_meetings_from_html(
             html, "https://mcdot.maricopa.gov/AgendaCenter/Search/"
         )
@@ -292,7 +292,7 @@ class TestRealTabFixture2025(unittest.TestCase):
 
     def setUp(self):
         html = _load_fixture("tab_meetings_2025.html")
-        from scraper.tab import parse_tab_meetings_from_html
+        from scraper.county.tab import parse_tab_meetings_from_html
         self.meetings = parse_tab_meetings_from_html(
             html, "https://mcdot.maricopa.gov/AgendaCenter/Search/"
         )
@@ -318,13 +318,13 @@ class TestRealTabYearTabExtraction(unittest.TestCase):
 
     def test_broad_range_has_all_year_tabs(self):
         html = _load_fixture("tab_meetings_2015_2026.html")
-        from scraper.tab import _extract_tab_year_tabs_from_html
+        from scraper.county.tab import _extract_tab_year_tabs_from_html
         tabs = _extract_tab_year_tabs_from_html(html)
         expected = list(range(2015, 2027))
         self.assertEqual(tabs, expected)
 
     def test_individual_year_pages_have_only_their_year_tab(self):
-        from scraper.tab import _extract_tab_year_tabs_from_html as fn
+        from scraper.county.tab import _extract_tab_year_tabs_from_html as fn
         for year in [2024, 2025, 2026]:
             html = _load_fixture(f"tab_meetings_{year}.html")
             tabs = fn(html)
@@ -336,7 +336,7 @@ class TestRealTabOverviewListPage(unittest.TestCase):
 
     def setUp(self):
         html = _load_fixture("tab_overview.html")
-        from scraper.tab import parse_tab_meetings_from_html
+        from scraper.county.tab import parse_tab_meetings_from_html
         self.meetings = parse_tab_meetings_from_html(
             html, "https://mcdot.maricopa.gov/AgendaCenter/Transportation-Advisory-Board-11"
         )
@@ -441,7 +441,7 @@ class TestAllBodiesStillWork(unittest.TestCase):
         self.assertEqual(args.source, "bos")
 
     def test_tab_search_url_uses_cid11_on_correct_domain(self):
-        from scraper.tab import build_tab_search_url
+        from scraper.county.tab import build_tab_search_url
         url = build_tab_search_url("01/01/2026", "01/31/2026")
         self.assertIn("CIDs=11", url)
         self.assertIn("mcdot.maricopa.gov", url)

@@ -20,7 +20,7 @@ from db import (
     get_session,
     Permit,
 )
-from scraper.tempe_permits import (
+from scraper.jurisdictions.tempe_permits import (
     _parse_arcgis_date,
     _build_query_url,
     normalize_row,
@@ -461,7 +461,7 @@ class TestDatabaseUpsert(unittest.TestCase):
 
     def test_idempotent_upsert(self):
         """Same row inserted twice should not duplicate."""
-        from scraper.tempe_permits import normalize_row
+        from scraper.jurisdictions.tempe_permits import normalize_row
 
         arcgis_row = {
             "PermitNum": "BLD-2024-TEST01",
@@ -504,7 +504,7 @@ class TestDatabaseUpsert(unittest.TestCase):
 
     def test_multiple_records(self):
         """Insert two different records; both should be persisted."""
-        from scraper.tempe_permits import normalize_row
+        from scraper.jurisdictions.tempe_permits import normalize_row
 
         rows = [
             {"PermitNum": "BLD-2024-TEST02", "OBJECTID": 20001, "PermitType": "Residential - New"},
@@ -529,7 +529,7 @@ class TestDatabaseUpsert(unittest.TestCase):
 
     def test_source_constraint(self):
         """Verify that source_system + source_record_id uniquely identify records."""
-        from scraper.tempe_permits import normalize_row
+        from scraper.jurisdictions.tempe_permits import normalize_row
 
         row = {"PermitNum": "BLD-2024-TEST04", "OBJECTID": 30001, "PermitType": "Residential"}
         norm = normalize_row(row)

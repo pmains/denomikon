@@ -25,7 +25,7 @@ sys.path.insert(0, "scripts")
 
 from db import get_session, init_db, replace_meeting_data_safe, update_sync_status
 from db import Meeting as MeetingModel
-from scraper.buckeye_granicus import (
+from scraper.jurisdictions.buckeye_granicus import (
     search_buckeye_meetings,
     fetch_and_parse_agenda,
     extract_supporting_docs,

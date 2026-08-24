@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from scraper.utils import (
+from scraper.common.utils import (
     log, setup_logger, SOURCE_PAGE, SEARCH_BASE, REQUIRED_BODY, REQUIRED_TYPES,
     ROOT, AGENDAS_ROOT, SUPPORT_ROOT, AGENDA_ITEMS_ROOT, AGENDA_ITEMS_CSV,
     RAW_AGENDA_ITEMS_CSV, REJECTED_RAW_BLOCKS_CSV, DISCOVERY_CSV, LOGS_ROOT,
@@ -16,10 +16,10 @@ from scraper.utils import (
     extract_meeting_metadata_from_page, is_image_based_agenda,
     get_page_state_summary,
 )
-from scraper.models import Meeting
+from scraper.common.models import Meeting
 from scraper.cli import parse_args, parse_date
-from scraper.search import parse_search_results_html, build_search_url, extract_meetings
-from scraper.io_utils import (
+from scraper.common.search import parse_search_results_html, build_search_url, extract_meetings
+from scraper.common.io_utils import (
     slugify, normalize_meeting_date, _normalize_text_date,
     month_dir_for_date, month_metadata_path, ensure_dir, csv_row,
     read_existing_rows, write_download_row, write_discovery_row,
@@ -34,7 +34,7 @@ from scraper.io_utils import (
     read_existing_structured_item_keys, write_discovery_rows,
     iter_discovery_documents,
 )
-from scraper.agenda_items import (
+from scraper.common.agenda_items import (
     parse_agenda_items_from_html, parse_raw_agenda_blocks_html,
     split_bilingual_title,
     _raw_block_boilerplate_reason, validate_raw_block, split_raw_block_into_items,
@@ -44,19 +44,19 @@ from scraper.agenda_items import (
     _clean_lnk_title, _find_item_tables, _extract_lnk_from_table,
     extract_agenda_item_titles,
 )
-from scraper.supporting_docs import (
+from scraper.common.supporting_docs import (
     _extract_supporting_docs_from_table, extract_supporting_documents_from_items,
     extract_supporting_documents_dynamic, extract_supporting_documents_dynamic_concurrent,
     _click_and_extract_item,
 )
-from scraper.pz import (
+from scraper.county.pz import (
     _format_mm_dd_yyyy,
     _normalize_pz_meeting_title,
     build_pz_search_url,
     extract_pz_meetings,
     extract_pz_agenda_items,
 )
-from scraper.votes import extract_votes_from_summary
+from scraper.common.votes import extract_votes_from_summary
 
 async def write_agenda_debug_files(page, meeting: dict[str, str]) -> None:
     ensure_dir(LOGS_ROOT)
@@ -218,7 +218,7 @@ def _extract_chandler_minutes(session, body_code, meeting_id, meeting_date):
     for already-synced meetings without re-syncing agenda items.
     """
     try:
-        from scraper.chandler import (
+        from scraper.jurisdictions.chandler import (
             build_attachments_url, fetch_attachments_page,
             parse_attachments_for_minutes,
             fetch_minutes_pdf_bytes, extract_pdf_text,
@@ -290,7 +290,7 @@ async def main() -> int:
         return finder.print_report(items, hearing_meetings, _hargs.json, _hargs.jurisdiction)
 
     if args.source == "tempe-subcommittees" and args.sync:
-        from scraper.tempe_subcommittees import main as tempe_sub_main
+        from scraper.jurisdictions.tempe.subcommittees import main as tempe_sub_main
         import sys as _sys
         # Extract remaining args after 'tempe-subcommittees' for the module parser
         remaining = _sys.argv[_sys.argv.index('tempe-subcommittees') + 1:]
@@ -298,7 +298,7 @@ async def main() -> int:
         return tempe_sub_main()
 
     if args.source == "phoenix-aem" and args.sync:
-        from scraper.phoenix_aem import fetch_all_notice_bodies, search_and_convert
+        from scraper.jurisdictions.phoenix_aem import fetch_all_notice_bodies, search_and_convert
         from db import get_session, init_db, replace_meeting_data_safe, Meeting as MeetingModel
         from sqlalchemy import select
         import datetime as _dt
@@ -313,6 +313,15 @@ async def main() -> int:
         if not results:
             print("No Phoenix AEM meetings found.")
             return 0
+
+        # Enrich with PDF-extracted agenda items
+        if getattr(args, "extract_pdf", True):
+            try:
+                from scraper.jurisdictions.phoenix_planning import enrich_notice_meetings_with_pdf_items
+                print(f"Extracting PDF content for {len(results)} AEM meetings...")
+                enrich_notice_meetings_with_pdf_items(results, force=args.force)
+            except Exception as e:
+                print(f"PDF extraction failed (continuing without): {e}")
 
         total_items = 0
         meeting_count = len(results)
@@ -373,9 +382,128 @@ async def main() -> int:
             if args.limit and idx >= args.limit:
                 break
 
+        # Cross-reference staff reports to meetings by case number
+        try:
+            from scraper.jurisdictions.phoenix_planning import link_staff_reports_to_meetings
+            links = link_staff_reports_to_meetings(session)
+            if links:
+                print(f"Linked {links} staff reports to meeting agenda items")
+        except Exception as e:
+            log.warning("Staff report cross-referencing failed: %s", e)
+
         session.close()
         ts = _dt.datetime.now().strftime("%H:%M:%S")
         print(f"{ts} Synced {total_items} Phoenix AEM agenda items across {meeting_count} meeting(s)")
+        return 0
+
+    if args.source == "phoenix-aem" and args.sync_results:
+        # Incremental pagination — fetch one page at a time, process immediately
+        try:
+            from scraper.jurisdictions.phoenix_aem import RESULTS_BASE, _build_url, fetch_json, convert_to_meeting_dict, resolve_body
+        except ImportError:
+            from scraper.jurisdictions.phoenix_aem import RESULTS_BASE, _build_url, fetch_json, convert_to_meeting_dict, resolve_body
+        from db import get_session, init_db, replace_meeting_data_safe, Meeting as MeetingModel
+        from sqlalchemy import select
+        from scraper.jurisdictions.phoenix_planning import (
+            link_staff_reports_to_meetings,
+        )
+        import datetime as _pdt
+        import time as _time
+
+        init_db()
+        session = get_session()
+
+        log.info("Fetching Phoenix AEM meeting results (incremental)...")
+
+        PAGE_SIZE = 10
+        offset = 0
+        total_fetched = 0
+        total_new = 0
+        start_ts = _time.time()
+
+        while total_fetched < 5000:
+            url = _build_url(RESULTS_BASE, "", offset)
+            try:
+                data = fetch_json(url)
+            except Exception as e:
+                log.warning("Failed at offset %d: %s", offset, e)
+                break
+
+            results = data.get("results", [])
+            if not results:
+                break
+
+            for raw in results:
+                total_fetched += 1
+                title = raw.get("title", "") or ""
+                slug, code = resolve_body(title) if title else ("phoenix-aem", "phoenix-aem")
+                meeting_dict = convert_to_meeting_dict(raw, slug, code)
+                meeting_dict["meeting_type"] = "Result"
+                meeting_dict["sync_status"] = "complete"
+
+                meeting_id = meeting_dict["meeting_id"]
+                body_code = meeting_dict["body_code"]
+
+                existing = session.execute(
+                    select(MeetingModel).where(
+                        MeetingModel.body == body_code,
+                        MeetingModel.meeting_id == meeting_id,
+                    )
+                ).scalar_one_or_none()
+
+                if existing:
+                    continue
+
+                replace_meeting_data_safe(
+                    session, body_code, meeting_id, meeting_dict, []
+                )
+                total_new += 1
+
+            elapsed = _time.time() - start_ts
+            log.info(
+                "  offset=%d  fetched=%d  new=%d  (%.0fs)",
+                offset, total_fetched, total_new, elapsed,
+            )
+            session.commit()
+
+            if len(results) < PAGE_SIZE:
+                break
+            offset += PAGE_SIZE
+            _time.sleep(0.5)
+
+        # Cross-reference staff reports to results meetings
+        try:
+            links = link_staff_reports_to_meetings(session)
+            if links:
+                log.info("Linked %d staff reports to result meetings", links)
+        except Exception as e:
+            log.warning("Staff report cross-referencing failed: %s", e)
+
+        session.close()
+        elapsed = _time.time() - start_ts
+        print(f"{_pdt.datetime.now().strftime('%H:%M:%S')} Done. {total_fetched} results, {total_new} new in {elapsed:.0f}s")
+        return 0
+
+    if args.source == "phoenix-planning" and args.sync:
+        from scraper.jurisdictions.phoenix_planning import sync_all
+        from db import get_session, init_db
+        import datetime as _pdt
+
+        init_db()
+        session = get_session()
+        force = getattr(args, "force", False)
+
+        results = sync_all(session, force=force)
+
+        session.close()
+        ts = _pdt.datetime.now().strftime("%H:%M:%S")
+        events = results.get("events", {})
+        staff = results.get("staff_reports", {})
+        pud = results.get("pud_cases", {})
+        print(f"{ts} Phoenix planning sync complete: "
+              f"{events.get('synced', 0)}/{events.get('fetched', 0)} events, "
+              f"{staff.get('docs_synced', 0)}/{staff.get('fetched', 0)} staff docs, "
+              f"{pud.get('docs_synced', 0)}/{pud.get('fetched', 0)} PUD docs")
         return 0
 
     if args.init_db:
@@ -399,12 +527,12 @@ async def main() -> int:
     if args.source == "tempe" and args.sync:
         from db import get_session, init_db, update_sync_status, replace_meeting_data_safe, persist_votes
         from db import Supervisor, PublicBody
-        from scraper.tempe_summary import fetch_and_parse_summary
-        from scraper.tempe import (
+        from scraper.jurisdictions.tempe.council_summary import fetch_and_parse_summary
+        from scraper.jurisdictions.tempe import (
             search_tempe_meetings,
             PUBLIC_BODY_CODE,
         )
-        from scraper.onbase import TEMPE_CONFIG, fetch_item_details_batch
+        from scraper.platforms.onbase import TEMPE_CONFIG, fetch_item_details_batch
         import datetime as _dt
 
         from db import Meeting as MeetingModel
@@ -633,7 +761,7 @@ async def main() -> int:
             session.commit()
 
             try:
-                from scraper.onbase import fetch_agenda_sync, parse_agenda_html
+                from scraper.platforms.onbase import fetch_agenda_sync, parse_agenda_html
                 html = fetch_agenda_sync(TEMPE_CONFIG, int(meeting_id))
 
                 # Tempe OnBase returns a 200 with "Document unavailable" when the
@@ -673,7 +801,7 @@ async def main() -> int:
                     item["body"] = body_code
 
                 # Propagate consent/non-consent category labels
-                from scraper.tempe import _assign_tempe_categories
+                from scraper.jurisdictions.tempe import _assign_tempe_categories
                 _assign_tempe_categories(items)
             except Exception as e:
                 update_sync_status(session, body_code, meeting_id, "failed", error=str(e)[:500])
@@ -753,7 +881,7 @@ async def main() -> int:
             doc_summary = ""
             if getattr(args, "download", False):
                 try:
-                    from scraper.tempe import download_tempe_documents
+                    from scraper.jurisdictions.tempe import download_tempe_documents
                     doc_results = download_tempe_documents(
                         meeting_id, meeting_date,
                         doc_dir=str(ROOT / "data"),
@@ -806,12 +934,12 @@ async def main() -> int:
         from db import Meeting as MeetingModel
         from sqlalchemy import select
 
-        from scraper.chandler import (
+        from scraper.jurisdictions.chandler import (
             search_chandler_meetings, parse_agenda_items,
             fetch_page, build_month_url,
             PUBLIC_BODY_CODE,
         )
-        from scraper.destiny_common import fetch_agenda_memo_docs
+        from scraper.platforms.destiny_common import fetch_agenda_memo_docs
 
         init_db()
 
@@ -948,7 +1076,7 @@ async def main() -> int:
                 minutes_url = m.get("minutes_url", "")
                 if minutes_url:
                     try:
-                        from scraper.scottsdale import download_pdf, parse_minutes_votes
+                        from scraper.jurisdictions.scottsdale import download_pdf, parse_minutes_votes
                         from db import persist_votes
                         pdf = download_pdf(minutes_url)
                         if pdf:
@@ -967,7 +1095,7 @@ async def main() -> int:
                 results_url = m.get("results_url", "")
                 if results_url:
                     try:
-                        from scraper.chandler import fetch_results_pdf_bytes, extract_pdf_text, parse_results_votes
+                        from scraper.jurisdictions.chandler import fetch_results_pdf_bytes, extract_pdf_text, parse_results_votes
                         from db import persist_votes
                         pdf_bytes = fetch_results_pdf_bytes(results_url)
                         if pdf_bytes:
@@ -1004,8 +1132,8 @@ async def main() -> int:
     if args.source == "goodyear" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe
-        from scraper.goodyear import search_goodyear_meetings, fetch_page, parse_agenda_items, BODY_MAP, DEFAULT_BODY_SLUGS, GOODYEAR_ID, BASE_URL
-        from scraper.destiny_common import fetch_agenda_memo_docs, BASE_URL as DESTINY_BASE_URL
+        from scraper.jurisdictions.goodyear import search_goodyear_meetings, fetch_page, parse_agenda_items, BODY_MAP, DEFAULT_BODY_SLUGS, GOODYEAR_ID, BASE_URL
+        from scraper.platforms.destiny_common import fetch_agenda_memo_docs, BASE_URL as DESTINY_BASE_URL
         import urllib.parse as _gy_url
         init_db()
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
@@ -1179,7 +1307,7 @@ async def main() -> int:
         from db import Meeting as MeetingModel
         from sqlalchemy import select
 
-        from scraper.valley_metro import (
+        from scraper.jurisdictions.valley_metro import (
             search_valley_metro_meetings,
             fetch_event_detail_via_browser,
             download_document,
@@ -1343,7 +1471,7 @@ async def main() -> int:
         from db import Meeting as MeetingModel
         from sqlalchemy import select
 
-        from scraper.agendacenter import (
+        from scraper.platforms.agendacenter import (
             MCACC_BODY_MAP, MCACC_BODY_CODES,
             body_code_to_cid, body_code_to_name,
             build_ac_search_url,
@@ -1380,7 +1508,7 @@ async def main() -> int:
 
         # Resolve public_body_id mapping and register MCACC bodies
         from db import PublicBody as PublicBodyModel
-        from scraper.agendacenter import ensure_agendacenter_public_bodies
+        from scraper.platforms.agendacenter import ensure_agendacenter_public_bodies
         session = get_session()
         pb_map = {}
         try:
@@ -1511,8 +1639,8 @@ async def main() -> int:
                         minutes_url = meeting.minutes_url
                         if minutes_url:
                             try:
-                                from scraper.agendacenter import extract_members_from_minutes_pdf
-                                from db import _find_or_create_person, _ensure_membership
+                                from scraper.platforms.agendacenter import extract_members_from_minutes_pdf
+                                from db import _find_or_create_person, _ensure_membership, Person, BodyMembership
                                 member_data = extract_members_from_minutes_pdf(minutes_url)
                                 if member_data:
                                     pb = session.execute(
@@ -1527,6 +1655,38 @@ async def main() -> int:
                                                 session, md["name"], md["normalized_name"],
                                                 log_prefix=f"mcacc[{body_code}]",
                                             )
+
+                                            # Guard: don't create a membership for someone
+                                            # who has never attended a meeting of this body.
+                                            # Minutes PDFs can list non-members who
+                                            # appeared (presenters, staff, public comment)
+                                            # in the same "Voting Members Present" section.
+                                            existing_membership = session.execute(
+                                                select(BodyMembership)
+                                                .where(BodyMembership.person_id == person.id)
+                                                .where(BodyMembership.public_body_id == pb.id)
+                                            ).scalar_one_or_none()
+                                            if existing_membership:
+                                                # Already a member — update role if needed
+                                                if md.get("role"):
+                                                    existing_membership.role = md["role"]
+                                                member_count += 1
+                                                continue
+
+                                            # No existing membership; check for meeting attendance
+                                            attendance_count = session.execute(
+                                                text("""
+                                                    SELECT COUNT(*) FROM meeting_members
+                                                    WHERE member_id = :person_id
+                                                      AND body = :body_code
+                                                """),
+                                                {"person_id": person.id, "body_code": body_code},
+                                            ).scalar()
+
+                                            if attendance_count == 0:
+                                                # No meeting evidence — skip membership
+                                                continue
+
                                             membership = _ensure_membership(
                                                 session, person.id, body_code,
                                                 meeting_date=_dt.date.today(),
@@ -1535,7 +1695,8 @@ async def main() -> int:
                                                 membership.role = md["role"]
                                             member_count += 1
                                         session.commit()
-                                        print(f"          members: {member_count} extracted from minutes")
+                                        if member_count:
+                                            print(f"          members: {member_count} extracted from minutes")
                             except Exception as me:
                                 log.debug("MCACC minutes member extraction failed: %s", me)
 
@@ -1583,7 +1744,7 @@ async def main() -> int:
                                             texts = root.findall(".//w:t", ns)
                                             full_text = " ".join(t.text or "" for t in texts)
 
-                                            from scraper.agendacenter import extract_minutes_outcomes
+                                            from scraper.platforms.agendacenter import extract_minutes_outcomes
                                             outcomes = extract_minutes_outcomes(full_text)
                                             if outcomes:
                                                 print(f"          minutes outcomes: {len(outcomes)} found")
@@ -1613,7 +1774,7 @@ async def main() -> int:
     # ── MAG sync (via browser calendar + direct PDFs) ──
     if args.source == "mag" and args.sync:
         import datetime as _dt
-        from scraper.mag import (
+        from scraper.common.mag import (
             COMMITTEES, MAG_BODY_CODES,
             ensure_mag_public_bodies,
             sync_mag_committee,
@@ -1683,7 +1844,7 @@ async def main() -> int:
         from sqlalchemy import select
 
         init_db()
-        from scraper.gilbert import (
+        from scraper.jurisdictions.gilbert import (
             search_gilbert_meetings, fetch_agenda_html,
             parse_gilbert_agenda, PUBLIC_BODY_CODE,
         )
@@ -1765,7 +1926,7 @@ async def main() -> int:
                 minutes_url = m.get("minutes_url", "")
                 if minutes_url:
                     try:
-                        from scraper.scottsdale import download_pdf, parse_minutes_votes
+                        from scraper.jurisdictions.scottsdale import download_pdf, parse_minutes_votes
                         from db import persist_votes
                         pdf = download_pdf(minutes_url)
                         if pdf:
@@ -1813,7 +1974,7 @@ async def main() -> int:
         from db import Meeting as MeetingModel
         from sqlalchemy import select
 
-        from scraper.gilbert_planning import sync as gilbert_pc_sync
+        from scraper.jurisdictions.gilbert_planning import sync as gilbert_pc_sync
 
         init_db()
 
@@ -1882,7 +2043,7 @@ async def main() -> int:
         from db import Meeting as MeetingModel
         from sqlalchemy import select
 
-        from scraper.scottsdale import (
+        from scraper.jurisdictions.scottsdale import (
             search_meetings, download_pdf, parse_agenda_items,
             extract_supporting_docs,
             PUBLIC_BODY_CODE,
@@ -1986,7 +2147,7 @@ async def main() -> int:
                 minutes_url = m.get("minutes_url", "")
                 if minutes_url:
                     try:
-                        from scraper.scottsdale import download_pdf, parse_minutes_votes
+                        from scraper.jurisdictions.scottsdale import download_pdf, parse_minutes_votes
                         from db import persist_votes
                         pdf = download_pdf(minutes_url)
                         if pdf:
@@ -2020,8 +2181,8 @@ async def main() -> int:
         from db import Meeting as MeetingModel
         from sqlalchemy import select
 
-        from scraper.scottsdale_boards import search_board_meetings, BOARDS
-        from scraper.scottsdale import download_pdf, parse_agenda_items
+        from scraper.jurisdictions.scottsdale_boards import search_board_meetings, BOARDS
+        from scraper.jurisdictions.scottsdale import download_pdf, parse_agenda_items
 
         init_db()
 
@@ -2095,7 +2256,7 @@ async def main() -> int:
 
         log = logging.getLogger("mesa-sync")
 
-        from scraper.mesa import (
+        from scraper.jurisdictions.mesa import (
             search_mesa_meetings,
             fetch_agenda_items_async,
             fetch_page,
@@ -2301,7 +2462,7 @@ async def main() -> int:
     if args.source == "glendale" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe
-        from scraper.glendale import search_glendale_meetings_sync, fetch_agenda_items_async, BODY_CODE_MAP, DEFAULT_BODY_SLUGS
+        from scraper.jurisdictions.glendale import search_glendale_meetings_sync, fetch_agenda_items_async, BODY_CODE_MAP, DEFAULT_BODY_SLUGS
         init_db()
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
         body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
@@ -2369,7 +2530,7 @@ async def main() -> int:
     if args.source == "glendale-new" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe
-        from scraper.glendale_new import (
+        from scraper.jurisdictions.glendale_new import (
             search_glendale_meetings,
             parse_agenda_items,
             fetch_page,
@@ -2436,7 +2597,7 @@ async def main() -> int:
 
                 # ── Glendale Results PDF vote extraction ──
                 try:
-                    from scraper.glendale_new import fetch_results_pdf_bytes, extract_pdf_text, parse_results_votes
+                    from scraper.jurisdictions.glendale_new import fetch_results_pdf_bytes, extract_pdf_text, parse_results_votes
                     from db.persist import persist_votes
                     results_url = m.get("results_url", "")
                     if results_url:
@@ -2464,7 +2625,7 @@ async def main() -> int:
     if args.source in ("phoenix", "phoenix-rss") and args.sync:
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe
-        from scraper.phoenix_rss import (
+        from scraper.jurisdictions.phoenix_rss import (
             search_meetings_via_html,
             fetch_meeting_items_via_rss,
             PUBLIC_BODY_CODE,
@@ -2527,7 +2688,7 @@ async def main() -> int:
         from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
         from db import Meeting as MeetingModel
         from sqlalchemy import select
-        from scraper.peoria import (
+        from scraper.jurisdictions.peoria import (
             search_meetings, extract_agenda_items,
             extract_supporting_docs,
         )
@@ -2609,12 +2770,12 @@ async def main() -> int:
     if args.source == "el-mirage" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
-        from scraper.el_mirage import (
+        from scraper.jurisdictions.el_mirage import (
             search_el_mirage_meetings, parse_agenda_items,
             fetch_page, BASE_URL, ORG_ID,
             DEFAULT_BODY_SLUGS,
         )
-        from scraper.destiny_common import fetch_agenda_memo_docs
+        from scraper.platforms.destiny_common import fetch_agenda_memo_docs
         init_db()
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
         body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
@@ -2711,12 +2872,12 @@ async def main() -> int:
     if args.source == "wickenburg" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
-        from scraper.wickenburg import (
+        from scraper.jurisdictions.wickenburg import (
             search_wickenburg_meetings, parse_agenda_items,
             fetch_page, BASE_URL, ORG_ID,
             DEFAULT_BODY_SLUGS,
         )
-        from scraper.destiny_common import fetch_agenda_memo_docs
+        from scraper.platforms.destiny_common import fetch_agenda_memo_docs
         init_db()
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
         body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
@@ -2808,7 +2969,7 @@ async def main() -> int:
     if args.source == "tolleson" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe
-        from scraper.civicclerk import CivicClerkConfig, search_meetings, fetch_meeting_items
+        from scraper.platforms.civicclerk import CivicClerkConfig, search_meetings, fetch_meeting_items
 
         tolleson_config = CivicClerkConfig(
             subdomain="tollesonaz",
@@ -2927,8 +3088,12 @@ async def main() -> int:
     # ── Avondale sync (via CivicClerk — current) ──
     if args.source == "avondale" and args.sync:
         import datetime as _dt
+        import time as _time
         from db import get_session, init_db, replace_meeting_data_safe
-        from scraper.civicclerk import CivicClerkConfig, search_meetings, fetch_and_parse_agenda
+        from scraper.platforms.civicclerk import CivicClerkConfig, search_meetings, fetch_and_parse_agenda
+
+        _avondale_t0 = _time.time()
+        print(f"  [dbg] Avondale sync starting...")
 
         avondale_config = CivicClerkConfig(
             subdomain="avondaleaz",
@@ -2966,7 +3131,9 @@ async def main() -> int:
         end_date = getattr(args, "end_date", None) or f"{year}-12-31"
 
         print("Searching Avondale CivicClerk meetings from %s to %s..." % (start_date, end_date))
+        _t_search = _time.time()
         meetings = search_meetings(avondale_config, start_date=start_date)
+        print(f"  [dbg]   search_meetings took {_time.time() - _t_search:.1f}s")
         if body_slugs:
             meetings = [m for m in meetings if m["body_code"] in body_slugs]
         if not meetings:
@@ -2987,7 +3154,9 @@ async def main() -> int:
         from db import Meeting as MeetingModel
         from sqlalchemy import select
 
+        _t_loop_start = _time.time()
         for idx, m in enumerate(meetings, 1):
+            _t_meeting = _time.time()
             meeting_id = str(m.get("event_id", m["meeting_id"]))
             meeting_date = m["meeting_date"]
             body_code = m.get("body_code", "avondale-cc")
@@ -3000,7 +3169,7 @@ async def main() -> int:
 
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
             if existing and existing.sync_status == "complete" and not args.force:
-                print("  [%d/%d] %s %s: already synced, %d items" % (idx, meeting_count, meeting_id, meeting_date, existing.item_count_actual or 0))
+                print("  [%d/%d] %s %s: already synced (%d items) [%.1fs]" % (idx, meeting_count, meeting_id, meeting_date, existing.item_count_actual or 0, _time.time() - _t_meeting))
                 total_items += existing.item_count_actual or 0
                 continue
 
@@ -3033,20 +3202,22 @@ async def main() -> int:
                 )
                 total_items += len(items)
                 doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
-                print("  [%d/%d] %s %s: %d items synced%s" % (idx, meeting_count, meeting_id, meeting_date, len(items), doc_summary))
+                print("  [%d/%d] %s %s: %d items synced%s [%.1fs]" % (idx, meeting_count, meeting_id, meeting_date, len(items), doc_summary, _time.time() - _t_meeting))
             except Exception as e:
                 log.error("Failed Avondale meeting %s: %s", meeting_id, e)
 
         session.close()
+        _total_elapsed = _time.time() - _avondale_t0
         ts = _dt.datetime.now().strftime("%H:%M:%S")
-        print("%s Synced %d Avondale CivicClerk items across %d meeting(s)" % (ts, total_items, meeting_count))
+        print("%s Synced %d Avondale CivicClerk items across %d meeting(s) [%ds total]" % (ts, total_items, meeting_count, _total_elapsed))
+        print(f"  [dbg] Avondale done in {_total_elapsed:.0f}s (loop phase: {_time.time() - _t_loop_start:.1f}s)")
         return 0
 
     # ── Avondale Granicus sync (legacy, no items) ──
     if args.source == "avondale-granicus" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
-        from scraper.avondale import search_avondale_meetings, PUBLIC_BODY_CODE
+        from scraper.jurisdictions.avondale import search_avondale_meetings, PUBLIC_BODY_CODE
         init_db()
         _month_val = getattr(args, "month", None)
         _year_val = getattr(args, "year", None)
@@ -3101,7 +3272,7 @@ async def main() -> int:
     if args.source == "buckeye" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
-        from scraper.buckeye_granicus import (
+        from scraper.jurisdictions.buckeye_granicus import (
             search_buckeye_meetings, fetch_and_parse_agenda,
             extract_supporting_docs,
             BASE_URL, SOURCE_INSTANCE_URL, SOURCE_SYSTEM,
@@ -3171,7 +3342,7 @@ async def main() -> int:
                 supporting_docs = []
                 if m.get("packet_url"):
                     try:
-                        from scraper.buckeye_granicus import fetch_and_parse_agenda
+                        from scraper.jurisdictions.buckeye_granicus import fetch_and_parse_agenda
                         raw_items = fetch_and_parse_agenda(m)
                         item_counter = 0
                         seen_in_packet: set[str] = set()
@@ -3221,7 +3392,7 @@ async def main() -> int:
     if args.source == "buckeye-novusagenda" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe
-        from scraper.buckeye import search_buckeye_meetings, fetch_agenda_items_async, SLUG_TO_CODE, BODY_CODE_MAP, DEFAULT_BODY_SLUGS
+        from scraper.jurisdictions.buckeye import search_buckeye_meetings, fetch_agenda_items_async, SLUG_TO_CODE, BODY_CODE_MAP, DEFAULT_BODY_SLUGS
         init_db()
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
         body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
@@ -3274,7 +3445,7 @@ async def main() -> int:
     if args.source == "surprise" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe
-        from scraper.surprise import search_surprise_meetings, DEFAULT_BODY_SLUGS, SOURCE_SYSTEM, SOURCE_INSTANCE_URL
+        from scraper.jurisdictions.surprise import search_surprise_meetings, DEFAULT_BODY_SLUGS, SOURCE_SYSTEM, SOURCE_INSTANCE_URL
         init_db()
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
         body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
@@ -3318,7 +3489,7 @@ async def main() -> int:
                     file_id_m = _re.search(r'fileId=(\d+)', packet_url, _re.I)
                     if file_id_m:
                         try:
-                            from scraper.surprise import download_meeting_file, parse_agenda_items_from_pdf_text
+                            from scraper.jurisdictions.surprise import download_meeting_file, parse_agenda_items_from_pdf_text
                             pdf_bytes = download_meeting_file(int(file_id_m.group(1)))
                             if pdf_bytes:
                                 pdf_doc = _fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -3356,7 +3527,7 @@ async def main() -> int:
     if args.source == "surprise-civicclerk" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe
-        from scraper.civicclerk import CivicClerkConfig, search_meetings, fetch_meeting_items
+        from scraper.platforms.civicclerk import CivicClerkConfig, search_meetings, fetch_meeting_items
 
         surprise_config = CivicClerkConfig(
             subdomain="surpriseaz",
@@ -3389,7 +3560,9 @@ async def main() -> int:
         year = int(year_val) if year_val else _dt.date.today().year
         start_date = getattr(args, "start_date", None) or f"{year}-01-01"
         print("Searching Surprise CivicClerk meetings from %s..." % start_date)
+        _t_search = _sc_time.time()
         meetings = search_meetings(surprise_config, start_date=start_date)
+        print(f"  [dbg]   search_meetings took {_sc_time.time() - _t_search:.1f}s")
         if body_slugs:
             meetings = [m for m in meetings if m["body_code"] in body_slugs]
         if not meetings:
@@ -3401,7 +3574,9 @@ async def main() -> int:
         meeting_count = len(meetings)
         from db import Meeting as MeetingModel
         from sqlalchemy import select
+        _t_loop_start = _sc_time.time()
         for idx, m in enumerate(meetings, 1):
+            _t_mtg = _sc_time.time()
             event_id = m.get("event_id")
             if not event_id:
                 event_id = int(m.get("meeting_id", 0))
@@ -3413,7 +3588,7 @@ async def main() -> int:
             meeting_dict = {"meeting_id": str(event_id), "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": source_url}
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == str(event_id))).scalar_one_or_none()
             if existing and existing.sync_status == "complete" and not args.force:
-                print("  [%d/%d] %s %s: already synced (%d items)" % (idx, meeting_count, event_id, meeting_date, existing.item_count_actual or 0))
+                print("  [%d/%d] %s %s: already synced (%d items) [%.1fs]" % (idx, meeting_count, event_id, meeting_date, existing.item_count_actual or 0, _sc_time.time() - _t_mtg))
                 total_items += existing.item_count_actual or 0
                 continue
             try:
@@ -3421,19 +3596,21 @@ async def main() -> int:
                 items, supp_docs = [], []
                 if event_id:
                     import urllib.request, json
+                    _t_evt = _sc_time.time()
                     evt_url = f"{surprise_config.api_base}/Events/{event_id}"
                     evt_req = urllib.request.Request(evt_url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
                     try:
                         with urllib.request.urlopen(evt_req, timeout=10) as evt_resp:
                             evt_data = json.loads(evt_resp.read())
+                        print(f"  [dbg]     Events/{event_id} API call: {_sc_time.time() - _t_evt:.1f}s, agendaId={evt_data.get('agendaId', 0)}")
                         agenda_id = evt_data.get("agendaId", 0)
                         if agenda_id and agenda_id > 0:
                             items, supp_docs = fetch_meeting_items(
                                 surprise_config, event_id, agenda_id,
                                 body_code, meeting_date,
                             )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"  [dbg]     Events/{event_id} FAILED ({_sc_time.time() - _t_evt:.1f}s): {e}")
 
                 replace_meeting_data_safe(
                     session, body_code, str(event_id), meeting_dict,
@@ -3441,12 +3618,14 @@ async def main() -> int:
                 )
                 total_items += len(items)
                 doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
-                print("  [%d/%d] %s %s: %d items synced%s" % (idx, meeting_count, event_id, meeting_date, len(items), doc_summary))
+                print("  [%d/%d] %s %s: %d items synced%s [%.1fs]" % (idx, meeting_count, event_id, meeting_date, len(items), doc_summary, _sc_time.time() - _t_mtg))
             except Exception as e:
                 import traceback
                 print("Failed Surprise CivicClerk meeting %s: %s" % (event_id, e))
         session.close()
-        print("Synced %d Surprise CivicClerk items across %d meeting(s)" % (total_items, meeting_count))
+        _total_elapsed = _sc_time.time() - _surprise_t0
+        print("Synced %d Surprise CivicClerk items across %d meeting(s) [%ds total]" % (total_items, meeting_count, _total_elapsed))
+        print(f"  [dbg] Surprise CivicClerk done in {_total_elapsed:.0f}s (loop phase: {_sc_time.time() - _t_loop_start:.1f}s)")
         return 0
 
     # ── Tucson sync (via OnBase) ──
@@ -3471,7 +3650,7 @@ async def main() -> int:
         else:
             end_mmddyy = _dt.date.today().strftime("%m/%d/%Y")
 
-        from scraper.tucson import search_tucson_meetings, extract_tucson_agenda_items
+        from scraper.jurisdictions.tucson import search_tucson_meetings, extract_tucson_agenda_items
 
         print(f"Searching Tucson meetings: {start_mmddyy} to {end_mmddyy}")
         meetings = await search_tucson_meetings(None, start_mmddyy, end_mmddyy)
@@ -3582,7 +3761,7 @@ async def main() -> int:
         start_date = getattr(args, "start_date", None) or f"{year}-01-01"
         end_date = getattr(args, "end_date", None) or _dt.date.today().isoformat()
 
-        from scraper.tucson import search_tucson_pc_meetings, extract_tucson_pc_agenda_items
+        from scraper.jurisdictions.tucson import search_tucson_pc_meetings, extract_tucson_pc_agenda_items
 
         print(f"Searching Tucson PC meetings: {start_date} to {end_date}")
         meetings = search_tucson_pc_meetings(start_date, end_date)
@@ -3678,7 +3857,7 @@ async def main() -> int:
 
         init_db()
 
-        from scraper.paradise_valley import search_meetings
+        from scraper.jurisdictions.paradise_valley import search_meetings
 
         print("Searching Paradise Valley meetings via Granicus RSS...")
         meetings = search_meetings()
@@ -3754,7 +3933,7 @@ async def main() -> int:
 
         init_db()
 
-        from scraper.queen_creek import search_meetings, extract_meeting_items
+        from scraper.jurisdictions.queen_creek import search_meetings, extract_meeting_items
 
         print("Searching Queen Creek meetings via Granicus RSS...")
         meetings = search_meetings()
@@ -3839,7 +4018,7 @@ async def main() -> int:
     if args.source == "fountain-hills" and args.sync:
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe
-        from scraper.civicclerk import CivicClerkConfig, search_meetings, fetch_meeting_items
+        from scraper.platforms.civicclerk import CivicClerkConfig, search_meetings, fetch_meeting_items
 
         fh_config = CivicClerkConfig(
             subdomain="fountainhillsaz",
@@ -3964,7 +4143,7 @@ async def main() -> int:
 
         init_db()
 
-        from scraper.apache_junction import search_meetings, fetch_agenda_items, fetch_supporting_docs, DEFAULT_BODY_SLUGS as AJ_DEFAULT_SLUGS
+        from scraper.jurisdictions.apache_junction import search_meetings, fetch_agenda_items, fetch_supporting_docs, DEFAULT_BODY_SLUGS as AJ_DEFAULT_SLUGS
 
         body_slugs_str = getattr(args, "bodies", None) or ",".join(AJ_DEFAULT_SLUGS)
         body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
@@ -4065,55 +4244,55 @@ async def main() -> int:
             source_body = "pz"
             source_type = "Planning & Zoning"
             source_label = "P&Z"
-            from scraper.pz import build_pz_search_url as build_search_url_fn
-            from scraper.pz import extract_pz_meetings as extract_meetings_fn
-            from scraper.pz import extract_pz_agenda_items as extract_items_fn
-            from scraper.pz import _format_mm_dd_yyyy as fmt_date_fn
-            from scraper.pz import _normalize_pz_meeting_title as normalize_title_fn
+            from scraper.county.pz import build_pz_search_url as build_search_url_fn
+            from scraper.county.pz import extract_pz_meetings as extract_meetings_fn
+            from scraper.county.pz import extract_pz_agenda_items as extract_items_fn
+            from scraper.county.pz import _format_mm_dd_yyyy as fmt_date_fn
+            from scraper.county.pz import _normalize_pz_meeting_title as normalize_title_fn
         elif args.source == "adj":
             CID = "3,"
             source_body = "adj"
             source_type = "Board of Adjustment"
             source_label = "ADJ"
-            from scraper.adj import build_adj_search_url as build_search_url_fn
-            from scraper.adj import extract_adj_meetings as extract_meetings_fn
-            from scraper.adj import extract_adj_agenda_items as extract_items_fn
-            from scraper.adj import _format_mm_dd_yyyy as fmt_date_fn
-            from scraper.adj import _normalize_adj_meeting_title as normalize_title_fn
+            from scraper.county.adj import build_adj_search_url as build_search_url_fn
+            from scraper.county.adj import extract_adj_meetings as extract_meetings_fn
+            from scraper.county.adj import extract_adj_agenda_items as extract_items_fn
+            from scraper.county.adj import _format_mm_dd_yyyy as fmt_date_fn
+            from scraper.county.adj import _normalize_adj_meeting_title as normalize_title_fn
         elif args.source == "drain":
             CID = "19,"
             source_body = "drain"
             source_type = "Drainage Review Board"
             source_label = "DRB"
-            from scraper.drain import build_drain_search_url as build_search_url_fn
-            from scraper.drain import extract_drain_meetings as extract_meetings_fn
-            from scraper.drain import extract_drain_agenda_items as extract_items_fn
-            from scraper.drain import _format_mm_dd_yyyy as fmt_date_fn
+            from scraper.county.drain import build_drain_search_url as build_search_url_fn
+            from scraper.county.drain import extract_drain_meetings as extract_meetings_fn
+            from scraper.county.drain import extract_drain_agenda_items as extract_items_fn
+            from scraper.county.drain import _format_mm_dd_yyyy as fmt_date_fn
         elif args.source == "health":
             CID = "13,"
             source_body = "health"
             source_type = "Board of Health"
             source_label = "BOH"
-            from scraper.health import build_health_search_url as build_search_url_fn
-            from scraper.health import extract_health_meetings as extract_meetings_fn
-            from scraper.health import extract_health_agenda_items as extract_items_fn
-            from scraper.health import _format_mm_dd_yyyy as fmt_date_fn
+            from scraper.county.health import build_health_search_url as build_search_url_fn
+            from scraper.county.health import extract_health_meetings as extract_meetings_fn
+            from scraper.county.health import extract_health_agenda_items as extract_items_fn
+            from scraper.county.health import _format_mm_dd_yyyy as fmt_date_fn
         elif args.source == "tab":
             CID = "11,"
             source_body = "tab"
             source_type = "Transportation Advisory Board"
             source_label = "TAB"
-            from scraper.tab import build_tab_search_url as build_search_url_fn
-            from scraper.tab import extract_tab_meetings as extract_meetings_fn
-            from scraper.tab import extract_tab_agenda_items as extract_items_fn
-            from scraper.tab import _format_mm_dd_yyyy as fmt_date_fn
+            from scraper.county.tab import build_tab_search_url as build_search_url_fn
+            from scraper.county.tab import extract_tab_meetings as extract_meetings_fn
+            from scraper.county.tab import extract_tab_agenda_items as extract_items_fn
+            from scraper.county.tab import _format_mm_dd_yyyy as fmt_date_fn
         elif args.source == "ida":
             CID = ""
             source_body = "ida"
             source_type = "Industrial Development Authority"
             source_label = "IDA"
-            from scraper.ida import extract_ida_meetings as extract_meetings_fn
-            from scraper.ida import extract_ida_agenda_items as extract_items_fn
+            from scraper.county.ida import extract_ida_meetings as extract_meetings_fn
+            from scraper.county.ida import extract_ida_agenda_items as extract_items_fn
 
             # IDA is a static page — no search URL or date formatting needed
             def fmt_date_fn(x): return x
@@ -4122,7 +4301,7 @@ async def main() -> int:
             source_body = "tempe-cc"
             source_type = "City Council"
             source_label = "Tempe"
-            from scraper.tempe import (
+            from scraper.jurisdictions.tempe import (
                 search_tempe_meetings as extract_meetings_fn,
                 extract_tempe_agenda_items as extract_items_fn,
                 normalize_tempe_meeting_title as normalize_title_fn,
@@ -4130,7 +4309,7 @@ async def main() -> int:
                 PUBLIC_BODY_CODE,
             )
             def fmt_date_fn(x): return x
-            from scraper.onbase import TEMPE_CONFIG
+            from scraper.platforms.onbase import TEMPE_CONFIG
             def build_search_url_fn(start, end): return TEMPE_CONFIG.build_search_url(start, end)
 
         # If --meeting-id is provided, bypass search and use direct meeting URL
@@ -4319,7 +4498,7 @@ async def main() -> int:
                             try:
                                 import urllib.request
                                 from pathlib import Path
-                                from scraper.pz_minutes import parse_pz_minutes_pdf
+                                from scraper.common.pz_minutes import parse_pz_minutes_pdf
                                 from db import persist_votes
 
                                 pdf_req = urllib.request.Request(
@@ -4536,7 +4715,7 @@ async def main() -> int:
     if args.source in ("all", "all-jurisdictions") and args.sync:
         import subprocess as _sp
         import sys as _sys
-        cmd = [_sys.executable, "scripts/daily_sync.py"]
+        cmd = [_sys.executable, "scripts/run_pipeline.py"]
         if getattr(args, "limit", None):
             print(f"Note: daily sync ignores --limit={args.limit}; run individual jurisdictions for limits")
         print(f"\nSync will take ~4 minutes (32 jurisdictions, ~8s each). Output streams below:\n")
@@ -5273,7 +5452,7 @@ async def main() -> int:
         return 0
 
     # Standalone --sync-votes: re-run vote extraction for already-synced meetings
-    if args.sync_votes:
+    if getattr(args, "sync_votes", False):
         from db import get_session, init_db, persist_votes
 
         init_db()

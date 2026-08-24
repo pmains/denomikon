@@ -1,24 +1,24 @@
 """Maricopa Agenda Scraper Package."""
-from scraper.utils import *
-from scraper.onbase import *
-from scraper.models import *
-from scraper.html_utils import *
+from scraper.common.utils import *
+from scraper.platforms.onbase import *
+from scraper.common.models import *
+from scraper.common.html_utils import *
 from scraper.cli import *
-from scraper.search import *
-from scraper.pz import *
-from scraper.pz_minutes import *
-from scraper.adj import *
-from scraper.drain import *
-from scraper.health import *
-from scraper.tab import *
-from scraper.ida import *
-from scraper.agendacenter import *
-from scraper.tempe import *
-from scraper.tucson import *
-from scraper.agenda_items import *
-from scraper.supporting_docs import *
-from scraper.votes import *
-from scraper.io_utils import *
+from scraper.common.search import *
+from scraper.county.pz import *
+from scraper.common.pz_minutes import *
+from scraper.county.adj import *
+from scraper.county.drain import *
+from scraper.county.health import *
+from scraper.county.tab import *
+from scraper.county.ida import *
+from scraper.platforms.agendacenter import *
+from scraper.jurisdictions.tempe import *
+from scraper.jurisdictions.tucson import *
+from scraper.common.agenda_items import *
+from scraper.common.supporting_docs import *
+from scraper.common.votes import *
+from scraper.common.io_utils import *
 from scraper.main import main
 from scraper.main import (
     write_agenda_debug_files,
@@ -30,19 +30,19 @@ from scraper.main import (
 )
 
 # Explicitly import _-prefixed names (not exported by import *)
-from scraper.html_utils import _clean_html_text, _closest_parent, _find_all, _find_one, _has_class, _node_text, _parse_html, _search_results_table_present
-from scraper.agenda_items import _build_item_url, _clean_line, _clean_lnk_title, _detect_vote_or_action, _extract_lnk_from_table, _find_item_tables, _looks_like_boilerplate, _looks_like_item_heading, _looks_like_section_heading, _raw_block_boilerplate_reason
-from scraper.utils import _extract_c_number
-from scraper.io_utils import _normalize_text_date
-from scraper.pz import _format_mm_dd_yyyy, _normalize_pz_meeting_title, _extract_pz_year_tabs_from_html
-from scraper.adj import _extract_adj_year_tabs_from_html, _normalize_adj_meeting_title
-from scraper.drain import _extract_drain_year_tabs_from_html
-from scraper.health import _extract_health_year_tabs_from_html
-from scraper.tab import _extract_tab_year_tabs_from_html
-from scraper.agendacenter import _extract_year_tabs_from_html
-from scraper.agendacenter import _format_mm_dd_yyyy as _format_mcacc_mm_dd_yyyy
-from scraper.supporting_docs import _extract_supporting_docs_from_table
-from scraper.onbase import (
+from scraper.common.html_utils import _clean_html_text, _closest_parent, _find_all, _find_one, _has_class, _node_text, _parse_html, _search_results_table_present
+from scraper.common.agenda_items import _build_item_url, _clean_line, _clean_lnk_title, _detect_vote_or_action, _extract_lnk_from_table, _find_item_tables, _looks_like_boilerplate, _looks_like_item_heading, _looks_like_section_heading, _raw_block_boilerplate_reason
+from scraper.common.utils import _extract_c_number
+from scraper.common.io_utils import _normalize_text_date
+from scraper.county.pz import _format_mm_dd_yyyy, _normalize_pz_meeting_title, _extract_pz_year_tabs_from_html
+from scraper.county.adj import _extract_adj_year_tabs_from_html, _normalize_adj_meeting_title
+from scraper.county.drain import _extract_drain_year_tabs_from_html
+from scraper.county.health import _extract_health_year_tabs_from_html
+from scraper.county.tab import _extract_tab_year_tabs_from_html
+from scraper.platforms.agendacenter import _extract_year_tabs_from_html
+from scraper.platforms.agendacenter import _format_mm_dd_yyyy as _format_mcacc_mm_dd_yyyy
+from scraper.common.supporting_docs import _extract_supporting_docs_from_table
+from scraper.platforms.onbase import (
     OnBaseConfig,
     OnBaseAgendaClient,
     TEMPE_CONFIG,

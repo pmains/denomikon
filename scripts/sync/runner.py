@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Parallel sync runner — replaces daily_sync.py.
+Parallel sync runner — replaces run_pipeline.py.
 
 Called by pipeline.sh (via nohup).  Handles resource-based batching,
 DB health check, per-jurisdiction subprocess sync, post-sync tasks,
@@ -83,6 +83,8 @@ GROUP_B: list[tuple[str, list[str]]] = [
 GROUP_C: list[tuple[str, list[str]]] = [
     ("phoenix-rss", []),
     ("phoenix-aem", []),
+    ("phoenix-planning", []),
+    ("phoenix-aem-results", []),
     ("avondale", []),
     ("tolleson", []),
     ("fountain-hills", []),
@@ -113,13 +115,13 @@ GOODYEAR_WEEKLY_BODIES = [
     "goodyear-public-art"
 ]
 
-# ── ALL jurisdictions from daily_sync.py for coverage verification ──
+# ── ALL jurisdictions from run_pipeline.py for coverage verification ──
 ALL_TIER_JURISDICTIONS = {
     # Tier 1
     "chandler", "tempe", "tempe-subcommittees",
     # Tier 2
     "bos", "pz", "adj", "health", "drain", "tab", "ida",
-    "mesa", "phoenix-rss", "phoenix-aem", "scottsdale", "scottsdale-boards",
+    "mesa", "phoenix-rss", "phoenix-aem", "phoenix-aem-results", "phoenix-planning", "scottsdale", "scottsdale-boards",
     "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk",
     "gilbert", "gilbert-planning", "tucson", "tucson-pc", "avondale",
     "goodyear", "el-mirage", "paradise-valley", "fountain-hills",
@@ -128,7 +130,7 @@ ALL_TIER_JURISDICTIONS = {
 }
 
 # ── Jurisdictions that don't accept --start-date/--end-date ──
-NO_DATE_ARGS = {"tempe-subcommittees"}
+NO_DATE_ARGS = {"tempe-subcommittees", "phoenix-planning", "phoenix-aem-results"}
 
 
 # ── Helpers ──
@@ -366,7 +368,7 @@ def _print_plan(tier: str) -> None:
 
 
 def _verify_coverage() -> None:
-    """Verify all jurisdictions from daily_sync.py are covered."""
+    """Verify all jurisdictions from run_pipeline.py are covered."""
     configured = set()
     for group in [GROUP_A, GROUP_B, GROUP_C, GROUP_D]:
         for juris, _ in group:
@@ -378,13 +380,13 @@ def _verify_coverage() -> None:
     if missing:
         print()
         log.warning(
-            "Jurisdictions from daily_sync.py NOT in any group: %s",
+            "Jurisdictions from run_pipeline.py NOT in any group: %s",
             ", ".join(sorted(missing)),
         )
     if extra:
         print()
         log.info(
-            "Additional jurisdictions in groups (not in daily_sync.py tiers): %s",
+            "Additional jurisdictions in groups (not in run_pipeline.py tiers): %s",
             ", ".join(sorted(extra)),
         )
     if not missing:

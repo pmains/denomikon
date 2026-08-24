@@ -4,11 +4,11 @@ import argparse
 import datetime as dt
 import sys
 
-from scraper.utils import log
+from scraper.common.utils import log
 
 def _print_top_level_help() -> None:
     """Print a comprehensive help message listing all supported boards, then exit."""
-    print("usage: agenda_scraper.py <subcommand> [options]")
+    print("usage: scrape_agendas.py <subcommand> [options]")
     print()
     print("Scrape meeting materials from Maricopa County and City of Tempe public governance boards.")
     print()
@@ -34,7 +34,7 @@ def _print_top_level_help() -> None:
     print("  tucson    City of Tucson (Mayor & Council via OnBase; Planning via listing page)")
     print("  wickenburg Town of Wickenburg (Common Council, P&Z, boards via Destiny/AgendaQuick)")
     print("  apache-junction  City of Apache Junction (Council, P&Z, boards via Legistar)")
-    print("  all       Sync ALL jurisdictions (32 cities + county boards via daily_sync.py)")
+    print("  all       Sync ALL jurisdictions (32 cities + county boards via run_pipeline.py)")
     print("  mag       Maricopa Association of Governments (MAG) committees (via browser)")
     print()
     print("Deprecated/Legacy:")
@@ -425,7 +425,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("hearings", "maricopa", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "gilbert-planning", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-novusagenda", "goodyear", "el-mirage", "wickenburg", "paradise-valley", "queen-creek", "fountain-hills", "apache-junction", "mcacc", "mag", "phoenix", "phoenix-rss", "phoenix-aem", "tempe-subcommittees", "tolleson", "tucson", "tucson-pc", "valley-metro", "all", "all-jurisdictions"):
+    if rest and rest[0] in ("hearings", "maricopa", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "gilbert-planning", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-novusagenda", "goodyear", "el-mirage", "wickenburg", "paradise-valley", "queen-creek", "fountain-hills", "apache-junction", "mcacc", "mag", "phoenix", "phoenix-rss", "phoenix-aem", "phoenix-aem-results", "phoenix-planning", "tempe-subcommittees", "tolleson", "tucson", "tucson-pc", "valley-metro", "all", "all-jurisdictions"):
         source = rest.pop(0)
 
     if source == "valley-metro":
@@ -568,6 +568,10 @@ def _parse_phoenix_aem_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--limit", type=int, default=0, help="Max meetings to fetch (0 = all)")
     p.add_argument("--force", action="store_true", help="Re-sync meetings even if sync_status = complete")
     p.add_argument("--download", action="store_true", help="Download PDF notices")
+    p.add_argument("--extract-pdf", action="store_true", default=True,
+                   help="Extract agenda items from notice PDFs")
+    p.add_argument("--no-extract-pdf", action="store_false", dest="extract_pdf",
+                   help="Skip PDF extraction for notice meetings")
     p.add_argument("--init-db", action="store_true", help="Create database tables")
     p.add_argument("--status", action="store_true", help="Print summary counts of meetings by sync_status")
     p.add_argument("--failed", action="store_true", help="List failed/partial meetings with errors")
@@ -860,7 +864,7 @@ def _parse_tempe_args(rest: list[str]) -> argparse.Namespace:
 
 def _parse_mcacc_args(rest: list[str]) -> argparse.Namespace:
     """Parse MCACC (Maricopa County AgendaCenter boards) arguments."""
-    from scraper.agendacenter import MCACC_BODY_CODES, body_code_to_name
+    from scraper.platforms.agendacenter import MCACC_BODY_CODES, body_code_to_name
     default_bodies = ",".join(MCACC_BODY_CODES)
     p = argparse.ArgumentParser(
         description="Scrape Maricopa County AgendaCenter boards (mcacc)",
@@ -900,7 +904,7 @@ def _parse_mcacc_args(rest: list[str]) -> argparse.Namespace:
 
 def _parse_mag_args(rest: list[str]) -> argparse.Namespace:
     """Parse MAG (Maricopa Association of Governments) arguments."""
-    from scraper.mag import COMMITTEES
+    from scraper.common.mag import COMMITTEES
     default_cids = ",".join(str(c) for c in sorted(COMMITTEES.keys()))
     p = argparse.ArgumentParser(
         description="Scrape MAG committee meetings (mag)",
@@ -956,7 +960,14 @@ def _parse_mesa_args(rest: list[str]) -> argparse.Namespace:
     p.add_argument("--leg-limit", type=int, default=0, help="Max legislation detail pages to fetch per meeting (0=all)")
     p.add_argument("--download", action="store_true", help="Download agenda PDF files")
     p.add_argument("--persist", action="store_true", default=False, help=argparse.SUPPRESS)
-    from scraper.mesa import DEFAULT_BODY_SLUGS
+    p.add_argument("--sync-votes", action="store_true", help="Extract vote results from meeting summaries")
+    p.add_argument("--extract-agenda-items", action="store_true", help="Extract agenda items from stored HTML agenda pages")
+    p.add_argument("--extract-raw-agenda-blocks", action="store_true", help="Extract raw agenda-item blocks from stored HTML agenda pages")
+    p.add_argument("--split-raw-agenda-blocks", action="store_true", help="Split raw agenda blocks into structured agenda items")
+    p.add_argument("--debug-agenda-html", action="store_true", help="Write diagnostics for the first agenda HTML page selected for item extraction")
+    p.add_argument("--count-agenda-items", action="store_true", help="Visit agenda pages, count items, and print a summary table")
+    p.add_argument("--list-agenda-items", action="store_true", help="Visit agenda pages and list numbered items with titles")
+    from scraper.jurisdictions.mesa import DEFAULT_BODY_SLUGS
     _default_bodies_help = ",".join(DEFAULT_BODY_SLUGS)
     p.add_argument("--bodies", help=f"Body slugs to sync (comma-separated), e.g. mesa-city-council,mesa-planning-zoning (default: {_default_bodies_help})")
     args = p.parse_args(rest)

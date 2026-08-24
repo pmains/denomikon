@@ -108,7 +108,7 @@ python scripts/permit_scraper.py --summary --by month                        # A
 
 ```bash
 python app.py
-# Opens at http://127.0.0.1:5000/meetings
+# Opens at http://127.0.0.1:5001/meetings
 ```
 
 Browse meetings and permits in a Bootstrap 5 table with sync status badges,
@@ -427,7 +427,7 @@ WARNING:/permits 1.4s
 ### Benchmarking
 
 ```bash
-# Requires the Flask app to be running on :5000
+# Requires the Flask app to be running on :5001
 python scripts/benchmark.py
 ```
 

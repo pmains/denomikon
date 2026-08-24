@@ -24,7 +24,7 @@ class TestPZMinutesParsing(unittest.TestCase):
     def _extract(self, meeting_id: str, date_str: str) -> tuple:
         """Extract text, commissioners, and votes from a minutes PDF."""
         pdf_path = self._pdf_path(meeting_id, date_str)
-        from scraper.pz_minutes import (
+        from scraper.common.pz_minutes import (
             extract_minutes_text, parse_commissioners, parse_minutes_votes,
         )
         text = extract_minutes_text(pdf_path)
@@ -68,6 +68,6 @@ class TestPZMinutesParsing(unittest.TestCase):
 
     def test_minutes_not_yet_available_handles_gracefully(self):
         """Non-existent file returns empty text."""
-        from scraper.pz_minutes import extract_minutes_text
+        from scraper.common.pz_minutes import extract_minutes_text
         text = extract_minutes_text("/tmp/nonexistent_file.pdf")
         self.assertIsNone(text, "Extracting non-existent file should return None")

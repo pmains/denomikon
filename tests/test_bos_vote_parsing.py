@@ -39,7 +39,7 @@ def _simulate_vote_parsing(text: str, agenda_items: list[dict]) -> tuple[list[di
     This mirrors the logic inside extract_votes_from_summary after the
     page.evaluate() call, operating on the extracted text directly.
     """
-    from scraper.votes import detect_split_vote as _unused
+    from scraper.common.votes import detect_split_vote as _unused
 
     _raw = text  # Keep original for context-sensitive filters
     text_normalized = text.replace("\xa0", " ")

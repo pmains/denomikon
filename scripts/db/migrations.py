@@ -48,6 +48,7 @@ def init_db() -> None:
     _migrate_col(engine, "agenda_item_votes", "is_split_vote", "BOOLEAN DEFAULT NULL")
     _migrate_col(engine, "agenda_item_votes", "unanimous", "BOOLEAN DEFAULT NULL")
     _migrate_col(engine, "agenda_item_votes", "majority_position", "VARCHAR(16) DEFAULT NULL")
+    _migrate_col(engine, "agenda_items", "lifecycle_status", "VARCHAR(32) DEFAULT NULL")
     # supervisor_votes was migrated to member_votes — table no longer exists
     _migrate_table("public_body_members")
     _migrate_table("meeting_attendance")
@@ -1366,7 +1367,7 @@ def _normalize_existing_meeting_dates(engine: Optional[Engine] = None) -> None:
     Mesa stores "9/9/2025" (M/D/YYYY format).
     Fix both to ISO 8601.
     """
-    from scraper.io_utils import _normalize_text_date, normalize_meeting_date
+    from scraper.common.io_utils import _normalize_text_date, normalize_meeting_date
     if engine is None:
         engine = get_engine()
     session = Session(engine)

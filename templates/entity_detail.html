@@ -213,7 +213,7 @@
               <a href="{{ url_for('entities.entity_detail', entity_id=r[0]) }}">{{ r[1] }}</a>
               <small class="text-muted">({{ r[2]|replace('_', ' ')|title }})</small>
             </td>
-            <td><code>{{ r[3] }}</code></td>
+            <td>{{ r[3]|rel_label }}</td>
             <td>
               <a href="{{ url_for('entities.entity_detail', entity_id=r[4]) }}">{{ r[5] }}</a>
               <small class="text-muted">({{ r[6]|replace('_', ' ')|title }})</small>

@@ -107,7 +107,7 @@ def _build_year_client_state(year: str) -> str:
 
 # ── Parsing helpers ──
 
-from scraper.html_utils import _parse_html, _find_all, _clean_html_text, _node_text
+from scraper.common.html_utils import _parse_html, _find_all, _clean_html_text, _node_text
 
 
 def _text(node) -> str:

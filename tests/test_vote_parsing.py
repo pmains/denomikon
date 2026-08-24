@@ -587,7 +587,7 @@ class TestSummaryDOMNameParsing(unittest.TestCase):
     """
 
     def setUp(self):
-        from scraper.summary_dom import _AYES_RE, _NAYS_RE, _ABSENT_RE, _parse_names
+        from scraper.common.summary_dom import _AYES_RE, _NAYS_RE, _ABSENT_RE, _parse_names
         self._AYES_RE = _AYES_RE
         self._NAYS_RE = _NAYS_RE
         self._ABSENT_RE = _ABSENT_RE

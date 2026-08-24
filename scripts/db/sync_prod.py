@@ -22,6 +22,7 @@ Environment:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -29,7 +30,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from sqlalchemy import create_engine, inspect as sa_inspect, text
+from sqlalchemy import Engine, Connection, create_engine, inspect as sa_inspect, text
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,6 +51,9 @@ ALL_SYNC_TABLES = [
     "body_seats",
     "case_events",
     "cases",
+    "entities",
+    "entity_mentions",
+    "entity_relationships",
     "executive_session_participants",
     "jurisdictions",
     "meeting_attendance",
@@ -60,10 +64,20 @@ ALL_SYNC_TABLES = [
     "public_bodies",
     "pz_item_details",
     "supporting_documents",
+    # Event tables (Phase 5/6) — FK order: types → events → extractions → participants
+    "meeting_event_types",
+    "meeting_events",
+    "meeting_event_extractions",
+    "event_participants",
 ]
 
 # Tables that should always do a full sync (no updated_at, or very small)
-FULL_SYNC_TABLES: set[str] = set()
+# entity_mentions has no updated_at column — always do full sync
+# Event tables have no updated_at column — always full-sync
+_EVENT_TABLES = {"meeting_event_types", "meeting_event_extractions",
+                 "meeting_events", "event_participants"}
+
+FULL_SYNC_TABLES: set[str] = _EVENT_TABLES | set()
 
 # Auto-generated / derived columns to exclude from sync
 AUTO_COLUMNS: dict[str, set[str]] = {
@@ -143,6 +157,7 @@ def _ensure_updated_at_on_prod(prod_engine):
     needs_updated_at = [
         "agenda_items",
         "case_events",
+        "entity_mentions",
     ]
     for table in needs_updated_at:
         if _table_has_updated_at(prod_engine, table):
@@ -158,6 +173,110 @@ def _ensure_updated_at_on_prod(prod_engine):
                 "WHERE updated_at != created_at"
             ))
         log.info("    done")
+
+
+def _ensure_event_tables(prod_engine):
+    """Create Phase 5/6 event tables on prod if they don't exist."""
+    inspector = sa_inspect(prod_engine)
+    existing = set(inspector.get_table_names())
+    needed = {"meeting_event_types", "meeting_events",
+              "meeting_event_extractions", "event_participants"}
+    if needed <= existing:
+        return
+
+    log.info("  Creating event tables on prod...")
+    SCHEMA_SQL = """
+        CREATE TABLE IF NOT EXISTS meeting_event_types (
+            id              SERIAL PRIMARY KEY,
+            slug            VARCHAR(64) NOT NULL UNIQUE,
+            parent_slug     VARCHAR(64) REFERENCES meeting_event_types(slug),
+            event_type      VARCHAR(64) NOT NULL,
+            display_name    VARCHAR(128) NOT NULL,
+            description     TEXT
+        );
+        CREATE TABLE IF NOT EXISTS meeting_events (
+            id                  SERIAL PRIMARY KEY,
+            meeting_id          VARCHAR(64) NOT NULL,
+            supporting_doc_id   INTEGER REFERENCES supporting_documents(id),
+            agenda_item_id      INTEGER REFERENCES agenda_items(id),
+            event_type_id       INTEGER NOT NULL REFERENCES meeting_event_types(id),
+            outcome             VARCHAR(64) NOT NULL,
+            action_verb         VARCHAR(256) NOT NULL,
+            text_offset_start   INTEGER,
+            text_offset_end     INTEGER,
+            case_number         VARCHAR(32),
+            created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS ix_meeting_events_meeting ON meeting_events(meeting_id);
+        CREATE INDEX IF NOT EXISTS ix_meeting_events_type ON meeting_events(event_type_id);
+        CREATE INDEX IF NOT EXISTS ix_meeting_events_case ON meeting_events(case_number);
+        CREATE TABLE IF NOT EXISTS meeting_event_extractions (
+            id                  SERIAL PRIMARY KEY,
+            meeting_event_id    INTEGER REFERENCES meeting_events(id) ON DELETE SET NULL,
+            extractor           VARCHAR(16) NOT NULL DEFAULT 'pattern',
+            extractor_version   VARCHAR(32),
+            raw_text            TEXT NOT NULL,
+            confidence          REAL NOT NULL DEFAULT 0.0,
+            created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+            supporting_doc_id   INTEGER REFERENCES supporting_documents(id),
+            action_verb         VARCHAR(256),
+            text_offset_start   INTEGER,
+            text_offset_end     INTEGER,
+            case_number         VARCHAR(32)
+        );
+        CREATE INDEX IF NOT EXISTS ix_meeting_event_extractions_event
+            ON meeting_event_extractions(meeting_event_id);
+        CREATE INDEX IF NOT EXISTS ix_meeting_event_extractions_extractor
+            ON meeting_event_extractions(extractor);
+        CREATE TABLE IF NOT EXISTS event_participants (
+            meeting_event_id    INTEGER NOT NULL REFERENCES meeting_events(id) ON DELETE CASCADE,
+            entity_id           INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+            role_in_event       VARCHAR(64) NOT NULL,
+            confidence          REAL NOT NULL DEFAULT 0.0,
+            PRIMARY KEY (meeting_event_id, entity_id, role_in_event)
+        );
+        CREATE INDEX IF NOT EXISTS ix_event_participants_entity
+            ON event_participants(entity_id);
+    """
+    with prod_engine.begin() as c:
+        for stmt in SCHEMA_SQL.split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                c.execute(text(stmt))
+
+    # Insert taxonomy if empty
+    with prod_engine.connect() as c:
+        count = c.execute(text("SELECT COUNT(*) FROM meeting_event_types")).scalar()
+    if count == 0:
+        log.info("  Inserting event taxonomy...")
+        TAXONOMY_SQL = """
+            INSERT INTO meeting_event_types (slug, parent_slug, event_type, display_name, description)
+            VALUES
+                ('decision',        NULL,  'decision',     'Decision',     'Any decision'),
+                ('legislation',     NULL,  'legislation',  'Legislation',  'Legislative actions'),
+                ('administration',  NULL,  'administration','Administration','Admin actions'),
+                ('procedure',       NULL,  'procedure',    'Procedure',    'Procedural actions'),
+                ('decision.approval',       'decision', 'approval',     'Approval',         ''),
+                ('decision.denial',         'decision', 'denial',       'Denial',           ''),
+                ('decision.continuation',   'decision', 'continuation', 'Continuation',     ''),
+                ('legislation.adoption',    'legislation', 'adoption',  'Adoption',         ''),
+                ('legislation.introduction','legislation', 'introduction','Introduction',    ''),
+                ('legislation.amendment',   'legislation', 'amendment',  'Amendment',        ''),
+                ('administration.appointment','administration','appointment','Appointment',   ''),
+                ('administration.removal',  'administration', 'removal',   'Removal',        ''),
+                ('administration.resignation','administration','resignation','Resignation',   ''),
+                ('procedure.discussion',         'procedure', 'discussion',   'Discussion',   ''),
+                ('procedure.public_hearing',     'procedure', 'public_hearing','Public Hearing',''),
+                ('procedure.executive_session',  'procedure', 'executive_session','Exec Session',''),
+                ('procedure.receipt',            'procedure', 'receipt',     'Received',     '')
+            ON CONFLICT (slug) DO NOTHING;
+        """
+        with prod_engine.begin() as c:
+            for stmt in TAXONOMY_SQL.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    c.execute(text(stmt))
+    log.info("  Event tables ready.")
 
 
 # ── Sync metadata (_sync_meta table on prod) ──
@@ -232,60 +351,145 @@ def _detect_secondary_uniques(engine, table: str) -> list[list[str]]:
 
 
 def _cleanup_secondary_conflicts(
-    prod_engine, table: str,
+    prod_engine: Engine,
+    table: str,
     chunk_rows: list[dict],
     secondary_uniques: list[list[str]],
     pk_cols: list[str],
-):
+) -> None:
+    """Delete prod rows that conflict with incoming chunk rows on secondary unique constraints.
+
+    Secondary uniques are indexes like UNIQUE(body, meeting_id) that aren't the
+    primary key. When a chunk row has the same unique value(s) as an existing
+    prod row but a different PK, the prod row must be removed so the upsert
+    succeeds without a unique-violation error.
+
+    Single-column uniques are batched into one DELETE with IN (...).
+    Multi-column uniques use a VALUES subquery for a single DELETE pass.
+    """
     if not secondary_uniques or not chunk_rows:
         return
-    with prod_engine.begin() as c:
-        for uq_cols in secondary_uniques:
-            if len(uq_cols) == 1:
-                uq_col = uq_cols[0]
-                pk_col = pk_cols[0]
-                values = [row[uq_col] for row in chunk_rows if row.get(uq_col) is not None]
-                pks = [row[pk_col] for row in chunk_rows if row.get(uq_col) is not None]
-                if not values:
-                    continue
-                placeholders_val = ", ".join(f":v{i}" for i in range(len(values)))
-                placeholders_pk = ", ".join(f":p{i}" for i in range(len(pks)))
-                params = {}
-                for i, v in enumerate(values):
-                    params[f"v{i}"] = v
-                for i, p in enumerate(pks):
-                    params[f"p{i}"] = p
-                deleted = c.execute(
-                    text(
-                        f'DELETE FROM public."{table}"\n'
-                        f' WHERE "{uq_col}" IN ({placeholders_val})\n'
-                        f'   AND "{pk_col}" NOT IN ({placeholders_pk})'
-                    ),
-                    params,
-                ).rowcount
-                if deleted:
-                    log.info("    ─ cleaned %d prod row(s) for %s", deleted, uq_cols)
+
+    with prod_engine.begin() as connection:
+        for unique_columns in secondary_uniques:
+            if len(unique_columns) == 1:
+                _cleanup_single_column_unique(
+                    connection, table, chunk_rows, unique_columns, pk_cols,
+                )
             else:
-                for row in chunk_rows:
-                    match = " AND ".join(
-                        f'"{c}" = :_{i}' for i, c in enumerate(uq_cols)
-                    )
-                    not_pk = " OR ".join(
-                        f'"{c}" <> :_{len(uq_cols) + i}' for i, c in enumerate(pk_cols)
-                    )
-                    params = {}
-                    for i, col in enumerate(uq_cols):
-                        params[f"_{i}"] = row[col]
-                    for i, col in enumerate(pk_cols):
-                        params[f"_{len(uq_cols) + i}"] = row[col]
-                    deleted = c.execute(
-                        text(
-                            f'DELETE FROM public."{table}"\n'
-                            f' WHERE {match}\n'
-                            f'   AND ({not_pk})'
-                        ),
-                        params,
-                    ).rowcount
+                _cleanup_multi_column_unique(
+                    connection, table, chunk_rows, unique_columns, pk_cols,
+                )
+
+
+def _cleanup_single_column_unique(
+    connection: Connection,
+    table: str,
+    chunk_rows: list[dict],
+    unique_columns: list[str],
+    pk_cols: list[str],
+) -> None:
+    """Delete prod rows conflicting on a single-column UNIQUE constraint.
+
+    Builds one DELETE: WHERE unique_col IN (..., chunk_values)
+      AND pk NOT IN (..., chunk_pks)
+    """
+    unique_col = unique_columns[0]
+    pk_col = pk_cols[0]
+
+    values = [row[unique_col] for row in chunk_rows if row.get(unique_col) is not None]
+    pks = [row[pk_col] for row in chunk_rows if row.get(unique_col) is not None]
+    if not values:
+        return
+
+    value_placeholders = ", ".join(f":v{idx}" for idx in range(len(values)))
+    pk_placeholders = ", ".join(f":p{idx}" for idx in range(len(pks)))
+
+    params: dict = {}
+    for idx, val in enumerate(values):
+        params[f"v{idx}"] = val
+    for idx, pk in enumerate(pks):
+        params[f"p{idx}"] = pk
+
+    deleted = connection.execute(
+        text(
+            f'DELETE FROM public."{table}"'
+            f' WHERE "{unique_col}" IN ({value_placeholders})'
+            f'   AND "{pk_col}" NOT IN ({pk_placeholders})'
+        ),
+        params,
+    ).rowcount
+
+    if deleted:
+        log.info("    ─ cleaned %d prod row(s) for %s", deleted, unique_columns)
+
+
+def _cleanup_multi_column_unique(
+    connection: Connection,
+    table: str,
+    chunk_rows: list[dict],
+    unique_columns: list[str],
+    pk_cols: list[str],
+) -> None:
+    """Delete prod rows conflicting on a multi-column UNIQUE constraint.
+
+    Builds one DELETE using a VALUES subquery for the chunk's unique-key tuples.
+    Original code deleted one row at a time (O(n) round-trips). This batch
+    version does one round-trip per chunk.
+
+    Produces SQL like:
+      DELETE FROM t
+      USING (VALUES (:v0, :v1), (:v2, :v3)) AS v(uq_col1, uq_col2, pk_col)
+      WHERE t.uq_col1 = v.uq_col1 AND t.uq_col2 = v.uq_col2
+        AND NOT (t.pk_col = v.pk_col)
+    """
+    # Filter out rows with NULL in any unique column — can't conflict
+    valid_rows = [
+        row for row in chunk_rows
+        if all(row.get(column) is not None for column in unique_columns)
+    ]
+    if not valid_rows:
+        return
+
+    # Build column names for the VALUES subquery
+    uq_param_names = [f"uq_{column}" for column in unique_columns]
+    pk_param_names = [f"pk_{column}" for column in pk_cols]
+    all_param_names = uq_param_names + pk_param_names
+
+    # Build VALUES clause: (:uq_col1_0, :uq_col2_0, :pk_id_0), (..._1), ...
+    values_rows = ", ".join(
+        "(" + ", ".join(f":{name}_{row_idx}" for name in all_param_names) + ")"
+        for row_idx in range(len(valid_rows))
+    )
+    subquery_columns = ", ".join(all_param_names)
+
+    # Build WHERE clause: table.unique_col = subquery.unique_col
+    match_conditions = " AND ".join(
+        f't."{column}" = v.{uq_param_names[col_idx]}'
+        for col_idx, column in enumerate(unique_columns)
+    )
+    exclude_conditions = " AND ".join(
+        f't."{column}" = v.{pk_param_names[col_idx]}'
+        for col_idx, column in enumerate(pk_cols)
+    )
+
+    params: dict = {}
+    for row_idx, row in enumerate(valid_rows):
+        for col_idx, column in enumerate(unique_columns):
+            params[f"uq_{column}_{row_idx}"] = row[column]
+        for col_idx, column in enumerate(pk_cols):
+            params[f"pk_{column}_{row_idx}"] = row[column]
+
+    sql = (
+        f'DELETE FROM public."{table}" t'
+        f' USING (VALUES {values_rows}) AS v({subquery_columns})'
+        f' WHERE {match_conditions}'
+        f'   AND NOT ({exclude_conditions})'
+    )
+
+    deleted = connection.execute(text(sql), params).rowcount
+    if deleted:
+        log.info("    ─ cleaned %d prod row(s) for %s", deleted, unique_columns)
 
 
 # ── Table sync (incremental) ──
@@ -425,7 +629,7 @@ def _upsert_table(
                                 f'  VALUES ({", ".join(f":{k}" for k in row.keys())})\n'
                                 f"  {conflict_clause}"
                             ),
-                            dict(row),
+                            {k: json.dumps(v) if isinstance(v, dict) else v for k, v in dict(row).items()},
                         )
                 except Exception as e2:
                     row_id = row.get("id", "?")
@@ -602,6 +806,7 @@ def main():
         log.info("── Bootstrap ──")
         _ensure_sync_meta_table(prod_engine)
         _ensure_updated_at_on_prod(prod_engine)
+        _ensure_event_tables(prod_engine)
 
         # ── 3. Upsert each table ──
         run_type = "full" if is_full_sync else "incremental"

@@ -40,7 +40,7 @@ class TestAgendaHtmlParsing(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from scraper.onbase import parse_agenda_html
+        from scraper.platforms.onbase import parse_agenda_html
         html = _load_fixture("1852_agenda.html")
         cls.items = parse_agenda_html(html, "1852", "tempe-cc")
 
@@ -65,7 +65,7 @@ class TestSortOrder(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from scraper.onbase import parse_agenda_html
+        from scraper.platforms.onbase import parse_agenda_html
         html = _load_fixture("1852_agenda.html")
         items = parse_agenda_html(html, "1852", "tempe-cc")
         # Build a list for positional index comparison
@@ -101,8 +101,8 @@ class TestConsentNonConsentLabels(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from scraper.onbase import parse_agenda_html
-        from scraper.tempe import _assign_tempe_categories
+        from scraper.platforms.onbase import parse_agenda_html
+        from scraper.jurisdictions.tempe import _assign_tempe_categories
         html = _load_fixture("1852_agenda.html")
         items = parse_agenda_html(html, "1852", "tempe-cc")
         _assign_tempe_categories(items)
@@ -141,7 +141,7 @@ class TestSummaryVoteParsing(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from scraper.tempe_summary import parse_summary_text
+        from scraper.jurisdictions.tempe_summary import parse_summary_text
         text = _load_fixture("1687_summary.txt")
         cls.result = parse_summary_text(text)
 
@@ -197,7 +197,7 @@ class TestSummaryItemResults(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from scraper.tempe_summary import parse_summary_text
+        from scraper.jurisdictions.tempe_summary import parse_summary_text
         text = _load_fixture("1687_summary.txt")
         cls.result = parse_summary_text(text)
 
@@ -228,7 +228,7 @@ class TestCanceledMeetingDetection(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from scraper.onbase import parse_agenda_html
+        from scraper.platforms.onbase import parse_agenda_html
         cls.html = _load_fixture("1779_canceled.html")
 
         # Check: valid meeting page has an <h1> with title (allow newlines inside)
@@ -316,7 +316,7 @@ class TestVotePersistence(unittest.TestCase):
         return item
 
     def test_persist_full_vote_set(self):
-        from scraper.tempe_summary import parse_summary_text
+        from scraper.jurisdictions.tempe_summary import parse_summary_text
         from db import get_session, persist_votes, AgendaItemVote, MemberVote
         from sqlalchemy import select, func
 
@@ -382,7 +382,7 @@ class TestVotePersistenceReplacesOnResync(unittest.TestCase):
         _dc.set_database_url(self._saved_db_url)
 
     def test_resync_replaces_votes(self):
-        from scraper.tempe_summary import parse_summary_text
+        from scraper.jurisdictions.tempe_summary import parse_summary_text
         from db import get_session, persist_votes, AgendaItemVote
         from sqlalchemy import select, func
 
@@ -433,20 +433,20 @@ class TestMeetingTypeNormalization(unittest.TestCase):
     """normalize_meeting_type must strip scheduling prefixes."""
 
     def test_canceled_prefix_fully_stripped(self):
-        from scraper.tempe import normalize_meeting_type
+        from scraper.jurisdictions.tempe import normalize_meeting_type
         # Regex now strips "CANCELED - " and "CANCELLED - " completely
         self.assertEqual(
             normalize_meeting_type("CANCELED - Regular City Council Meeting"),
             "Regular City Council Meeting")
 
     def test_cancelled_double_l_fully_stripped(self):
-        from scraper.tempe import normalize_meeting_type
+        from scraper.jurisdictions.tempe import normalize_meeting_type
         self.assertEqual(
             normalize_meeting_type("CANCELLED - Work Study Session"),
             "Work Study Session")
 
     def test_rescheduled_stripped(self):
-        from scraper.tempe import normalize_meeting_type
+        from scraper.jurisdictions.tempe import normalize_meeting_type
         self.assertEqual(
             normalize_meeting_type("RESCHEDULED TO 9/02/2025 - Regular City Council Meeting"),
             "Regular City Council Meeting")
@@ -534,7 +534,7 @@ class TestCanceledDetection(unittest.TestCase):
     """search_tempe_meetings sets 'canceled' flag before normalization."""
 
     def test_canceled_detected(self):
-        from scraper.onbase import parse_meetings_from_html
+        from scraper.platforms.onbase import parse_meetings_from_html
 
         # Build minimal HTML with a canceled meeting row
         html = """<table><tr class="meeting-row" data-meeting-id="9999">
@@ -562,7 +562,7 @@ class TestSupportingDocumentBackfill(unittest.TestCase):
 
     def setUp(self):
         from db import init_db, get_session
-        from scraper.tempe import search_tempe_meetings
+        from scraper.jurisdictions.tempe import search_tempe_meetings
         import db.core as _dc
         self._saved_db_url = _dc.DATABASE_URL
         init_db()

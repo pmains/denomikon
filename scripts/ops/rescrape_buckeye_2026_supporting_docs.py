@@ -19,7 +19,7 @@ sys.path.insert(0, "scripts")
 
 from db import get_session, init_db, replace_meeting_data_safe
 from db import Meeting as MeetingModel
-from scraper.buckeye_granicus import extract_supporting_docs, SOURCE_SYSTEM
+from scraper.jurisdictions.buckeye_granicus import extract_supporting_docs, SOURCE_SYSTEM
 from sqlalchemy import select
 
 log = logging.getLogger("rescrape_buckeye_sd")

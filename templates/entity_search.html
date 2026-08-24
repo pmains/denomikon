@@ -2,7 +2,44 @@
 {% block title %}Entity Search — Poliscopic{% endblock %}
 
 {% block head %}
+{% block meta_description %}
 <meta name="description" content="Search developers, law firms, planning firms, and other entities across Maricopa County public meetings.">
+{% endblock %}
+<style>
+.entity-card .top-entries-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.entity-card .top-entity-item {
+  display: block;
+  padding: 0.25rem 0.5rem;
+  margin: 0 -0.5rem;
+  border-radius: 4px;
+  text-decoration: none;
+  font-size: 0.85rem;
+  color: #222;
+  line-height: 1.5;
+  transition: background 0.1s;
+}
+.entity-card .top-entity-item:hover {
+  background: #f5f7fa;
+  color: #0d6efd;
+}
+.entity-card .top-entity-item .top-entity-count {
+  color: #888;
+}
+
+@media (max-width: 768px) {
+  .entity-card .top-entity-item {
+    padding: 0.45rem 0.5rem;
+    font-size: 0.9rem;
+  }
+}
+.entity-card .card-body {
+  padding: 0.75rem 1rem;
+}
+</style>
 {% endblock %}
 
 {% block content %}
@@ -30,83 +67,114 @@
   </form>
 
   {% if query or current_type %}
-  <p class="text-muted">{{ total }} result{% if total != 1 %}s{% endif %} found.</p>
-  {% endif %}
-
-  {% if results %}
-  <div class="list-group mb-4">
-    {% for r in results %}
-    <a href="{{ url_for('entities.entity_detail', entity_id=r[0]) }}" class="list-group-item list-group-item-action">
-      <div class="d-flex w-100 justify-content-between">
-        <h6 class="mb-1">
-          {{ r[2] }}
-          {% if r[5] %} {# first_seen_at #}
-          <small class="text-muted">· {{ r[1]|replace('_', ' ')|title }}</small>
-          {% endif %}
-        </h6>
-        <small class="text-muted">{{ r[4] }} mention{% if r[4] != 1 %}s{% endif %}</small>
+    {# ── Results view ── #}
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <p class="text-muted mb-0">{{ total }} result{% if total != 1 %}s{% endif %} found.</p>
+      <div class="d-flex align-items-center gap-2">
+        <label class="small text-muted">Sort:</label>
+        <select class="form-select form-select-sm" style="width: auto;" onchange="this.form.submit()" form="sort-form">
+          <option value="mentions" {% if current_sort == 'mentions' %}selected{% endif %}>Most mentions</option>
+          <option value="name" {% if current_sort == 'name' %}selected{% endif %}>Alphabetical</option>
+          <option value="recent" {% if current_sort == 'recent' %}selected{% endif %}>Most recent</option>
+          <option value="oldest" {% if current_sort == 'oldest' %}selected{% endif %}>First appearance</option>
+        </select>
       </div>
-      <small class="text-muted">
-        {% if r[7] %}{{ r[7] }}{% endif %}
-        {% if r[5] %}· First appearance: {{ r[5]|az_date }}{% endif %}
-        {% if r[6] and r[6] != r[5] %}· Latest: {{ r[6]|az_date }}{% endif %}
-      </small>
-    </a>
-    {% endfor %}
-  </div>
+    </div>
 
-  {% if total > per_page %}
-  <nav>
-    <ul class="pagination">
-      {% if page > 1 %}
-      <li class="page-item"><a class="page-link" href="?q={{ query }}&type={{ current_type }}&page={{ page - 1 }}">Previous</a></li>
-      {% endif %}
-      {% if page * per_page < total %}
-      <li class="page-item"><a class="page-link" href="?q={{ query }}&type={{ current_type }}&page={{ page + 1 }}">Next</a></li>
-      {% endif %}
-    </ul>
-  </nav>
-  {% endif %}
+    {# Hidden form for sort submission #}
+    <form id="sort-form" method="GET" action="{{ url_for('entities.entity_search') }}">
+      <input type="hidden" name="q" value="{{ query }}">
+      <input type="hidden" name="type" value="{{ current_type }}">
+      <input type="hidden" name="sort" value="" id="sort-input">
+    </form>
+
+    {% if results %}
+    <div class="list-group mb-4">
+      {% for r in results %}
+      <a href="{{ url_for('entities.entity_detail', entity_id=r[0]) }}" class="list-group-item list-group-item-action">
+        <div class="d-flex w-100 justify-content-between">
+          <h6 class="mb-1">
+            {{ r[2] }}
+            <small class="text-muted">· {{ r[1]|replace('_', ' ')|title }}</small>
+          </h6>
+          <small class="text-muted">{{ r[4] }} mention{% if r[4] != 1 %}s{% endif %}</small>
+        </div>
+        <small class="text-muted">
+          {% if r[7] %}{{ r[7] }}{% endif %}
+          {% if r[5] %}· First appearance: {{ r[5]|az_date }}{% endif %}
+          {% if r[6] and r[6] != r[5] %}· Latest: {{ r[6]|az_date }}{% endif %}
+        </small>
+      </a>
+      {% endfor %}
+    </div>
+
+    {% if total > per_page %}
+    <nav>
+      <ul class="pagination">
+        {% if page > 1 %}
+        <li class="page-item"><a class="page-link" href="?q={{ query }}&type={{ current_type }}&sort={{ current_sort }}&page={{ page - 1 }}">Previous</a></li>
+        {% endif %}
+        {% if page * per_page < total %}
+        <li class="page-item"><a class="page-link" href="?q={{ query }}&type={{ current_type }}&sort={{ current_sort }}&page={{ page + 1 }}">Next</a></li>
+        {% endif %}
+      </ul>
+    </nav>
+    {% endif %}
+    {% else %}
+    <div class="alert alert-info">No entities found matching your search.</div>
+    {% endif %}
 
   {% elif not query and not current_type %}
-  <div class="row g-3">
-    <div class="col-md-6">
-      <div class="card">
-        <div class="card-body">
-          <h5 class="card-title">🏗 Developers</h5>
-          <p class="card-text text-muted">Track development activity across all jurisdictions.</p>
-          <a href="?type=developer" class="btn btn-outline-primary btn-sm">Browse developers</a>
+    {# ── Landing page: per-type cards ── #}
+    <div class="row g-3">
+      {% for tc in card_types %}
+      {% set et = tc[0] %}
+      {% set count = tc[1] %}
+      {% set top5 = top_per_type.get(et, []) %}
+      <div class="col-md-4 col-lg-3">
+        <div class="card h-100 entity-card">
+          <div class="card-body d-flex flex-column">
+            <h5 class="card-title d-flex justify-content-between align-items-center mb-2">
+              <span>{{ et|replace('_', ' ')|title }}</span>
+              <span class="badge bg-secondary rounded-pill">{{ count }}</span>
+            </h5>
+            {% if top5 %}
+            <div class="flex-grow-1 mb-2">
+              <div class="top-entries-list">
+              {% for t in top5 %}
+                <a href="{{ url_for('entities.entity_detail', entity_id=t[0]) }}"
+                   class="top-entity-item">{{ t[1] }} <span class="top-entity-count">({{ t[2] }})</span></a>
+              {% endfor %}
+              </div>
+            </div>
+            {% else %}
+            <div class="flex-grow-1 mb-2">
+              <small class="text-muted">(no entities yet)</small>
+            </div>
+            {% endif %}
+            <div class="mt-auto">
+              <a href="?type={{ et }}" class="btn btn-outline-primary btn-sm w-100">
+                Browse all {{ count }} &rarr;
+              </a>
+            </div>
+          </div>
         </div>
       </div>
+      {% endfor %}
     </div>
-    <div class="col-md-6">
-      <div class="card">
-        <div class="card-body">
-          <h5 class="card-title">⚖ Law Firms</h5>
-          <p class="card-text text-muted">See which firms represent developers before each body.</p>
-          <a href="?type=law_firm" class="btn btn-outline-primary btn-sm">Browse law firms</a>
-        </div>
-      </div>
-    </div>
-    <div class="col-md-6">
-      <div class="card">
-        <div class="card-body">
-          <h5 class="card-title">📐 Planning Firms</h5>
-          <p class="card-text text-muted">Planning consultants and engineering firms on projects.</p>
-          <a href="?type=planning_firm" class="btn btn-outline-primary btn-sm">Browse planning firms</a>
-        </div>
-      </div>
-    </div>
-    <div class="col-md-6">
-      <div class="card">
-        <div class="card-body">
-          <h5 class="card-title">👤 Individuals</h5>
-          <p class="card-text text-muted">Attorneys, planners, and government staff.</p>
-          <a href="?type=person" class="btn btn-outline-primary btn-sm">Browse people</a>
-        </div>
-      </div>
-    </div>
-  </div>
   {% endif %}
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  // Wire up sort dropdown to submit via hidden form
+  const sortSelect = document.querySelector('select[name="sort"]');
+  if (sortSelect) {
+    sortSelect.addEventListener('change', function() {
+      document.getElementById('sort-input').value = this.value;
+      document.getElementById('sort-form').submit();
+    });
+  }
+});
+</script>
 {% endblock %}

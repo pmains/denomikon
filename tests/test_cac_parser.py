@@ -22,7 +22,7 @@ _TEST_HTML = """<html><body>
 @integration_test
 def test_cac_parse_items():
     """CAC table parsing should separate title from presenter."""
-    from scraper.agendacenter import _parse_cac_table
+    from scraper.platforms.agendacenter import _parse_cac_table
 
     items = _parse_cac_table(_TEST_HTML, "https://example.com")
     assert len(items) == 3, f"Expected 3 items, got {len(items)}"
@@ -44,7 +44,7 @@ def test_cac_parse_items():
 @integration_test
 def test_cac_no_table():
     """Non-table HTML should return empty."""
-    from scraper.agendacenter import _parse_cac_table
+    from scraper.platforms.agendacenter import _parse_cac_table
 
     items = _parse_cac_table("<html><body><p>No table here</p></body></html>", "https://example.com")
     assert items == []
@@ -53,7 +53,7 @@ def test_cac_no_table():
 @integration_test
 def test_cac_wrong_headers():
     """Table without CAC headers should return empty."""
-    from scraper.agendacenter import _parse_cac_table
+    from scraper.platforms.agendacenter import _parse_cac_table
 
     html = """<html><body>
     <table>

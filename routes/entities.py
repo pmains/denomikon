@@ -16,6 +16,7 @@ def entity_search():
     """Search entities by name, type, and jurisdiction."""
     q = request.args.get("q", "").strip()
     etype = request.args.get("type", "").strip()
+    sort = request.args.get("sort", "mentions").strip()
     page = int(request.args.get("page", "1"))
     per_page = 50
 
@@ -34,6 +35,15 @@ def entity_search():
             where_clauses.append("e.entity_type = :etype")
             params["etype"] = etype
         where_sql = " AND ".join(where_clauses) if where_clauses else "TRUE"
+
+        # Sorting
+        sort_clause = "e.mention_count DESC, e.name"
+        if sort == "name":
+            sort_clause = "e.normalized_name ASC"
+        elif sort == "recent":
+            sort_clause = "mrange.last_meeting DESC NULLS LAST, e.mention_count DESC"
+        elif sort == "oldest":
+            sort_clause = "mrange.first_meeting ASC NULLS LAST, e.mention_count DESC"
 
         with engine.connect() as c:
             total = c.execute(
@@ -58,7 +68,7 @@ def entity_search():
                     f"  WHERE em.entity_id = e.id"
                     f") mrange ON true "
                     f"WHERE {where_sql} "
-                    f"ORDER BY e.mention_count DESC, e.name "
+                    f"ORDER BY {sort_clause} "
                     f"LIMIT :limit OFFSET :offset"
                 ),
                 {**params, "limit": per_page, "offset": (page - 1) * per_page},
@@ -76,12 +86,32 @@ def entity_search():
             """)
         ).fetchall()
 
+        # Top 5 entities per type by mention count (for landing page cards)
+        top_per_type = {}
+        # Only show cards for types with 3+ entities (skip test, single-advocacy, etc.)
+        card_types = [t for t in type_counts if t[1] >= 3]
+        for et, _ in card_types:
+            top_rows = c.execute(
+                text("""
+                    SELECT e.id, e.name, e.mention_count
+                    FROM entities e
+                    WHERE e.entity_type = :et
+                    ORDER BY e.mention_count DESC
+                    LIMIT 5
+                """),
+                {"et": et},
+            ).fetchall()
+            top_per_type[et] = top_rows
+
     return render_template(
         "entity_search.html",
         results=results if not (q or etype) else rows,
         query=q,
         current_type=etype,
+        current_sort=sort,
         type_counts=type_counts,
+        top_per_type=top_per_type,
+        card_types=card_types,
         total=total,
         page=page,
         per_page=per_page,

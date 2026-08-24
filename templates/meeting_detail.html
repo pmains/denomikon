@@ -229,7 +229,12 @@
                                 <code>{{ item.c_number }}</code>
                             </a>
                             {% if item.c_number_base and item.c_number_base != item.c_number %}
-                            <span class="text-muted">(base: {{ item.c_number_base }})</span>
+                            <span class="text-muted">
+                                (base:
+                                <a href="/c-number/{{ item.c_number_base }}" class="text-muted text-decoration-underline">
+                                    <code>{{ item.c_number_base }}</code>
+                                </a>)
+                            </span>
                             {% endif %}
                         </dd>
                         {% endif %}
@@ -238,14 +243,6 @@
                         <dd class="col-sm-10">
                             <a href="/cases/{{ item.case_number }}">
                                 <code>{{ item.case_number }}</code>
-                            </a>
-                        </dd>
-                        {% endif %}
-                        {% if item.c_number_base and item.c_number_base != item.c_number %}
-                        <dt class="col-sm-2">Base</dt>
-                        <dd class="col-sm-10">
-                            <a href="/c-number/{{ item.c_number_base }}">
-                                <code>{{ item.c_number_base }}</code>
                             </a>
                         </dd>
                         {% endif %}

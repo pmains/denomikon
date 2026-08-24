@@ -1,7 +1,7 @@
 """Housing Hearing Finder — find upcoming public hearings on housing development.
 
 Usage:
-    agenda_scraper.py hearings [--days=30] [--jurisdiction=CITY] [--json]
+    scrape_agendas.py hearings [--days=30] [--jurisdiction=CITY] [--json]
 
 Scans upcoming meetings for agenda items related to housing development
 and flags which are public hearings where you can attend and speak.
@@ -9,9 +9,9 @@ and flags which are public hearings where you can attend and speak.
 Part of the YIMBY Maricopa toolkit.
 
 Examples:
-    agenda_scraper.py hearings --days=14
-    agenda_scraper.py hearings --jurisdiction=tempe
-    agenda_scraper.py hearings --jurisdiction=mesa --json
+    scrape_agendas.py hearings --days=14
+    scrape_agendas.py hearings --jurisdiction=tempe
+    scrape_agendas.py hearings --jurisdiction=mesa --json
 """
 from __future__ import annotations
 

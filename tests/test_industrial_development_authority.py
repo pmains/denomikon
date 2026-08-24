@@ -115,21 +115,21 @@ class TestParseIdaMeetingsFromHTMLFixture(unittest.TestCase):
 
     def test_parse_ida_meetings_count(self):
         """IDA fixture produces the expected number of meetings."""
-        from scraper.ida import parse_ida_meetings_from_html
+        from scraper.county.ida import parse_ida_meetings_from_html
         html = _load_fixture("ida_public_meetings.html")
         meetings = parse_ida_meetings_from_html(html)
         # 30 meeting rows (2024-2026, including cancellations)
         self.assertEqual(len(meetings), 30)
 
     def test_all_body_ida(self):
-        from scraper.ida import parse_ida_meetings_from_html
+        from scraper.county.ida import parse_ida_meetings_from_html
         html = _load_fixture("ida_public_meetings.html")
         meetings = parse_ida_meetings_from_html(html)
         for m in meetings:
             self.assertEqual(m.body, "ida")
 
     def test_all_meeting_type(self):
-        from scraper.ida import parse_ida_meetings_from_html
+        from scraper.county.ida import parse_ida_meetings_from_html
         html = _load_fixture("ida_public_meetings.html")
         meetings = parse_ida_meetings_from_html(html)
         for m in meetings:
@@ -137,7 +137,7 @@ class TestParseIdaMeetingsFromHTMLFixture(unittest.TestCase):
 
     def test_synthetic_meeting_id_from_date(self):
         """Meeting IDs are derived from the date in ISO format."""
-        from scraper.ida import parse_ida_meetings_from_html
+        from scraper.county.ida import parse_ida_meetings_from_html
         html = _load_fixture("ida_public_meetings.html")
         meetings = parse_ida_meetings_from_html(html)
         for m in meetings:
@@ -148,7 +148,7 @@ class TestParseIdaMeetingsFromHTMLFixture(unittest.TestCase):
 
     def test_cancellations_have_agenda_url(self):
         """Cancelled meetings have a Notice-of-Cancellation URL as their agenda_url."""
-        from scraper.ida import parse_ida_meetings_from_html
+        from scraper.county.ida import parse_ida_meetings_from_html
         html = _load_fixture("ida_public_meetings.html")
         meetings = parse_ida_meetings_from_html(html)
         # Find meetings with "Notice of Cancellation" in agenda_url
@@ -156,7 +156,7 @@ class TestParseIdaMeetingsFromHTMLFixture(unittest.TestCase):
         self.assertGreaterEqual(len(cancelled), 2)  # At least 2024-01-09, 2024-07-16
 
     def test_meetings_have_agenda_urls(self):
-        from scraper.ida import parse_ida_meetings_from_html
+        from scraper.county.ida import parse_ida_meetings_from_html
         html = _load_fixture("ida_public_meetings.html")
         meetings = parse_ida_meetings_from_html(html)
         for m in meetings:
@@ -164,21 +164,21 @@ class TestParseIdaMeetingsFromHTMLFixture(unittest.TestCase):
             self.assertIn("mcida.com", m.agenda_url)
 
     def test_meetings_with_minutes_have_minutes_url(self):
-        from scraper.ida import parse_ida_meetings_from_html
+        from scraper.county.ida import parse_ida_meetings_from_html
         html = _load_fixture("ida_public_meetings.html")
         meetings = parse_ida_meetings_from_html(html)
         with_minutes = [m for m in meetings if m.minutes_url]
         self.assertGreater(len(with_minutes), 20)
 
     def test_meetings_without_minutes_have_empty_minutes_url(self):
-        from scraper.ida import parse_ida_meetings_from_html
+        from scraper.county.ida import parse_ida_meetings_from_html
         html = _load_fixture("ida_public_meetings.html")
         meetings = parse_ida_meetings_from_html(html)
         without_minutes = [m for m in meetings if not m.minutes_url]
         self.assertGreaterEqual(len(without_minutes), 3)  # At least 3 "Not Available"
 
     def test_titles_contain_regular_or_special(self):
-        from scraper.ida import parse_ida_meetings_from_html
+        from scraper.county.ida import parse_ida_meetings_from_html
         html = _load_fixture("ida_public_meetings.html")
         meetings = parse_ida_meetings_from_html(html)
         for m in meetings:
@@ -188,7 +188,7 @@ class TestParseIdaMeetingsFromHTMLFixture(unittest.TestCase):
             )
 
     def test_dates_are_iso_format(self):
-        from scraper.ida import parse_ida_meetings_from_html
+        from scraper.county.ida import parse_ida_meetings_from_html
         html = _load_fixture("ida_public_meetings.html")
         meetings = parse_ida_meetings_from_html(html)
         for m in meetings:
@@ -196,7 +196,7 @@ class TestParseIdaMeetingsFromHTMLFixture(unittest.TestCase):
 
     def test_dates_ascending_order(self):
         """Meetings should be in descending date order (most recent first)."""
-        from scraper.ida import parse_ida_meetings_from_html
+        from scraper.county.ida import parse_ida_meetings_from_html
         html = _load_fixture("ida_public_meetings.html")
         meetings = parse_ida_meetings_from_html(html)
         dates = [m.meeting_date for m in meetings]
@@ -209,25 +209,25 @@ class TestIdaDocumentClassification(unittest.TestCase):
     """Test classification of meeting documents (agenda vs minutes vs notice)."""
 
     def test_classify_agenda_pdf(self):
-        from scraper.ida import classify_ida_document
+        from scraper.county.ida import classify_ida_document
         url = "https://mcida.com/wp-content/uploads/2026/03/0.-Agenda-Regular-2026-03-10.pdf"
         result = classify_ida_document(url)
         self.assertEqual(result, "agenda")
 
     def test_classify_minutes_pdf(self):
-        from scraper.ida import classify_ida_document
+        from scraper.county.ida import classify_ida_document
         url = "https://mcida.com/wp-content/uploads/2026/03/Results-of-Public-Meeting-2026-03-10.pdf"
         result = classify_ida_document(url)
         self.assertEqual(result, "minutes")
 
     def test_classify_cancellation_pdf(self):
-        from scraper.ida import classify_ida_document
+        from scraper.county.ida import classify_ida_document
         url = "https://mcida.com/wp-content/uploads/2026/04/Notice-of-Cancellation-2026-04-14-1.pdf"
         result = classify_ida_document(url)
         self.assertEqual(result, "cancellation")
 
     def test_classify_unknown_pdf(self):
-        from scraper.ida import classify_ida_document
+        from scraper.county.ida import classify_ida_document
         url = "https://mcida.com/wp-content/uploads/2025/11/1.-2026-Annual-Meeting-Schedule.pdf"
         result = classify_ida_document(url)
         self.assertEqual(result, "other")
@@ -246,7 +246,7 @@ class TestIdaBodyScopedPersistence(unittest.TestCase):
         )
         self.assertEqual(m.meeting_id, "meeting")
         # IDA uses synthetic IDs from date
-        from scraper.ida import make_ida_meeting_id
+        from scraper.county.ida import make_ida_meeting_id
         mid = make_ida_meeting_id("2026-03-10")
         self.assertEqual(mid, "2026-03-10")
         self.assertNotIn("ida", mid)

@@ -9,6 +9,7 @@ from sqlalchemy import (
     Column,
     Date,
     DateTime,
+    Float,
     Index,
     Integer,
     String,
@@ -260,6 +261,7 @@ class AgendaItem(Base):
     agenda_category = Column(String(32), nullable=False, default="", index=True)
     jurisdiction_id = Column(Integer, nullable=True, default=None, index=True)
     public_body_id = Column(Integer, nullable=True, default=None, index=True)
+    lifecycle_status = Column(String(32), nullable=True, default=None, index=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -271,32 +273,11 @@ class PublicBodyMember(Base):
     This table has 0 rows in production and is never written to by active
     code paths.  It is kept only for migration compatibility.  All new
     member data goes through ``body_memberships`` and ``persons``.
+
+    Marked abstract so Base.metadata.create_all() stops recreating it
+    after _drop_deprecated_person_columns() drops it.
     """
-    __tablename__ = "public_body_members"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    body = Column(String(16), nullable=False, default="", index=True)
-    name = Column(String(128), nullable=False, index=True)
-    normalized_name = Column(String(128), nullable=False, index=True)
-    title = Column(String(64), nullable=True, default=None)
-    district_or_seat = Column(String(32), nullable=True, default=None)
-    active_from = Column(Date, nullable=True, default=None)
-    active_to = Column(Date, nullable=True, default=None)
-    jurisdiction_id = Column(Integer, nullable=True, default=None, index=True)
-    public_body_id = Column(Integer, nullable=True, default=None, index=True)
-    created_at = Column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
-    )
-    updated_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
-    )
-
-    __table_args__ = (
-        UniqueConstraint("body", "normalized_name", name="uq_public_body_member"),
-    )
+    __abstract__ = True
 
 
 class MeetingAttendance(Base):
@@ -573,6 +554,14 @@ class Entity(Base):
     first_seen_at = Column(DateTime, nullable=True)
     last_seen_at = Column(DateTime, nullable=True)
     mention_count = Column(Integer, nullable=False, default=0)
+    # Entity resolution fields
+    canonical_entity_id = Column(Integer, nullable=True, index=True)
+    resolution_block_key = Column(String(128), nullable=True, index=True)
+    resolution_status = Column(String(32), nullable=False, default="unresolved")
+    resolution_confidence = Column(Float, nullable=True)
+    resolution_method = Column(String(64), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False,
                          default=lambda: datetime.now(timezone.utc),

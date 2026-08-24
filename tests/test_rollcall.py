@@ -3,7 +3,7 @@ import sys, os
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from scraper.rollcall import (
+from scraper.common.rollcall import (
     extract_chair_from_header,
     extract_attendance,
     extract_votes,

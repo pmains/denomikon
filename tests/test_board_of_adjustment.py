@@ -113,7 +113,7 @@ class TestAdjSearchUrlConstruction(unittest.TestCase):
 
     def test_adj_search_url_uses_cid3(self):
         """adj search URL uses CID=3"""
-        from scraper.adj import build_adj_search_url
+        from scraper.county.adj import build_adj_search_url
         url = build_adj_search_url("01/01/2026", "01/31/2026")
         self.assertIn("CIDs=3", url)
         self.assertIn("AgendaCenter/Search/", url)
@@ -122,7 +122,7 @@ class TestAdjSearchUrlConstruction(unittest.TestCase):
 
     def test_adj_search_url_format_via_main(self):
         """Calling _format_mm_dd_yyyy + build_adj_search_url together (as main() does)."""
-        from scraper.adj import build_adj_search_url, _format_mm_dd_yyyy
+        from scraper.county.adj import build_adj_search_url, _format_mm_dd_yyyy
 
         start = _format_mm_dd_yyyy("2026-01-01")
         end = _format_mm_dd_yyyy("2026-12-31")
@@ -160,7 +160,7 @@ class TestParseAdjMeetingsFromHTMLFixture(unittest.TestCase):
         </table>
         </body></html>
         """
-        from scraper.adj import parse_adj_meetings_from_html
+        from scraper.county.adj import parse_adj_meetings_from_html
 
         meetings = parse_adj_meetings_from_html(
             html, "https://www.maricopa.gov/AgendaCenter/Search"
@@ -197,7 +197,7 @@ class TestParseAdjMeetingsFromHTMLFixture(unittest.TestCase):
         </table>
         </body></html>
         """
-        from scraper.adj import parse_adj_meetings_from_html
+        from scraper.county.adj import parse_adj_meetings_from_html
         meetings = parse_adj_meetings_from_html(
             html, "https://www.maricopa.gov/AgendaCenter/Search"
         )
@@ -229,7 +229,7 @@ class TestParseAdjMeetingsFromHTMLFixture(unittest.TestCase):
         </table>
         </body></html>
         """
-        from scraper.adj import parse_adj_meetings_from_html
+        from scraper.county.adj import parse_adj_meetings_from_html
         meetings = parse_adj_meetings_from_html(
             html, "https://www.maricopa.gov/AgendaCenter/Search"
         )
@@ -268,7 +268,7 @@ class TestAdjYearTabExtraction(unittest.TestCase):
 
     def test_extract_adj_year_tabs_from_html(self):
         """_extract_adj_year_tabs_from_html parses changeYear links correctly."""
-        from scraper.adj import _extract_adj_year_tabs_from_html as fn
+        from scraper.county.adj import _extract_adj_year_tabs_from_html as fn
 
         html = """
         <a href="javascript:changeYear(2026, 3,'a0')">2026</a>
@@ -279,7 +279,7 @@ class TestAdjYearTabExtraction(unittest.TestCase):
 
     def test_extract_adj_year_tabs_deduplicates(self):
         """Duplicate changeYear links produce one entry per year."""
-        from scraper.adj import _extract_adj_year_tabs_from_html as fn
+        from scraper.county.adj import _extract_adj_year_tabs_from_html as fn
 
         html = """
         <a href="javascript:changeYear(2026, 3,'a0')">2026</a>
@@ -289,7 +289,7 @@ class TestAdjYearTabExtraction(unittest.TestCase):
 
     def test_extract_adj_year_tabs_no_tabs(self):
         """No changeYear links returns empty list."""
-        from scraper.adj import _extract_adj_year_tabs_from_html as fn
+        from scraper.county.adj import _extract_adj_year_tabs_from_html as fn
         self.assertEqual(fn("<html></html>"), [])
 
 
@@ -298,7 +298,7 @@ class TestParseAdjOverview(unittest.TestCase):
 
     def test_parse_adj_overview_identifies_agenda_and_staff_reports(self):
         """parse_adj_overview correctly identifies agenda doc and staff reports."""
-        from scraper.adj import parse_adj_overview
+        from scraper.county.adj import parse_adj_overview
 
         html = """
         <html><body>
@@ -325,7 +325,7 @@ class TestParseAdjOverview(unittest.TestCase):
 
     def test_parse_adj_overview_no_headings(self):
         """parse_adj_overview returns None when page has no h1.title."""
-        from scraper.adj import parse_adj_overview
+        from scraper.county.adj import parse_adj_overview
         html = "<html><body><p>No headings here</p></body></html>"
         result = parse_adj_overview(
             html, "https://example.com/overview", "https://example.com/"
@@ -338,7 +338,7 @@ class TestAdjAgendaPDFParsing(unittest.TestCase):
 
     def test_parse_adj_agenda_pdf_regular_item(self):
         """Regular ADJ item with BA case number parses all fields."""
-        from scraper.adj import parse_adj_agenda_pdf
+        from scraper.county.adj import parse_adj_agenda_pdf
         import tempfile, subprocess
         from pathlib import Path
 
@@ -369,7 +369,7 @@ class TestAdjAgendaPDFParsing(unittest.TestCase):
 
     def test_parse_adj_agenda_pdf_extracts_case_number(self):
         """Test that the ADJ PDF parser extracts case numbers from text lines."""
-        from scraper.adj import parse_adj_agenda_pdf
+        from scraper.county.adj import parse_adj_agenda_pdf
         import tempfile, subprocess
         from pathlib import Path
 
@@ -406,13 +406,13 @@ class TestAdjAgendaPDFParsing(unittest.TestCase):
 
     def test_adj_pdf_parser_handles_empty_file(self):
         """parse_adj_agenda_pdf returns [] for non-existent file."""
-        from scraper.adj import parse_adj_agenda_pdf
+        from scraper.county.adj import parse_adj_agenda_pdf
         result = parse_adj_agenda_pdf("/tmp/nonexistent_file.pdf")
         self.assertEqual(result, [])
 
     def test_adj_pdf_parser_handles_invalid_path(self):
         """parse_adj_agenda_pdf returns [] for empty path."""
-        from scraper.adj import parse_adj_agenda_pdf
+        from scraper.county.adj import parse_adj_agenda_pdf
         self.assertEqual(parse_adj_agenda_pdf(""), [])
 
 
@@ -575,7 +575,7 @@ class TestAdjMissingMinutesGraceful(unittest.TestCase):
 
     def test_adj_sort_returns_empty_for_nonexistent_details(self):
         """Parsing an ADJ overview with no staff report files returns empty list."""
-        from scraper.adj import parse_adj_overview
+        from scraper.county.adj import parse_adj_overview
 
         html = """
         <html><body>
@@ -615,7 +615,7 @@ class TestPZAndBOSStillWork(unittest.TestCase):
 
     def test_pz_search_url_unchanged(self):
         """PZ search URL still uses CIDs=9"""
-        from scraper.pz import build_pz_search_url
+        from scraper.county.pz import build_pz_search_url
         url = build_pz_search_url("01/01/2026", "01/31/2026")
         self.assertIn("CIDs=9", url)
         self.assertNotIn("CIDs=3", url)
@@ -695,19 +695,19 @@ class TestAdjModuleFunctions(unittest.TestCase):
 
     def test_normalize_adj_meeting_title_empty(self):
         """_normalize_adj_meeting_title handles empty/None gracefully."""
-        from scraper.adj import _normalize_adj_meeting_title as fn
+        from scraper.county.adj import _normalize_adj_meeting_title as fn
         self.assertEqual(fn(""), "")
         self.assertIsNone(fn(None))
 
     def test_normalize_adj_meeting_title_strips_suffix(self):
         """_normalize_adj_meeting_title strips BOS Auditorium suffix."""
-        from scraper.adj import _normalize_adj_meeting_title as fn
+        from scraper.county.adj import _normalize_adj_meeting_title as fn
         result = fn("June 11, 2026 Board of Adjustment Meeting - BOS Auditorium & GoTo Webinar")
         self.assertEqual(result, "June 11, 2026 Board of Adjustment Meeting")
 
     def test_format_mm_dd_yyyy_converts_iso(self):
         """_format_mm_dd_yyyy from adj.py converts ISO to MM/DD/YYYY."""
-        from scraper.adj import _format_mm_dd_yyyy as fn
+        from scraper.county.adj import _format_mm_dd_yyyy as fn
         self.assertEqual(fn("2026-01-15"), "01/15/2026")
         self.assertIsNone(fn(""))
         self.assertEqual(fn("01/15/2026"), "01/15/2026")

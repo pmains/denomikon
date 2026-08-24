@@ -196,7 +196,7 @@ class MaricopaAgendaScraperTests(unittest.TestCase):
     def test_metadata_fieldnames_match_schema(self):
         discovery = self.root / "discovery_metadata.csv"
         agenda_root = self.root / "agendas"
-        import scraper.io_utils as io_utils
+        import scraper.common.io_utils as io_utils
         with patch.object(io_utils, "DISCOVERY_CSV", discovery), patch.object(io_utils, "AGENDAS_ROOT", agenda_root):
             scraper.write_discovery_row({
                 "source_body": "Board of Supervisors",
@@ -323,8 +323,8 @@ class MaricopaAgendaScraperTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        import scraper.agenda_items as ai
-        import scraper.io_utils as iou
+        import scraper.common.agenda_items as ai
+        import scraper.common.io_utils as iou
         with patch.object(ai, "AGENDA_ITEMS_CSV", structured_csv), \
              patch.object(ai, "RAW_AGENDA_ITEMS_CSV", raw_csv), \
              patch.object(ai, "REJECTED_RAW_BLOCKS_CSV", rejected_csv), \
@@ -1776,7 +1776,7 @@ class TestPZPDFParsing(unittest.TestCase):
         Requires network access to fetch the PDF.
         """
         import urllib.request
-        from scraper.pz import parse_pz_agenda_pdf
+        from scraper.county.pz import parse_pz_agenda_pdf
         from pathlib import Path
 
         pdf_url = "https://www.maricopa.gov/AgendaCenter/ViewFile/Item/10153?fileID=99454"
@@ -1816,7 +1816,7 @@ class TestPZPDFParsing(unittest.TestCase):
         """ZIPPOR PDF with items that have no case number (e.g. "Area Plan:")
         should still be extracted.  Meeting 2971 has an Area Plan item."""
         import urllib.request, re
-        from scraper.pz import parse_pz_agenda_pdf, parse_pz_overview
+        from scraper.county.pz import parse_pz_agenda_pdf, parse_pz_overview
         from pathlib import Path
 
         # Fetch overview for meeting 2971

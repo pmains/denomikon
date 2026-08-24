@@ -112,7 +112,7 @@ def check_chandler_agendaquick(engine) -> int:
     have a matching meeting_id (= meeting_seq).
     """
     try:
-        from scraper.chandler import (
+        from scraper.jurisdictions.chandler import (
             build_attachments_url, fetch_attachments_page,
             parse_attachments_for_minutes,
         )
@@ -176,8 +176,8 @@ def check_tempe_onbase(engine) -> int:
     We re-check meetings that have a numeric meeting_id (OnBase ID).
     """
     try:
-        from scraper.tempe_summary import _summary_document_names
-        from scraper.onbase import TEMPE_CONFIG, download_document
+        from scraper.jurisdictions.tempe.council_summary import _summary_document_names
+        from scraper.platforms.onbase import TEMPE_CONFIG, download_document
     except ImportError:
         log.warning("  Tempe scraper not available — skipping")
         return 0

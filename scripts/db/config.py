@@ -15,7 +15,7 @@ HOW TO USE
 ----------
 
 Development (default — .env supplies DATABASE_URL):
-    python scripts/agenda_scraper.py peoria --sync --year=2026
+    python scripts/scrape_agendas.py peoria --sync --year=2026
 
     Reads .env at project root for DATABASE_URL.  Falls back to the
     PostgreSQL dev instance at localhost:5432/poliscopic_dev if .env
@@ -33,10 +33,10 @@ Production (sync.sh handles this — not for direct use):
     The production gunicorn process reads from /opt/poliscopic/data/maricopa.sqlite.
 
 To override the database for a one-off command:
-    DATABASE_URL=postgresql://... python scripts/agenda_scraper.py ...
+    DATABASE_URL=postgresql://... python scripts/scrape_agendas.py ...
 
 To use the old SQLite database for historical reference:
-    DATABASE_URL="sqlite:///data/maricopa.sqlite" python scripts/agenda_scraper.py ...
+    DATABASE_URL="sqlite:///data/maricopa.sqlite" python scripts/scrape_agendas.py ...
 
 SQLite (data/maricopa.sqlite) is retained as a historical archive only.
 All ongoing work uses PostgreSQL.

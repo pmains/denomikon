@@ -117,7 +117,7 @@ class TestDrainSearchUrlConstruction(unittest.TestCase):
 
     def test_drain_search_url_uses_cid19(self):
         """drain search URL uses CID=19"""
-        from scraper.drain import build_drain_search_url
+        from scraper.county.drain import build_drain_search_url
         url = build_drain_search_url("01/01/2012", "01/31/2012")
         self.assertIn("CIDs=19", url)
         self.assertIn("mcdot.maricopa.gov", url)
@@ -127,7 +127,7 @@ class TestDrainSearchUrlConstruction(unittest.TestCase):
 
     def test_drain_search_url_format_via_main(self):
         """Calling _format_mm_dd_yyyy + build_drain_search_url together (as main() does)."""
-        from scraper.drain import build_drain_search_url, _format_mm_dd_yyyy
+        from scraper.county.drain import build_drain_search_url, _format_mm_dd_yyyy
 
         start = _format_mm_dd_yyyy("2012-01-01")
         end = _format_mm_dd_yyyy("2012-12-31")
@@ -142,7 +142,7 @@ class TestDrainSearchUrlConstruction(unittest.TestCase):
 
     def test_drain_search_url_not_using_pz_domain(self):
         """drain search URL does NOT use www.maricopa.gov"""
-        from scraper.drain import build_drain_search_url
+        from scraper.county.drain import build_drain_search_url
         url = build_drain_search_url("01/01/2012", "01/31/2012")
         self.assertNotIn("www.maricopa.gov", url)
 
@@ -174,7 +174,7 @@ class TestParseDrainMeetingsFromHTMLFixture(unittest.TestCase):
         </table>
         </body></html>
         """
-        from scraper.drain import parse_drain_meetings_from_html
+        from scraper.county.drain import parse_drain_meetings_from_html
 
         meetings = parse_drain_meetings_from_html(
             html, "https://mcdot.maricopa.gov/AgendaCenter/Search"
@@ -209,7 +209,7 @@ class TestParseDrainMeetingsFromHTMLFixture(unittest.TestCase):
         </table>
         </body></html>
         """
-        from scraper.drain import parse_drain_meetings_from_html
+        from scraper.county.drain import parse_drain_meetings_from_html
         meetings = parse_drain_meetings_from_html(
             html, "https://mcdot.maricopa.gov/AgendaCenter/Search"
         )
@@ -247,7 +247,7 @@ class TestDrainYearTabExtraction(unittest.TestCase):
 
     def test_extract_drain_year_tabs_from_html(self):
         """_extract_drain_year_tabs_from_html parses changeYear links correctly."""
-        from scraper.drain import _extract_drain_year_tabs_from_html as fn
+        from scraper.county.drain import _extract_drain_year_tabs_from_html as fn
 
         html = """
         <a href="javascript:changeYear(2013, 19,'a0')">2013</a>
@@ -258,7 +258,7 @@ class TestDrainYearTabExtraction(unittest.TestCase):
 
     def test_extract_drain_year_tabs_deduplicates(self):
         """Duplicate changeYear links produce one entry per year."""
-        from scraper.drain import _extract_drain_year_tabs_from_html as fn
+        from scraper.county.drain import _extract_drain_year_tabs_from_html as fn
 
         html = """
         <a href="javascript:changeYear(2011, 19,'a0')">2011</a>
@@ -268,12 +268,12 @@ class TestDrainYearTabExtraction(unittest.TestCase):
 
     def test_extract_drain_year_tabs_no_tabs(self):
         """No changeYear links returns empty list."""
-        from scraper.drain import _extract_drain_year_tabs_from_html as fn
+        from scraper.county.drain import _extract_drain_year_tabs_from_html as fn
         self.assertEqual(fn("<html></html>"), [])
 
     def test_extract_drain_year_tabs_cid_19(self):
         """Drain year tabs use CID=19."""
-        from scraper.drain import _extract_drain_year_tabs_from_html as fn
+        from scraper.county.drain import _extract_drain_year_tabs_from_html as fn
 
         html = """
         <a href="javascript:changeYear(2012, 19,'a0')">2012</a>
@@ -290,7 +290,7 @@ class TestParseDrainOverview(unittest.TestCase):
 
     def test_parse_drain_overview_identifies_agenda_and_staff_reports(self):
         """parse_drain_overview correctly identifies agenda doc and staff reports."""
-        from scraper.drain import parse_drain_overview
+        from scraper.county.drain import parse_drain_overview
 
         html = """
         <html><body>
@@ -320,7 +320,7 @@ class TestParseDrainOverview(unittest.TestCase):
 
     def test_parse_drain_overview_no_headings(self):
         """parse_drain_overview returns None when page has no item.level1 or span.title."""
-        from scraper.drain import parse_drain_overview
+        from scraper.county.drain import parse_drain_overview
         html = "<html><body><p>No headings here</p></body></html>"
         result = parse_drain_overview(
             html, "https://example.com/overview", "https://example.com/"
@@ -329,7 +329,7 @@ class TestParseDrainOverview(unittest.TestCase):
 
     def test_parse_drain_overview_fallback_h1_title(self):
         """parse_drain_overview fallback span.title-only extraction works."""
-        from scraper.drain import parse_drain_overview
+        from scraper.county.drain import parse_drain_overview
 
         html = """
         <html><body>
@@ -349,7 +349,7 @@ class TestParseDrainOverview(unittest.TestCase):
 
     def test_parse_drain_overview_rewrites_domain(self):
         """parse_drain_overview rewrites www.maricopa.gov URLs for drain."""
-        from scraper.drain import parse_drain_overview
+        from scraper.county.drain import parse_drain_overview
 
         html = """
         <html><body>
@@ -380,18 +380,18 @@ class TestDrainAgendaPDFParsing(unittest.TestCase):
 
     def test_parse_drain_agenda_pdf_empty_file(self):
         """parse_drain_agenda_pdf returns [] for non-existent file."""
-        from scraper.drain import parse_drain_agenda_pdf
+        from scraper.county.drain import parse_drain_agenda_pdf
         result = parse_drain_agenda_pdf("/tmp/nonexistent_file.pdf")
         self.assertEqual(result, [])
 
     def test_parse_drain_agenda_pdf_invalid_path(self):
         """parse_drain_agenda_pdf returns [] for empty path."""
-        from scraper.drain import parse_drain_agenda_pdf
+        from scraper.county.drain import parse_drain_agenda_pdf
         self.assertEqual(parse_drain_agenda_pdf(""), [])
 
     def test_parse_drain_agenda_pdf_returns_list(self):
         """parse_drain_agenda_pdf always returns a list (even with minimal PDF)."""
-        from scraper.drain import parse_drain_agenda_pdf
+        from scraper.county.drain import parse_drain_agenda_pdf
 
         pdf_bytes = (
             b"%PDF-1.4\n"
@@ -423,13 +423,13 @@ class TestDrainDomainRewrite(unittest.TestCase):
 
     def test_rewrite_drain_domain_empty(self):
         """_rewrite_drain_domain handles empty input."""
-        from scraper.drain import _rewrite_drain_domain
+        from scraper.county.drain import _rewrite_drain_domain
         self.assertEqual(_rewrite_drain_domain(""), "")
         self.assertIsNone(_rewrite_drain_domain(None))
 
     def test_rewrite_drain_domain_maricopa(self):
         """_rewrite_drain_domain rewrites www.maricopa.gov to mcdot.maricopa.gov."""
-        from scraper.drain import _rewrite_drain_domain
+        from scraper.county.drain import _rewrite_drain_domain
         result = _rewrite_drain_domain(
             "https://www.maricopa.gov/AgendaCenter/ViewFile/Item/1234"
         )
@@ -440,7 +440,7 @@ class TestDrainDomainRewrite(unittest.TestCase):
 
     def test_rewrite_drain_domain_civicplus(self):
         """_rewrite_drain_domain rewrites az-maricopacounty.civicplus.com."""
-        from scraper.drain import _rewrite_drain_domain
+        from scraper.county.drain import _rewrite_drain_domain
         result = _rewrite_drain_domain(
             "https://az-maricopacounty.civicplus.com/AgendaCenter/ViewFile/Item/1234"
         )
@@ -451,7 +451,7 @@ class TestDrainDomainRewrite(unittest.TestCase):
 
     def test_rewrite_drain_domain_mcdot_preserved(self):
         """_rewrite_drain_domain preserves mcdot.maricopa.gov URLs unchanged."""
-        from scraper.drain import _rewrite_drain_domain
+        from scraper.county.drain import _rewrite_drain_domain
         url = "https://mcdot.maricopa.gov/AgendaCenter/ViewFile/Item/1234"
         # Should not double-rewrite
         result = _rewrite_drain_domain(url)
@@ -459,7 +459,7 @@ class TestDrainDomainRewrite(unittest.TestCase):
 
     def test_rewrite_drain_domain_no_match(self):
         """_rewrite_drain_domain leaves unrelated domains unchanged."""
-        from scraper.drain import _rewrite_drain_domain
+        from scraper.county.drain import _rewrite_drain_domain
         url = "https://example.com/file.pdf"
         self.assertEqual(_rewrite_drain_domain(url), url)
 
@@ -556,7 +556,7 @@ class TestDrainNoAgendaGraceful(unittest.TestCase):
 
     def test_drain_no_agenda_html_returns_empty(self):
         """extract_drain_agenda_items returns [] for No Agenda meetings."""
-        from scraper.drain import parse_drain_overview
+        from scraper.county.drain import parse_drain_overview
 
         # Simulate a "No Agenda" page: div.item.level1 with generic content
         html = """
@@ -584,14 +584,14 @@ class TestDrainFormatFunctions(unittest.TestCase):
 
     def test_format_mm_dd_yyyy_converts_iso(self):
         """_format_mm_dd_yyyy from drain.py converts ISO to MM/DD/YYYY."""
-        from scraper.drain import _format_mm_dd_yyyy as fn
+        from scraper.county.drain import _format_mm_dd_yyyy as fn
         self.assertEqual(fn("2012-01-15"), "01/15/2012")
         self.assertIsNone(fn(""))
         self.assertEqual(fn("01/15/2012"), "01/15/2012")
 
     def test_format_mm_dd_yyyy_invalid(self):
         """_format_mm_dd_yyyy returns input as-is for unparseable formats."""
-        from scraper.drain import _format_mm_dd_yyyy as fn
+        from scraper.county.drain import _format_mm_dd_yyyy as fn
         # Returns the input as-is if it matches MM/DD/YYYY already
         self.assertEqual(fn("not-a-date"), "not-a-date")
 
@@ -657,21 +657,21 @@ class TestAllBodiesStillWork(unittest.TestCase):
 
     def test_pz_search_url_unchanged(self):
         """PZ search URL still uses CIDs=9 and www.maricopa.gov"""
-        from scraper.pz import build_pz_search_url
+        from scraper.county.pz import build_pz_search_url
         url = build_pz_search_url("01/01/2026", "01/31/2026")
         self.assertIn("CIDs=9", url)
         self.assertNotIn("CIDs=19", url)
 
     def test_adj_search_url_unchanged(self):
         """ADJ search URL still uses CIDs=3 and www.maricopa.gov"""
-        from scraper.adj import build_adj_search_url
+        from scraper.county.adj import build_adj_search_url
         url = build_adj_search_url("01/01/2026", "01/31/2026")
         self.assertIn("CIDs=3", url)
         self.assertNotIn("CIDs=19", url)
 
     def test_drain_search_url_uses_cid19_on_correct_domain(self):
         """Drain search URL uses CIDs=19 on mcdot.maricopa.gov, not www.maricopa.gov"""
-        from scraper.drain import build_drain_search_url
+        from scraper.county.drain import build_drain_search_url
         url = build_drain_search_url("01/01/2012", "01/31/2012")
         self.assertIn("CIDs=19", url)
         self.assertNotIn("CIDs=3", url)
@@ -724,7 +724,7 @@ class TestRealDrainFixture2011(unittest.TestCase):
 
     def setUp(self):
         html = _load_fixture("drain_meetings_2011.html")
-        from scraper.drain import parse_drain_meetings_from_html
+        from scraper.county.drain import parse_drain_meetings_from_html
         self.meetings = parse_drain_meetings_from_html(
             html, "https://mcdot.maricopa.gov/AgendaCenter/Search/"
         )
@@ -781,7 +781,7 @@ class TestRealDrainFixture2012(unittest.TestCase):
 
     def setUp(self):
         html = _load_fixture("drain_meetings_2012.html")
-        from scraper.drain import parse_drain_meetings_from_html
+        from scraper.county.drain import parse_drain_meetings_from_html
         self.meetings = parse_drain_meetings_from_html(
             html, "https://mcdot.maricopa.gov/AgendaCenter/Search/"
         )
@@ -834,7 +834,7 @@ class TestRealDrainFixture2013(unittest.TestCase):
 
     def setUp(self):
         html = _load_fixture("drain_meetings_2013.html")
-        from scraper.drain import parse_drain_meetings_from_html
+        from scraper.county.drain import parse_drain_meetings_from_html
         self.meetings = parse_drain_meetings_from_html(
             html, "https://mcdot.maricopa.gov/AgendaCenter/Search/"
         )
@@ -872,7 +872,7 @@ class TestRealDrainFixture2026Empty(unittest.TestCase):
     def test_2026_no_meetings(self):
         """2026 DRB fixture (defunct board) produces 0 meetings."""
         html = _load_fixture("drain_meetings_2026.html")
-        from scraper.drain import parse_drain_meetings_from_html
+        from scraper.county.drain import parse_drain_meetings_from_html
         meetings = parse_drain_meetings_from_html(
             html, "https://mcdot.maricopa.gov/AgendaCenter/Search/"
         )
@@ -881,7 +881,7 @@ class TestRealDrainFixture2026Empty(unittest.TestCase):
     def test_2026_no_meetings_graceful(self):
         """2026 page returns empty list, not None or error."""
         html = _load_fixture("drain_meetings_2026.html")
-        from scraper.drain import parse_drain_meetings_from_html
+        from scraper.county.drain import parse_drain_meetings_from_html
         meetings = parse_drain_meetings_from_html(
             html, "https://mcdot.maricopa.gov/AgendaCenter/Search/"
         )
@@ -894,13 +894,13 @@ class TestRealDrainYearTabExtraction(unittest.TestCase):
     def test_multi_year_page_has_all_year_tabs(self):
         """2011-2013 broad fixture page has year tabs for all 3 DRB years."""
         html = _load_fixture("drain_meetings_2011_2013.html")
-        from scraper.drain import _extract_drain_year_tabs_from_html
+        from scraper.county.drain import _extract_drain_year_tabs_from_html
         tabs = _extract_drain_year_tabs_from_html(html)
         self.assertEqual(tabs, [2011, 2012, 2013])
 
     def test_individual_year_pages_have_only_their_year_tab(self):
         """Each individual-year page only shows its own year tab."""
-        from scraper.drain import _extract_drain_year_tabs_from_html as tabs_fn
+        from scraper.county.drain import _extract_drain_year_tabs_from_html as tabs_fn
         for year in [2011, 2012, 2013]:
             html = _load_fixture(f"drain_meetings_{year}.html")
             tabs = tabs_fn(html)
@@ -910,7 +910,7 @@ class TestRealDrainYearTabExtraction(unittest.TestCase):
     def test_empty_page_has_no_year_tabs(self):
         """2026 empty page has no year tabs."""
         html = _load_fixture("drain_meetings_2026.html")
-        from scraper.drain import _extract_drain_year_tabs_from_html
+        from scraper.county.drain import _extract_drain_year_tabs_from_html
         tabs = _extract_drain_year_tabs_from_html(html)
         self.assertEqual(tabs, [])
 
@@ -920,7 +920,7 @@ class TestRealDrainSearchUrlEndToEnd(unittest.TestCase):
 
     def test_search_url_for_2012(self):
         """Search URL for 2012 DRB meetings is correctly formatted."""
-        from scraper.drain import build_drain_search_url
+        from scraper.county.drain import build_drain_search_url
         url = build_drain_search_url("01/01/2012", "12/31/2012")
         self.assertIn("startDate=01%2F01%2F2012", url)
         self.assertIn("endDate=12%2F31%2F2012", url)
@@ -929,14 +929,14 @@ class TestRealDrainSearchUrlEndToEnd(unittest.TestCase):
 
     def test_search_url_for_defunct_period(self):
         """Search URL for 2026 is valid and correctly formatted."""
-        from scraper.drain import build_drain_search_url
+        from scraper.county.drain import build_drain_search_url
         url = build_drain_search_url("01/01/2026", "12/31/2026")
         self.assertIn("startDate=01%2F01%2F2026", url)
         self.assertIn("mcdot.maricopa.gov", url)
 
     def test_full_date_format_roundtrip(self):
         """_format_mm_dd_yyyy + build_drain_search_url round-trips correctly."""
-        from scraper.drain import _format_mm_dd_yyyy, build_drain_search_url
+        from scraper.county.drain import _format_mm_dd_yyyy, build_drain_search_url
         start = _format_mm_dd_yyyy("2011-01-01")
         end = _format_mm_dd_yyyy("2013-12-31")
         self.assertEqual(start, "01/01/2011")
@@ -952,7 +952,7 @@ class TestRealDrainBodyScopedIdentity(unittest.TestCase):
     def test_meeting_ids_dont_clash_with_adj(self):
         """DRB meeting IDs (e.g., 1338) could overlap with ADJ IDs; verify they're scoped."""
         html = _load_fixture("drain_meetings_2012.html")
-        from scraper.drain import parse_drain_meetings_from_html
+        from scraper.county.drain import parse_drain_meetings_from_html
         meetings = parse_drain_meetings_from_html(
             html, "https://mcdot.maricopa.gov/AgendaCenter/Search/"
         )
@@ -965,7 +965,7 @@ class TestRealDrainBodyScopedIdentity(unittest.TestCase):
 
     def test_all_meetings_have_valid_agenda_urls(self):
         """Every DRB meeting fixture parses to an agenda URL."""
-        from scraper.drain import parse_drain_meetings_from_html
+        from scraper.county.drain import parse_drain_meetings_from_html
         for year in [2011, 2012, 2013]:
             html = _load_fixture(f"drain_meetings_{year}.html")
             meetings = parse_drain_meetings_from_html(
@@ -981,7 +981,7 @@ class TestRealDrainCLIArgsWithFixture(unittest.TestCase):
 
     def test_2012_date_range_produces_valid_search(self):
         """A 2012 date range produces the correct URL format for the fixture page."""
-        from scraper.drain import build_drain_search_url
+        from scraper.county.drain import build_drain_search_url
         url = build_drain_search_url("01/01/2012", "12/31/2012")
         # The fixture was saved from this exact URL pattern
         self.assertIn("startDate=01%2F01%2F2012", url)
@@ -990,7 +990,7 @@ class TestRealDrainCLIArgsWithFixture(unittest.TestCase):
     def test_2026_date_range_produces_empty_result_path(self):
         """2026 date range should be parseable and produce 0 meetings."""
         import urllib.parse
-        from scraper.drain import build_drain_search_url, parse_drain_meetings_from_html
+        from scraper.county.drain import build_drain_search_url, parse_drain_meetings_from_html
         
         url = build_drain_search_url("01/01/2026", "12/31/2026")
         html = _load_fixture("drain_meetings_2026.html")

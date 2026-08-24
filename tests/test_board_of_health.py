@@ -132,7 +132,7 @@ class TestHealthSearchUrlConstruction(unittest.TestCase):
 
     def test_health_search_url_uses_cid13(self):
         """health search URL uses CID=13 on mcdot.maricopa.gov"""
-        from scraper.health import build_health_search_url
+        from scraper.county.health import build_health_search_url
         url = build_health_search_url("01/01/2026", "01/31/2026")
         self.assertIn("CIDs=13", url)
         self.assertIn("mcdot.maricopa.gov", url)
@@ -142,7 +142,7 @@ class TestHealthSearchUrlConstruction(unittest.TestCase):
 
     def test_health_search_url_format_via_main(self):
         """Calling _format_mm_dd_yyyy + build_health_search_url together."""
-        from scraper.health import build_health_search_url, _format_mm_dd_yyyy
+        from scraper.county.health import build_health_search_url, _format_mm_dd_yyyy
 
         start = _format_mm_dd_yyyy("2026-01-01")
         end = _format_mm_dd_yyyy("2026-12-31")
@@ -156,7 +156,7 @@ class TestHealthSearchUrlConstruction(unittest.TestCase):
 
     def test_health_search_url_not_using_www_domain(self):
         """health search URL uses mcdot.maricopa.gov, not www.maricopa.gov"""
-        from scraper.health import build_health_search_url
+        from scraper.county.health import build_health_search_url
         url = build_health_search_url("01/01/2026", "01/31/2026")
         self.assertNotIn("www.maricopa.gov", url)
 
@@ -188,7 +188,7 @@ class TestParseHealthMeetingsFromHTMLFixture(unittest.TestCase):
         </table>
         </body></html>
         """
-        from scraper.health import parse_health_meetings_from_html
+        from scraper.county.health import parse_health_meetings_from_html
 
         meetings = parse_health_meetings_from_html(
             html, "https://mcdot.maricopa.gov/AgendaCenter/Search"
@@ -223,7 +223,7 @@ class TestParseHealthMeetingsFromHTMLFixture(unittest.TestCase):
         </table>
         </body></html>
         """
-        from scraper.health import parse_health_meetings_from_html
+        from scraper.county.health import parse_health_meetings_from_html
         meetings = parse_health_meetings_from_html(
             html, "https://mcdot.maricopa.gov/AgendaCenter/Search"
         )
@@ -261,7 +261,7 @@ class TestHealthYearTabExtraction(unittest.TestCase):
 
     def test_extract_health_year_tabs_from_html(self):
         """_extract_health_year_tabs_from_html parses changeYear links correctly."""
-        from scraper.health import _extract_health_year_tabs_from_html as fn
+        from scraper.county.health import _extract_health_year_tabs_from_html as fn
 
         html = """
         <a href="javascript:changeYear(2026, 13,'a0')">2026</a>
@@ -272,7 +272,7 @@ class TestHealthYearTabExtraction(unittest.TestCase):
 
     def test_extract_health_year_tabs_deduplicates(self):
         """Duplicate changeYear links produce one entry per year."""
-        from scraper.health import _extract_health_year_tabs_from_html as fn
+        from scraper.county.health import _extract_health_year_tabs_from_html as fn
 
         html = """
         <a href="javascript:changeYear(2026, 13,'a0')">2026</a>
@@ -282,12 +282,12 @@ class TestHealthYearTabExtraction(unittest.TestCase):
 
     def test_extract_health_year_tabs_no_tabs(self):
         """No changeYear links returns empty list."""
-        from scraper.health import _extract_health_year_tabs_from_html as fn
+        from scraper.county.health import _extract_health_year_tabs_from_html as fn
         self.assertEqual(fn("<html></html>"), [])
 
     def test_extract_health_year_tabs_cid_13(self):
         """health year tabs use CID=13, but CID is irrelevant to extraction."""
-        from scraper.health import _extract_health_year_tabs_from_html as fn
+        from scraper.county.health import _extract_health_year_tabs_from_html as fn
 
         html = """
         <a href="javascript:changeYear(2026, 13,'a0')">2026</a>
@@ -303,19 +303,19 @@ class TestHealthFormatFunctions(unittest.TestCase):
 
     def test_format_mm_dd_yyyy_converts_iso(self):
         """Converts YYYY-MM-DD to MM/DD/YYYY."""
-        from scraper.health import _format_mm_dd_yyyy
+        from scraper.county.health import _format_mm_dd_yyyy
         self.assertEqual(_format_mm_dd_yyyy("2026-01-01"), "01/01/2026")
         self.assertEqual(_format_mm_dd_yyyy("2026-04-27"), "04/27/2026")
         self.assertEqual(_format_mm_dd_yyyy("2025-12-31"), "12/31/2025")
 
     def test_format_mm_dd_yyyy_empty(self):
         """Empty input returns None."""
-        from scraper.health import _format_mm_dd_yyyy
+        from scraper.county.health import _format_mm_dd_yyyy
         self.assertIsNone(_format_mm_dd_yyyy(""))
 
     def test_format_mm_dd_yyyy_invalid(self):
         """Invalid input returns the input string unchanged."""
-        from scraper.health import _format_mm_dd_yyyy
+        from scraper.county.health import _format_mm_dd_yyyy
         self.assertEqual(_format_mm_dd_yyyy("not-a-date"), "not-a-date")
 
 
@@ -326,7 +326,7 @@ class TestRealHealthFixture2026(unittest.TestCase):
 
     def setUp(self):
         html = _load_fixture("boh_meetings_2026.html")
-        from scraper.health import parse_health_meetings_from_html
+        from scraper.county.health import parse_health_meetings_from_html
         self.meetings = parse_health_meetings_from_html(
             html, "https://mcdot.maricopa.gov/AgendaCenter/Search/"
         )
@@ -383,14 +383,14 @@ class TestRealHealthYearTabExtraction(unittest.TestCase):
     def test_broad_range_has_all_year_tabs(self):
         """2013-2026 broad fixture page has year tabs for all 14 years."""
         html = _load_fixture("boh_meetings_2013_2026.html")
-        from scraper.health import _extract_health_year_tabs_from_html
+        from scraper.county.health import _extract_health_year_tabs_from_html
         tabs = _extract_health_year_tabs_from_html(html)
         expected = list(range(2013, 2027))
         self.assertEqual(tabs, expected)
 
     def test_individual_year_pages_have_only_their_year_tab(self):
         """Each individual-year page only shows its own year tab."""
-        from scraper.health import _extract_health_year_tabs_from_html as tabs_fn
+        from scraper.county.health import _extract_health_year_tabs_from_html as tabs_fn
         for year in [2024, 2025, 2026]:
             html = _load_fixture(f"boh_meetings_{year}.html")
             tabs = tabs_fn(html)
@@ -403,7 +403,7 @@ class TestRealHealthOverallListPage(unittest.TestCase):
 
     def setUp(self):
         html = _load_fixture("boh_overview.html")
-        from scraper.health import parse_health_meetings_from_html
+        from scraper.county.health import parse_health_meetings_from_html
         self.meetings = parse_health_meetings_from_html(
             html, "https://mcdot.maricopa.gov/AgendaCenter/Board-of-Health-13"
         )
@@ -423,7 +423,7 @@ class TestRealHealthAgendaItemExtraction(unittest.TestCase):
 
     def test_parse_health_agenda_html_items(self):
         """parse_health_agenda_html extracts items from the HTML agenda."""
-        from scraper.health import parse_health_agenda_html
+        from scraper.county.health import parse_health_agenda_html
 
         html = _load_fixture("boh_agenda_04272026.html")
         items = parse_health_agenda_html(
@@ -451,7 +451,7 @@ class TestRealHealthAgendaItemExtraction(unittest.TestCase):
 
     def test_parse_health_agenda_html_item_fields(self):
         """Each parsed agenda item has required fields."""
-        from scraper.health import parse_health_agenda_html
+        from scraper.county.health import parse_health_agenda_html
 
         html = _load_fixture("boh_agenda_04272026.html")
         items = parse_health_agenda_html(
@@ -469,7 +469,7 @@ class TestRealHealthAgendaItemExtraction(unittest.TestCase):
 
     def test_parse_health_agenda_html_facilitators(self):
         """Facilitator/Presenter info is captured in item text."""
-        from scraper.health import parse_health_agenda_html
+        from scraper.county.health import parse_health_agenda_html
 
         html = _load_fixture("boh_agenda_04272026.html")
         items = parse_health_agenda_html(
@@ -489,7 +489,7 @@ class TestRealHealthAgendaItemExtraction(unittest.TestCase):
 
     def test_parse_health_agenda_html_no_agenda(self):
         """Empty or no-agenda HTML returns empty list gracefully."""
-        from scraper.health import parse_health_agenda_html
+        from scraper.county.health import parse_health_agenda_html
         items = parse_health_agenda_html(
             "<html><body>No agenda</body></html>",
             "https://example.com/agenda",
@@ -609,7 +609,7 @@ class TestAllBodiesStillWork(unittest.TestCase):
 
     def test_health_search_url_uses_cid13_on_correct_domain(self):
         """health search URL uses CID=13 on mcdot.maricopa.gov."""
-        from scraper.health import build_health_search_url
+        from scraper.county.health import build_health_search_url
         url = build_health_search_url("01/01/2026", "01/31/2026")
         self.assertIn("CIDs=13", url)
         self.assertIn("mcdot.maricopa.gov", url)

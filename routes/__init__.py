@@ -180,6 +180,33 @@ def create_app() -> Flask:
             dt = dt.replace(tzinfo=_UTC)
         return dt.astimezone(_AZ).strftime(fmt)
 
+    # ── Relationship label filter ────────────────────────────────────────
+    _REL_LABELS = {
+        "HAS_APPLICANT": "Applicant",
+        "HAS_ATTORNEY": "Attorney",
+        "HAS_STAFF": "Staff",
+        "HAS_RECOMMENDATION": "Recommendation",
+        "HAS_VENDOR": "Vendor",
+        "HAS_CONSULTANT": "Consultant",
+        "MEMBER_OF": "Member Of",
+        "PRESENT_AT": "Present At",
+        "VOTE_CAST": "Vote Cast",
+        "CONTRACT_AWARDED": "Contract Awarded",
+        "MOTION_MADE": "Motion",
+        "SECONDED": "Seconded",
+        "REPRESENTED": "Represented",
+        "EMPLOYED_BY": "Employed By",
+        "OWNS": "Owns",
+        "CONCERNS": "Concerns",
+        "APPLIES_FOR": "Applies For",
+        "HEARING_BODY": "Hearing Body",
+        "LOCATION": "Location",
+    }
+    @app.template_filter("rel_label")
+    def _format_rel_label(rel: str) -> str:
+        """Convert a relationship code (e.g. HAS_APPLICANT) to a human label."""
+        return _REL_LABELS.get(rel, rel.replace("_", " ").title())
+
     # ── Initialize newsroom tables ───────────────────────────────────────
     from db.newsroom import init_newsroom_db, seed_default_tags, seed_default_users, seed_default_topics
     init_newsroom_db()

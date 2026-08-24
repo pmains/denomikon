@@ -695,6 +695,14 @@ def replace_meeting_data_safe(
     On failure, rolls back and raises.
     """
     try:
+        # Classify lifecycle status for each agenda item
+        if agenda_item_dicts:
+            try:
+                from scraper.common.lifecycle import extract_lifecycle_from_items
+                extract_lifecycle_from_items(agenda_item_dicts)
+            except Exception:
+                pass  # Non-fatal — continue without lifecycle classification
+
         # Ensure meeting row exists (creates if new)
         meeting = create_or_get_meeting(session, body, meeting_dict)
 
