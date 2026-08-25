@@ -19,12 +19,12 @@ Each phase is watermark-tracked and idempotent. Phases that have already
 run for today are skipped. Use --force to re-run.
 
 Usage (normal — one step in the pipeline):
-    PYTHONPATH=scripts python3 scripts/entities/detect_entities.py
+    python3 scripts/entities/detect_entities.py
 
 Usage (debugging a specific phase):
-    PYTHONPATH=scripts python3 scripts/entities/detect_entities.py --phase pattern_cascade
-    PYTHONPATH=scripts python3 scripts/entities/detect_entities.py --phase resolver --verbose
-    PYTHONPATH=scripts python3 scripts/entities/detect_entities.py --phase sweep_docs --verbose
+    python3 scripts/entities/detect_entities.py --phase pattern_cascade
+    python3 scripts/entities/detect_entities.py --phase resolver --verbose
+    python3 scripts/entities/detect_entities.py --phase sweep_docs --verbose
 """
 
 from __future__ import annotations
@@ -33,12 +33,22 @@ import argparse
 import importlib
 import json
 import logging
+import os
 import sys
 import time
 
 from sqlalchemy import text
 
-sys.path.insert(0, "scripts")
+# Phase modules are imported as "scripts.entities.X", which requires the repo
+# ROOT on sys.path (so `scripts` is a package). `db.core` requires the scripts
+# dir itself. Derive both from __file__ so the pipeline works regardless of CWD.
+_ENTITIES_DIR = os.path.dirname(os.path.abspath(__file__))   # .../scripts/entities
+_SCRIPTS_DIR = os.path.dirname(_ENTITIES_DIR)                 # .../scripts
+_REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)                    # repo root
+for _p in (_REPO_ROOT, _SCRIPTS_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 from db.core import get_engine
 
 log = logging.getLogger("detect_entities")
@@ -107,7 +117,10 @@ def _get_watermarks(engine, force: bool = False) -> set[str]:
     """Return set of phase names that have already run."""
     if force:
         return set()
-    with engine.connect() as conn:
+    # engine.begin() — NOT connect() — so the CREATE TABLE commits. Otherwise
+    # the autobegin transaction rolls back on close and the watermark table
+    # never persists (latent bug: _mark_watermark would hit UndefinedTable).
+    with engine.begin() as conn:
         conn.execute(
             text(f"""
                 CREATE TABLE IF NOT EXISTS {WATERMARK_TABLE} (

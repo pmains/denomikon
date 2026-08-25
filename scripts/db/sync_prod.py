@@ -10,6 +10,9 @@ rows where updated_at > last_sync_at for that table.
 
 Usage:
     source .env && python3 -u scripts/db/sync_prod.py
+    source .env && python3 -u scripts/db/sync_prod.py --reconcile      # + delete stale prod rows
+    source .env && python3 -u scripts/db/sync_prod.py --reconcile-dry-run
+    source .env && python3 -u scripts/db/sync_prod.py --reconcile-only --reconcile-dry-run
 
 Environment:
     DATABASE_URL          Dev database  (Windows via Tailscale, or local)
@@ -492,6 +495,104 @@ def _cleanup_multi_column_unique(
         log.info("    ─ cleaned %d prod row(s) for %s", deleted, unique_columns)
 
 
+# ── Reconcile (delete propagation) ──
+#
+# Sync is upsert-only; rows deleted on dev are never removed from prod.
+# _reconcile_table() deletes prod rows whose PK is absent from dev, so prod
+# converges to dev instead of accumulating zombies. Run AFTER upserts, in
+# FK-safe order (children before parents — see RECONCILE_ORDER).
+
+# Children first: event tables (which FK to agenda_items/supporting_documents)
+# before those parents, entity_relationships before entities, etc.
+RECONCILE_ORDER = [
+    "event_participants",
+    "meeting_event_extractions",
+    "meeting_events",
+    "meeting_event_types",
+    "executive_session_participants",
+    "meeting_attendance",
+    "agenda_item_votes",
+    "member_votes",
+    "body_memberships",
+    "body_seats",
+    "meeting_members",
+    "case_events",
+    "entity_mentions",
+    "entity_relationships",
+    "cases",
+    "agenda_items",
+    "supporting_documents",
+    "pz_item_details",
+    "meetings",
+    "persons",
+    "public_bodies",
+    "jurisdictions",
+    "entities",
+]
+
+
+def _reconcile_table(dev_engine, prod_engine, table: str, dry_run: bool = False) -> int:
+    """Delete prod rows whose single-column PK is absent from dev.
+
+    Returns number of rows deleted (or that WOULD be deleted in dry-run).
+    Tables with composite PKs are skipped (logged) — none of the stale
+    tables identified so far use one.
+    """
+    pk_cols = _pk_cols(prod_engine, table)
+    if len(pk_cols) != 1:
+        log.info("  %-35s  skip reconcile (composite PK)", table)
+        return 0
+    pk = pk_cols[0]
+
+    with dev_engine.connect() as c:
+        dev_ids = {r[0] for r in c.execute(
+            text(f'SELECT "{pk}" FROM public."{table}"'))}
+    with prod_engine.connect() as c:
+        prod_ids = {r[0] for r in c.execute(
+            text(f'SELECT "{pk}" FROM public."{table}"'))}
+
+    stale = prod_ids - dev_ids
+    if not stale:
+        return 0
+
+    log.info("  %-35s  %d stale prod row(s) to delete", table, len(stale))
+    if dry_run:
+        return len(stale)
+
+    stale_list = sorted(stale)
+    deleted = 0
+    for i in range(0, len(stale_list), 500):
+        chunk = stale_list[i:i + 500]
+        try:
+            with prod_engine.begin() as c:
+                res = c.execute(
+                    text(f'DELETE FROM public."{table}" WHERE "{pk}" = ANY(:ids)'),
+                    {"ids": chunk},
+                )
+                deleted += res.rowcount
+        except Exception as e:
+            log.warning("  ✗ chunk delete failed for %s: %s", table, e)
+    if deleted:
+        log.info("    ─ deleted %d stale prod row(s) from %s", deleted, table)
+    return deleted
+
+
+def _reconcile(dev_engine, prod_engine, dry_run: bool = False) -> int:
+    """Delete stale prod rows for all tables, children first."""
+    total = 0
+    for table in RECONCILE_ORDER:
+        if table in EXCLUDED_TABLES:
+            continue
+        try:
+            total += _reconcile_table(dev_engine, prod_engine, table, dry_run=dry_run)
+        except Exception as e:
+            log.warning("  ✗ reconcile failed for %s: %s", table, e)
+    log.info("  Reconcile %s: %d stale row(s) %s",
+             "(dry run)" if dry_run else "",
+             total, "would be deleted" if dry_run else "deleted")
+    return total
+
+
 # ── Table sync (incremental) ──
 
 
@@ -538,7 +639,7 @@ def _upsert_table(
     if total == 0:
         log.info("  %-35s  no new rows (last_sync=%s)", table,
                  last_sync.isoformat() if last_sync else "never")
-        return
+        return 0
 
     # Count rows on prod (for logging delta)
     with prod_engine.connect() as c:
@@ -571,6 +672,7 @@ def _upsert_table(
 
     offset = 0
     chunk_count = 0
+    skipped_total = 0
     while offset < total:
         try:
             # Read chunk from dev
@@ -597,7 +699,8 @@ def _upsert_table(
                 placeholders = [f":r{i}_{c}" for c in col_names]
                 values_clause_parts.append(f"({', '.join(placeholders)})")
                 for c in col_names:
-                    params[f"r{i}_{c}"] = row[c]
+                    v = row[c]
+                    params[f"r{i}_{c}"] = json.dumps(v) if isinstance(v, (dict, list)) else v
 
             values_clause = ",\n  ".join(values_clause_parts)
 
@@ -637,29 +740,45 @@ def _upsert_table(
                     skipped += 1
             if skipped:
                 log.warning("    Row-by-row: %d row(s) skipped", skipped)
+            skipped_total += skipped
             offset += BATCH_SIZE
             chunk_count += 1
             time.sleep(BATCH_SLEEP_S * 2)
 
-    # Reset sequence
-    with prod_engine.connect() as c:
-        seq_name = f"{table}_id_seq"
-        try:
-            max_id = c.execute(
-                text(f'SELECT COALESCE(MAX(id), 0) FROM public."{table}"')
-            ).scalar()
-            if max_id and max_id > 0:
-                c.execute(text(f"SELECT setval('{seq_name}', :max_id)"), {"max_id": max_id})
-        except Exception:
-            pass
+    # Reset sequence — only for tables that actually have an id column.
+    # (Join tables like event_participants have a composite PK and no id;
+    #  MAX(id) would fail and abort the transaction, killing the count below.)
+    if "id" in pk_cols:
+        with prod_engine.connect() as c:
+            try:
+                seq_name = f"{table}_id_seq"
+                max_id = c.execute(
+                    text(f'SELECT COALESCE(MAX(id), 0) FROM public."{table}"')
+                ).scalar()
+                if max_id and max_id > 0:
+                    c.execute(text(f"SELECT setval('{seq_name}', :max_id)"), {"max_id": max_id})
+                c.commit()
+            except Exception as e:
+                c.rollback()
+                log.warning("  sequence reset skipped: %s", e)
 
+    with prod_engine.connect() as c:
         prod_after = c.execute(
             text(f'SELECT COUNT(*) FROM public."{table}"')
         ).scalar()
-        log.info("    done: prod now %d rows (%+d)", prod_after, prod_after - prod_before)
+        skip_note = f", {skipped_total} skipped" if skipped_total else ""
+        log.info("    done: prod now %d rows (%+d)%s",
+                 prod_after, prod_after - prod_before, skip_note)
 
-    # Record sync checkpoint
-    _set_last_sync(prod_engine, table)
+    # Record sync checkpoint — ONLY when nothing was skipped, so failed rows
+    # are retried on the next run instead of being permanently bypassed.
+    if skipped_total == 0:
+        _set_last_sync(prod_engine, table)
+    else:
+        log.warning("  Checkpoint NOT advanced for %s — %d row(s) skipped (will retry)",
+                    table, skipped_total)
+
+    return skipped_total
 
 
 # ── Validation ──
@@ -782,7 +901,8 @@ def _sync_status(dev_engine, prod_engine):
     print()
 
 
-def main():
+def main(reconcile: bool = False, reconcile_only: bool = False,
+         reconcile_dry_run: bool = False) -> int:
     dev_url = _resolve_dev_url()
     prod_url = _resolve_prod_url()
 
@@ -801,6 +921,8 @@ def main():
             log.error("Another sync is already running (lock held)")
             sys.exit(1)
 
+    total_skipped = 0
+    ok = True
     try:
         # ── 2. Bootstrap prod schema (idempotent) ──
         log.info("── Bootstrap ──")
@@ -809,31 +931,51 @@ def main():
         _ensure_event_tables(prod_engine)
 
         # ── 3. Upsert each table ──
-        run_type = "full" if is_full_sync else "incremental"
-        log.info("── Syncing tables (%s) ──", run_type)
+        if reconcile_only:
+            log.info("── Skipping upserts (--reconcile-only) ──")
+        else:
+            run_type = "full" if is_full_sync else "incremental"
+            log.info("── Syncing tables (%s) ──", run_type)
 
-        for table in ALL_SYNC_TABLES:
-            if table in EXCLUDED_TABLES:
-                continue
+            for table in ALL_SYNC_TABLES:
+                if table in EXCLUDED_TABLES:
+                    continue
 
-            cols = _column_intersection(dev_engine, prod_engine, table)
-            auto_exclude = AUTO_COLUMNS.get(table, set())
-            if auto_exclude:
-                cols = [c for c in cols if c not in auto_exclude]
-            if not cols:
-                log.warning("  Skipping %s — no common columns between dev and prod", table)
-                continue
+                cols = _column_intersection(dev_engine, prod_engine, table)
+                auto_exclude = AUTO_COLUMNS.get(table, set())
+                if auto_exclude:
+                    cols = [c for c in cols if c not in auto_exclude]
+                if not cols:
+                    log.warning("  Skipping %s — no common columns between dev and prod", table)
+                    continue
 
-            # Determine if this table should do a full sync
-            do_full = is_full_sync or table in FULL_SYNC_TABLES
+                # Determine if this table should do a full sync
+                do_full = is_full_sync or table in FULL_SYNC_TABLES
 
-            t0 = time.time()
-            _upsert_table(dev_engine, prod_engine, table, cols, is_full_sync=do_full)
-            elapsed = time.time() - t0
-            log.info("    ─ took %.1fs\n", elapsed)
+                t0 = time.time()
+                total_skipped += _upsert_table(
+                    dev_engine, prod_engine, table, cols, is_full_sync=do_full
+                )
+                elapsed = time.time() - t0
+                log.info("    ─ took %.1fs\n", elapsed)
+
+        # ── 3.5 Reconcile: delete stale prod rows (delete propagation) ──
+        if reconcile or reconcile_only:
+            mode = "DRY RUN" if reconcile_dry_run else "delete"
+            log.info("── Reconcile stale prod rows (%s) ──", mode)
+            stale_total = _reconcile(dev_engine, prod_engine, dry_run=reconcile_dry_run)
+            if reconcile_dry_run and stale_total:
+                log.warning("  Dry run: %d stale row(s) would be deleted", stale_total)
+            elif reconcile_dry_run:
+                log.info("  Dry run: no stale rows — prod is clean")
 
         # ── 4. Validate ──
-        _validate(dev_engine, prod_engine)
+        if reconcile_dry_run:
+            # Preview mode: show the mismatch but don't fail (nothing deleted).
+            _validate(dev_engine, prod_engine)
+            log.info("Dry run complete — no changes made")
+            return 0
+        ok = _validate(dev_engine, prod_engine)
 
     except BaseException as e:
         log.error("Sync failed: %s", e)
@@ -843,6 +985,14 @@ def main():
             c.execute(text(f"SELECT pg_advisory_unlock({LOCK_ID})"))
         log.info("Lock released")
 
+    if not ok:
+        log.error("Validation failed — prod row counts differ from dev")
+        return 1
+    if total_skipped:
+        log.error("%d row(s) skipped during sync — inspect log", total_skipped)
+        return 1
+    return 0
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -851,6 +1001,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--status", action="store_true",
         help="Print sync lag report and exit (no data transfer)",
+    )
+    parser.add_argument(
+        "--reconcile", action="store_true",
+        help="After upserts, delete prod rows whose PK is absent from dev "
+             "(delete propagation for rows removed on dev)",
+    )
+    parser.add_argument(
+        "--reconcile-only", action="store_true",
+        help="Skip upserts; only reconcile (delete stale prod rows) + validate",
+    )
+    parser.add_argument(
+        "--reconcile-dry-run", action="store_true",
+        help="Preview which prod rows would be deleted, without deleting",
     )
     args = parser.parse_args()
 
@@ -868,9 +1031,16 @@ if __name__ == "__main__":
         prod_engine.dispose()
         sys.exit(0)
 
+    raise SystemExit(main(
+        reconcile=args.reconcile,
+        reconcile_only=args.reconcile_only,
+        reconcile_dry_run=args.reconcile_dry_run,
+    ))
+
     t0 = time.time()
     log.info("Starting dev → prod sync (mode=%s, batch=%d, sleep=%.1fs)",
              SYNC_MODE, BATCH_SIZE, BATCH_SLEEP_S)
-    main()
+    code = main()
     elapsed = time.time() - t0
     log.info("Sync finished in %.1f seconds", elapsed)
+    sys.exit(code)

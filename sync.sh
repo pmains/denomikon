@@ -73,7 +73,7 @@ if [ "${1:-}" != "--code-only" ]; then
   set -a
   source .env
   set +a
-  BATCH_SIZE=5000 BATCH_SLEEP_MS=100 .venv/bin/python scripts/db/sync_prod.py
+  BATCH_SIZE=5000 BATCH_SLEEP_MS=100 .venv/bin/python scripts/db/sync_prod.py --reconcile
   echo "✅ Database sync complete"
 fi
 

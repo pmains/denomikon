@@ -23,13 +23,21 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import sys
 from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-sys.path.insert(0, "scripts")
+# CWD-independent path bootstrap (see detect_entities.py).
+_ENTITIES_DIR = os.path.dirname(os.path.abspath(__file__))
+_SCRIPTS_DIR = os.path.dirname(_ENTITIES_DIR)
+_REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
+for _p in (_REPO_ROOT, _SCRIPTS_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 from db.core import get_engine
 
 log = logging.getLogger("resolver")
